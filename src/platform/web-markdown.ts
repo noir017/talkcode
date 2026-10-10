@@ -62,6 +62,51 @@ export function renderWebMarkdown(src: string): string {
   return renderBlocks(src.split('\n'));
 }
 
+/**
+ * A finished tool line's ` ✓ 1.2s` / ` ✗ 832ms`: what ToolRenderer.renderBlock appends, in
+ * formatDuration's two shapes (`core/tool-renderer.ts`; pinned by a test that runs that formatter).
+ *
+ * Split off so that folding cuts the COMMAND and never the mark. Cut at the bubble's edge, a long
+ * line loses its end, and its end is the one part that says whether the tool is still running —
+ * the 40-character server cut this replaced never hid it. Parsed back out of the text because the
+ * text is all an adapter is given; if the format ever drifts, a line just folds whole, as before.
+ */
+const TOOL_STATUS_RE = / [✓✗] (?:\d+ms|\d+\.\d+s)$/;
+
+/**
+ * A tool-progress bubble (`core/tool-renderer.ts`): one `<div class="tl">` per tool line, which
+ * the page folds to a single row and opens on a click. Inside it, `.tl-c` is the part that folds
+ * and `.tl-s` the finish mark that stays in view (see TOOL_STATUS_RE).
+ *
+ * Not markdown, deliberately. A line is `{emoji} {tool}: "{preview}" ✓ 1.2s` and the preview is
+ * a command or a path — exactly the text inline markdown mangles: `*.ts` and `a_b_c` start
+ * emphasis, a backtick in a shell command opens a code span, and consecutive lines merge into
+ * one paragraph so there is no per-tool element to fold. So each line is escaped and nothing
+ * else. Verbose mode's argument dump under a line is the one real markdown construct a bubble
+ * carries, and goes through the same fence taker the replies use, so it renders identically.
+ *
+ * Stream safety is free here: nothing spans lines except the fence, which already renders open.
+ */
+export function renderWebToolLines(src: string): string {
+  const lines = src.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const consumed = takeBlank(lines, i) ?? takeFence(lines, i, out);
+    if (consumed !== null) {
+      i += consumed;
+      continue;
+    }
+    const line = lines[i] ?? '';
+    const status = TOOL_STATUS_RE.exec(line);
+    const body = status ? line.slice(0, status.index) : line;
+    const mark = status ? `<span class="tl-s">${escapeHtml(status[0])}</span>` : '';
+    out.push(`<div class="tl"><span class="tl-c">${escapeHtml(body)}</span>${mark}</div>`);
+    i += 1;
+  }
+  return `<div class="tools">${out.join('')}</div>`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Block level
 //

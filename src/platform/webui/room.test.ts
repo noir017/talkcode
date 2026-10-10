@@ -499,6 +499,29 @@ describe('WebRoom: outbound basics', () => {
     expect(() => room.revise(topic, 'never-existed', 'x')).toThrow(MessageNotEditableError);
   });
 
+  it('keeps a tool bubble a tool bubble through its edits', () => {
+    // The kind arrives on the send only (SendOptions), and a bubble's whole life after that is
+    // edits — another line, another ✓. Re-rendered as markdown on the first of them, the lines
+    // would merge into one paragraph and the page would have nothing left to fold.
+    vi.useFakeTimers();
+    const { room, topic, seen } = attached();
+    const msg = room.post(topic, { own: false, html: '', kind: 'tools' }, '');
+    seen.length = 0;
+    room.revise(topic, msg.id, '💻 Bash: "ls *.ts" ✓ 5ms\n📖 Read: "a_b_c.md"');
+    vi.advanceTimersByTime(1_600);
+    expect(lastOf(seen, 'msg')).toMatchObject({
+      t: 'msg',
+      msg: {
+        kind: 'tools',
+        html:
+          '<div class="tools">' +
+          '<div class="tl"><span class="tl-c">💻 Bash: &quot;ls *.ts&quot;</span><span class="tl-s"> ✓ 5ms</span></div>' +
+          '<div class="tl"><span class="tl-c">📖 Read: &quot;a_b_c.md&quot;</span></div>' +
+          '</div>',
+      },
+    });
+  });
+
   it('strips buttons when handed an empty list, which is how every menu is retired', () => {
     vi.useFakeTimers();
     const { room, topic, seen } = attached();

@@ -210,6 +210,39 @@ entry is added — `doctor` checks for exactly this.
 | `slashNeedsAck` | – | There is no interaction to close out |
 | `maxMessageLength` | 20000 | Not a platform limit. A ceiling so one runaway reply does not become an unbounded DOM node redrawn several times a second |
 | `maxEditsPerMessage` | unset | Nothing here ever refuses an edit |
+| `toolPreviewLimit` | 2000 | The only platform that declares one: see [Tool bubbles](#tool-bubbles) |
+
+## Tool bubbles
+
+A tool bubble (`core/tool-renderer.ts`) reaches every adapter as plain text, one
+`{emoji} {tool}: "{preview}" ✓ 1.2s` line per tool call. Every chat app has to show that text
+as sent, which is why the preview is cut at `tools.previewLimit` (40) on the server: at 40
+characters a run of tools still reads one line each on a phone. The cost is that most commands
+lose the part that tells two of them apart.
+
+This page can fold a line itself, so it asks for more of it and does the cutting in CSS:
+
+- **`toolPreviewLimit: 2000`** (`index.ts`) — turn-runner hands the renderer the larger of this
+  and the operator's setting. Bounded rather than unlimited because every edit of a bubble
+  re-sends all of its lines, and a heredoc'd script can run to pages.
+- **`SendOptions.kind = 'tools'`** on the bubble's *send* — the only way to know a message is a
+  tool bubble once it is text. It rides the paced adapter untouched (the lane view forwards
+  `...args`; `daemon/tool-bubble-kind.test.ts` pins that), and `room.ts` stores it on the
+  message so every later `revise` keeps rendering it as one.
+- **`renderWebToolLines`** (`web-markdown.ts`, with the other converters, because that file is
+  the XSS boundary) instead of markdown: one `.tl` per line, the command in `.tl-c` and the
+  finish mark in `.tl-s`. Markdown would merge the lines into one paragraph and read `*.ts` or
+  `a_b_c` in a command as emphasis. The mark is parsed back off the line end so that a fold cuts
+  the command and never the ✓ — the one part that says the tool is done.
+- **The page** keeps which lines are open per message key, in script state rather than as a class
+  on the element: a bubble is edited at every tool start and finish, and each edit rewrites its
+  markup, so a class would snap shut at the next ✓. `foldLines` stamps the state into the markup
+  before the `sig` comparison, so an open line costs no extra DOM writes. A click that ends a
+  text selection does not toggle — copying part of a command is the other thing done here.
+
+Real-browser layout (a folded row is one line high, the ✓ stays inside it, an opened row wraps
+instead of widening the transcript) was checked in Chromium at 1280 and 390 px against a live
+daemon on 2026-10-10; jsdom has no layout and cannot see any of it.
 
 ## Built for a bad connection
 

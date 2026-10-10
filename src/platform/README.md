@@ -76,6 +76,7 @@ Three rules keep this from rotting:
 | `slashCommands` | ✓ | ✓ | ✓ | – | – | – | – | – | ✓ |
 | `maxMessageLength` | 2000 | 4096 | 3000 | 10000 | 1000 | 5000 | 2000 | 3500 | 20000 |
 | `menuPageSize` | 12 | 12 | 12 | – | – | – | – | – | 12 |
+| `toolPreviewLimit` | – | – | – | – | – | – | – | – | 2000 |
 
 **`editButtons` is not `editMessage && buttons`.** It is its own field because the
 conjunction is right by accident and wrong in mechanism. Lark has both, yet its
@@ -118,6 +119,13 @@ frame, a turn ending) and nothing changes it in between, so a lookup would have 
 forever for an answer that only moves while an agent is talking. The daemon's
 `status-board.ts` drops repeats and throttles before calling it; an implementation may treat every
 call as a change. It may throw on a bad address — the caller swallows that.
+
+**`toolPreviewLimit` only ever raises the preview.** Turn-runner hands the tool renderer the larger
+of it and the operator's `tools.previewLimit`, so a platform declares one only if it can fold a long
+tool line itself — a chat app shows the text as sent, and there a short preview is the only thing
+keeping a run of tools one line each. It travels with the other half of that arrangement,
+`sendMessage`'s optional `SendOptions` (`kind: 'tools'` on a tool bubble's send), which every
+adapter but the web UI ignores. See the web UI's [Tool bubbles](webui/README.md#tool-bubbles).
 
 **`menuPageSize` is a declaration, not a preference.** It says how many items one page of
 a button menu (`/cd`, `/model`, `/setting`) may hold here, and the limits are nowhere near

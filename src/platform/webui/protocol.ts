@@ -251,4 +251,12 @@ export interface WebMessage {
    * idempotency, so it is the exact answer and costs one field.
    */
   nonce?: string;
+  /**
+   * Set on a tool-progress bubble, whose html is `renderWebToolLines`' one `.tl` per tool call.
+   *
+   * The page needs to know rather than sniff the markup: it is what puts the "Show all" control
+   * under the bubble, and it is what keeps the lines a reader opened open while the bubble is
+   * still being edited — which is most of a tool bubble's life.
+   */
+  kind?: 'tools';
 }

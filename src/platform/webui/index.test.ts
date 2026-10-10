@@ -64,6 +64,15 @@ describe('webui adapter: what it says it can do', () => {
     expect(adapter().capabilities.maxEditsPerMessage).toBeUndefined();
   });
 
+  it('asks for whole commands in its tool bubbles, which the page folds itself', () => {
+    // Far above the operator default (40), or the page's "Show all" would open a line onto the
+    // same cut-off command it was already showing.
+    const limit = adapter().capabilities.toolPreviewLimit ?? 0;
+    expect(limit).toBeGreaterThanOrEqual(1_000);
+    // ...and still under one message, so a single line can never be what seals a bubble.
+    expect(limit).toBeLessThan(adapter().capabilities.maxMessageLength);
+  });
+
   it('measures the raw markdown, never the html it renders', () => {
     // maxMessageLength bounds the text the writer is chunking. Measuring the rendered html
     // would make a fenced code block read several times its real size and chop replies at a
