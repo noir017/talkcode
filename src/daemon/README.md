@@ -38,7 +38,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `schedule-store.ts` | `<configDir>/schedules.json`: 0600, atomic writes, a bad entry dropped loudly |
 | `schedule-service.ts` | Scheduled tasks wired to the rest: a run as a bash process or a turn, the agent's `schedule` commands, the cards |
 | `schedule-bash.ts` | One `--bash` run: its own process group, a bounded output tail, the full log on disk |
-| `reverse-cli-shim.ts` | Guarantees `agent-anywhere` is on the agent's PATH; `selfInvocation` — how to re-run this CLI, shared with the tool server entry |
+| `reverse-cli-shim.ts` | Guarantees `talkcode` is on the agent's PATH; `selfInvocation` — how to re-run this CLI, shared with the tool server entry |
 | `skill-link.ts` | Links the bundled skill into the skill directories the harnesses read (`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/config/skills`) |
 
 ## Inbound flow
@@ -139,7 +139,7 @@ Why it is shaped this way, one line each:
 Every step is logged: `[voice]` lines in daemon.log, and one JSON event per fact in
 `<configDir>/voice-log.jsonl` (0600, rotated to `.1` past 5 MB) — the transcript with its audio
 path, model, latency and token counts, then its outcome. The agent reads its own conversation's
-entries with `agent-anywhere voice-log`; nothing in its prompt says a message was spoken.
+entries with `talkcode voice-log`; nothing in its prompt says a message was spoken.
 
 ## Routing, binding, and conversation keys
 
@@ -332,7 +332,7 @@ Four conditions, each protecting against a different way of being wrong:
 
 A reverse command also counts as activity (`handleReverse` → `registry.touch`), so an
 agent whose turn ended but whose background job is still reporting through
-`agent-anywhere send` keeps its child. A session that reports `unresumable` is left
+`talkcode send` keeps its child. A session that reports `unresumable` is left
 resident and said so once, not once a minute.
 
 Verified resumable on the three harnesses in use: `claude` (claude-agent-acp advertises
@@ -341,8 +341,8 @@ Verified resumable on the three harnesses in use: `claude` (claude-agent-acp adv
 
 ## Scheduled tasks
 
-An agent registers them (`agent-anywhere schedule add …`, documented to it on demand by
-`agent-anywhere help schedule`); the daemon keeps and runs them. The decisions are
+An agent registers them (`talkcode schedule add …`, documented to it on demand by
+`talkcode help schedule`); the daemon keeps and runs them. The decisions are
 [`core/schedule.ts`](../core/README.md) — when a task next runs, whether a late run is still worth
 making, every sentence said about one — and the files here do the timing and the IO.
 
@@ -627,7 +627,7 @@ The `claude` adapter is **bundled** as a dependency and resolved via
 `codex` is the one worth explaining, because it used to be bundled too. Its adapter
 (`@agentclientprotocol/codex-acp`, replacing Zed's deprecated `@zed-industries/codex-acp`)
 declares `@openai/codex` as a regular dependency, whose platform binary is ~284 MB
-unpacked. Bundling that would tax every `npm i -g agent-anywhere-cli` for a harness most
+unpacked. Bundling that would tax every `npm i -g talkcode` for a harness most
 operators never configure, while the operator who *does* configure it has already installed
 and logged into the codex CLI by hand. So it follows the opencode/dsh contract instead:
 install it alongside the daemon, and `doctor` names the package when it is missing.
@@ -869,7 +869,7 @@ spawn-time check that home stayed unwired until the next restart.
 
 Protocol-agnostic pieces both runtimes must behave *identically* on: the child
 environment, working-directory resolution (`agents[].cwd`, or an auto-created
-`~/.agent-anywhere/agents/<id>`), tool-preview formatting, and child termination (SIGTERM, then
+`~/.talkcode/agents/<id>`), tool-preview formatting, and child termination (SIGTERM, then
 SIGKILL after `KILL_GRACE_MS` — harness CLIs may ignore SIGTERM mid-turn).
 
 `buildAgentEnv` runs at every spawn in both runtimes, which makes it the one place that provisions
@@ -885,7 +885,7 @@ history and why it went.
 
 What replaced it:
 
-- **Native tools**, ACP only. `acpMcpServers` lists `agent-anywhere mcp` — named `chat`, so Claude
+- **Native tools**, ACP only. `acpMcpServers` lists `talkcode mcp` — named `chat`, so Claude
   Code shows `mcp__chat__send_file` — in `session/new` *and* `session/load`, as a stdio server the
   harness starts per session. Stdio because every ACP agent must support it (2026-10-09: cc, cx and
   oc also advertise http, which would mean a listening port where there is only a 0600 socket).
@@ -900,7 +900,7 @@ What replaced it:
   there never reached the model). The evidence is in the file header. A symlink into the installed package, so it is only on machines that run the
   daemon and always the running version's own. Linked only once the harness's own config
   directory exists; a real directory by that name is the operator's and is left alone.
-  `AGENT_ANYWHERE_NO_SKILL_LINK=1` turns it off — set it on a test daemon run from a checkout, or
+  `TALKCODE_NO_SKILL_LINK=1` turns it off — set it on a test daemon run from a checkout, or
   it repoints the live daemon's link at the checkout until the live one next spawns an agent.
 - **agy has no tools.** It does not speak ACP, and its MCP servers live in a global config
   (`agy mcp add`) the gateway will not edit — an entry there would appear in the operator's own
@@ -1164,7 +1164,7 @@ registered token rather than a `Map.get`, so a timing side-channel cannot reveal
 leading characters of a guess are correct. Defense in depth — tokens are 122-bit UUIDs
 and the socket is `0600` — but cheap, since the live set is small.
 
-**`reverse-cli-shim.ts`** guarantees the skill's promise that `agent-anywhere` is on PATH.
+**`reverse-cli-shim.ts`** guarantees the skill's promise that `talkcode` is on PATH.
 Whether it actually is depends on how the daemon was launched: a global npm install puts
 it there, `node dist/cli.js start` or a `tsx` dev run does not, and a service manager may
 strip PATH entirely. So the daemon writes a two-line shim re-executing *exactly* the
@@ -1194,7 +1194,7 @@ reading the numbers back the way the runtime does, so a rewrite of that generate
 cannot pass by being plausible.
 
 `settings-command.test.ts` is the only suite here that asserts against a real file on disk
-(`AGENT_ANYWHERE_CONFIG_FILE` pointed at a tmp dir), and deliberately so: its most valuable
+(`TALKCODE_CONFIG_FILE` pointed at a tmp dir), and deliberately so: its most valuable
 assertions are that a refusal leaves the file byte-identical, that clearing deletes a key
 rather than writing a `null`, that a `${VAR}` template is never expanded on the way through,
 and that `loadConfig()` still succeeds afterwards. Each of those, if it broke, would produce

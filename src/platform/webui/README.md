@@ -1,7 +1,7 @@
 # `src/platform/webui/` — the built-in web UI
 
 A browser chat page the daemon serves itself, wired in as a ninth platform. No account, no
-bot token, no upstream service: `agent-anywhere start`, open the page, type.
+bot token, no upstream service: `talkcode start`, open the page, type.
 
 It exists because every other way into this gateway needs a chat platform configured first.
 When there isn't one — or when a browser is simply the place you want to be — this is the
@@ -502,7 +502,7 @@ platforms:
     terminal:
       enabled: true
       # Defaults to webui-term-<instance>.sock beside the daemon's own state.
-      socket: /home/user/.config/agent-anywhere/webui-term-web.sock
+      socket: /home/user/.config/talkcode/webui-term-web.sock
       # Optional. Without it there is no close button — only minimize.
       # argv, never a shell string; {topic} is substituted into each element.
       endCommand: ["tmux", "-L", "aa-web", "kill-session", "-t", "aa-{topic}"]

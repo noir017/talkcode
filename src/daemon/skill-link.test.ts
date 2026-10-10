@@ -17,7 +17,7 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-link-'));
   source = path.join(home, 'pkg', 'skill');
   fs.mkdirSync(source, { recursive: true });
-  fs.writeFileSync(path.join(source, 'SKILL.md'), '---\nname: agent-anywhere\n---\n');
+  fs.writeFileSync(path.join(source, 'SKILL.md'), '---\nname: talkcode\n---\n');
 });
 
 afterEach(() => {
@@ -58,14 +58,14 @@ describe('linkSkill', () => {
 
   it('repoints its own link when it points elsewhere (an older install, a test daemon)', () => {
     fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true });
-    const link = path.join(home, '.claude', 'skills', 'agent-anywhere');
+    const link = path.join(home, '.claude', 'skills', 'talkcode');
     fs.symlinkSync('/old/install/skill', link);
     expect(linkSkill(source, claude())).toEqual({ link, outcome: 'relinked', detail: '/old/install/skill' });
     expect(fs.readlinkSync(link)).toBe(source);
   });
 
   it('never replaces a real directory: that is the operator\'s own copy', () => {
-    const own = path.join(home, '.claude', 'skills', 'agent-anywhere');
+    const own = path.join(home, '.claude', 'skills', 'talkcode');
     fs.mkdirSync(own, { recursive: true });
     expect(linkSkill(source, claude())).toMatchObject({ outcome: 'occupied', detail: 'a directory' });
     expect(fs.lstatSync(own).isDirectory()).toBe(true);

@@ -1,11 +1,10 @@
 <div align="center">
 
-# Agent Anywhere
+# talkcode
 
 **让你的编码智能体进驻每一个聊天软件。**
 
-[![CI](https://github.com/noir017/agent-anywhere/actions/workflows/ci.yml/badge.svg)](https://github.com/noir017/agent-anywhere/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/agent-anywhere-cli)](https://www.npmjs.com/package/agent-anywhere-cli)
+[![CI](https://github.com/noir017/talkcode/actions/workflows/ci.yml/badge.svg)](https://github.com/noir017/talkcode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [English](README.md) | 简体中文
@@ -17,6 +16,9 @@
 Code、Codex、OpenCode，以及 Google 的 Antigravity CLI。给机器人发消息，
 智能体在你自己的机器上运行，回答以流式写入同一条消息、原地编辑。
 
+本项目 fork 自 [l0ng-ai/agent-anywhere](https://github.com/l0ng-ai/agent-anywhere)，2.0.0 之前名为
+`agent-anywhere`。
+
 ```text
  Discord ───┐
  Telegram ──┤     ┌──────────────────────┐
@@ -25,7 +27,7 @@ Code、Codex、OpenCode，以及 Google 的 Antigravity CLI。给机器人发消
  QQ ────────┼────►│  streaming · access  │       ├─► opencode
  LINE ──────┤     └──────────▲───────────┘       ├─► agy
  WeCom ─────┤                │ unix socket       └─► custom
- DingTalk ──┤                └─ agent-anywhere CLI (send-file / ask / react …)
+ DingTalk ──┤                └─ talkcode CLI (send-file / ask / react …)
  网页端 ────┘  （守护进程自带的浏览器页面——不用注册机器人，也不用账号）
 ```
 
@@ -45,12 +47,15 @@ Code、Codex、OpenCode，以及 Google 的 Antigravity CLI。给机器人发消
 
 ## 快速开始
 
-```bash
-npm install -g agent-anywhere-cli
+talkcode 没有发布到 npm。请安装[最新 Release](https://github.com/noir017/talkcode/releases/latest)
+附带的 tarball，`X.Y.Z` 换成它的版本号：
 
-agent-anywhere setup    # 向导：选平台、填凭据、选智能体
-agent-anywhere doctor   # 自检
-agent-anywhere start    # 给机器人发消息即可
+```bash
+npm install -g https://github.com/noir017/talkcode/releases/download/vX.Y.Z/talkcode-X.Y.Z.tgz
+
+talkcode setup    # 向导：选平台、填凭据、选智能体
+talkcode doctor   # 自检
+talkcode start    # 给机器人发消息即可
 ```
 
 `harness: claude` 复用本机的 `claude /login` 登录态——个人使用无需 API key。
@@ -61,9 +66,10 @@ agent-anywhere start    # 给机器人发消息即可
 把下面这段粘贴给 Claude Code（或任何编码智能体）：
 
 ```text
-Set up https://github.com/noir017/agent-anywhere for me: install the CLI
-(npm i -g agent-anywhere-cli), then follow the skill bundled in the installed
-package (skill/SKILL.md, under `npm root -g`/agent-anywhere-cli) to configure
+Set up https://github.com/noir017/talkcode for me: install the CLI
+from the latest GitHub release's talkcode-X.Y.Z.tgz (npm i -g <its URL>;
+it is not on npm), then follow the skill bundled in the installed
+package (skill/SKILL.md, under `npm root -g`/talkcode) to configure
 and start it.
 ```
 
@@ -71,7 +77,7 @@ and start it.
 
 ## 配置
 
-`~/.config/agent-anywhere/config.yaml`，或用 `--config <path>` 指定：
+`~/.config/talkcode/config.yaml`，或用 `--config <path>` 指定：
 
 ```yaml
 version: 1
@@ -145,7 +151,7 @@ access:
   交给 `~/.gemini/antigravity-cli/settings.json` 里配置的 `statusLine` 命令。守护进程
   启动时会先备份该文件一次，再把这项指向自己的 shim：既通过一条管道把数字——以及
   其他途径都拿不到的 agy 默认模型名——直接交回守护进程供页脚使用，也照样为你的终端
-  画出状态栏。设 `AGENT_ANYWHERE_NO_AGY_STATUSLINE=1` 可以不动这项
+  画出状态栏。设 `TALKCODE_NO_AGY_STATUSLINE=1` 可以不动这项
   配置（代价是没有这些数字）。
 - **skills** 从 `<cwd>/.agents/skills`、`~/.agents/skills`、
   `~/.gemini/antigravity-cli/skills`、`~/.gemini/skills`、`~/.gemini/config/skills`
@@ -200,7 +206,7 @@ access:
 
 **话题。** 顶部一行名字用来切换并行的会话，和 Telegram 的论坛话题、飞书的话题群是同一种
 形状：每个话题有自己的 agent session、自己的上下文，并且会根据聊下来的内容被自动命名。
-点 `+` 新建；agent 自己也可以用 `agent-anywhere create-thread` 开一个，用
+点 `+` 新建；agent 自己也可以用 `talkcode create-thread` 开一个，用
 `--channel main/<话题 id>` 往指定话题里写。
 
 **停下来。** 回复正在流式输出时，Send 旁边的 **Stop** 结束这一轮（`/stop`）；一轮结束后智能体因为后台任务
@@ -226,7 +232,7 @@ platforms:
     token: ${AA_WEB_TOKEN}
     terminal:
       enabled: true
-      socket: ~/.config/agent-anywhere/webui-term-web.sock   # 你的 ttyd 监听在哪
+      socket: ~/.config/talkcode/webui-term-web.sock   # 你的 ttyd 监听在哪
       # 可选：怎么「结束一个会话」。不配的话窗口上就没有关闭按钮，只有最小化——
       # 因为会话能在断线之后活下来是你那边的安排，不是这个守护进程的。
       # 是 argv 数组，不是 shell 字符串。
@@ -238,7 +244,7 @@ platforms:
 # 里面正在跑的东西会跟着被 SIGHUP 掉。
 printf '#!/bin/sh\nexec tmux -L aa-web new -A -s "aa-$1"\n' > /usr/local/bin/aa-terminal.sh
 chmod +x /usr/local/bin/aa-terminal.sh
-ttyd -i ~/.config/agent-anywhere/webui-term-web.sock -b /term -W -a -O \
+ttyd -i ~/.config/talkcode/webui-term-web.sock -b /term -W -a -O \
      -T xterm-256color /usr/local/bin/aa-terminal.sh
 ```
 
@@ -278,7 +284,7 @@ platforms:
 
 `from` 是必填的：签名本身已经让伪造请求头没有意义，`from` 保的是上面四个字段里写
 错一个也不至于致命。被拒的请求会把来源地址打进日志——那行就是你该往 `from` 里填
-什么的答案。`agent-anywhere doctor` 会去拉一次 JWKS 并报告拿到几把钥匙，**在设
+什么的答案。`talkcode doctor` 会去拉一次 JWKS 并报告拿到几把钥匙，**在设
 `password: false` 之前先跑一次**：老门关掉之后，IdP 一挂就没人打得开这个页面了。
 
 
@@ -453,8 +459,8 @@ voice:
 - 识别质量信得过以后，在聊天里 `/setting voice off` 即可关掉确认，立即生效。
 - **带**说明文字的音频不转写：「帮我剪一下」加一个 mp3 是针对文件的指令，文件照旧交给智能体。
 - 支持 Ogg、WebM、MP4/M4A、MP3、WAV、AAC、FLAC。QQ 和企业微信的语音编码（SILK、AMR）不支持，会明确告诉你。
-- 每次转写都记录在 `~/.config/agent-anywhere/voice-log.jsonl`，附带保存的音频文件；
-  智能体觉得某句话像是听错了时，可以用 `agent-anywhere voice-log` 查本会话的转写记录。
+- 每次转写都记录在 `~/.config/talkcode/voice-log.jsonl`，附带保存的音频文件；
+  智能体觉得某句话像是听错了时，可以用 `talkcode voice-log` 查本会话的转写记录。
 - 不能显示按钮的平台（QQ、LINE、企业微信、钉钉）会自动发送，卡片上会写明原因。
 - 不配 `voice:` 时，语音就是普通附件，和以前一样。
 
@@ -532,7 +538,7 @@ harness 自带的定时工具做不到的。
 | 提示词 · **新开会话** | 每次都是全新会话，可指定任意智能体 | 平台能开话题的（web 界面、Telegram 论坛群、Discord）每次新开一个话题，否则发在当前聊天；不限时长 |
 | **bash** | 由网关直接执行命令，不经过智能体 | 退出码、耗时和输出末尾，输出太长会附上完整日志文件 |
 
-结果可以发到网关回答过的任意聊天，跨平台也行（`agent-anywhere channels` 列出这些地方）。
+结果可以发到网关回答过的任意聊天，跨平台也行（`talkcode channels` 列出这些地方）。
 网关重启期间错过的运行，晚了不到一小时的会在恢复后补跑一次，更久的记为错过。每次改动都会贴
 一张任务卡片，由网关写、不经智能体转述，你看到的就是实际会执行的。
 
@@ -553,7 +559,7 @@ harness 自带的定时工具做不到的。
   守护进程把内置的 [skill](skill/SKILL.md) 软链到各 harness 读 skill 的地方——Claude Code 是
   `~/.claude/skills`，Codex 和 OpenCode 是 `~/.agents/skills`，Antigravity 是 `~/.gemini/config/skills`
   ——只给在这台机器上跑过的 harness。
-  用到之前，它只占每个 skill 都占的那一行描述；正文指向 `agent-anywhere help <主题>`——`files`、
+  用到之前，它只占每个 skill 都占的那一行描述；正文指向 `talkcode help <主题>`——`files`、
   `schedule`、`channels`、`history`、`messages`、`threads`、`ask`、`voice`——打印该主题的命令
   和规则。
 

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureReverseCliShim, isCliEntry } from './reverse-cli-shim.js';
 
 /**
- * The shim is written to a SHARED user path (`~/.config/agent-anywhere/bin`), which is what makes
+ * The shim is written to a SHARED user path (`~/.config/talkcode/bin`), which is what makes
  * getting it wrong expensive: that directory leads the PATH of every agent the running daemon
  * spawns, so a bad shim breaks `send-message` / `ask` / `send-file` for every live conversation at
  * once — including conversations belonging to a daemon this process has nothing to do with.
@@ -17,7 +17,7 @@ import { ensureReverseCliShim, isCliEntry } from './reverse-cli-shim.js';
  */
 describe('isCliEntry', () => {
   it('accepts the three real launch shapes', () => {
-    expect(isCliEntry('/usr/bin/agent-anywhere')).toBe(true); // global install (a symlink)
+    expect(isCliEntry('/usr/bin/talkcode')).toBe(true); // global install (a symlink)
     expect(isCliEntry('/app/dist/cli.js')).toBe(true); // node dist/cli.js
     expect(isCliEntry('/home/u/src/cli.ts')).toBe(true); // tsx src/cli.ts
   });
@@ -41,18 +41,18 @@ describe('ensureReverseCliShim', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-shim-'));
     savedArgv1 = process.argv[1];
-    savedConfigDir = process.env.AGENT_ANYWHERE_CONFIG_DIR;
-    process.env.AGENT_ANYWHERE_CONFIG_DIR = dir;
+    savedConfigDir = process.env.TALKCODE_CONFIG_DIR;
+    process.env.TALKCODE_CONFIG_DIR = dir;
   });
 
   afterEach(() => {
     process.argv[1] = savedArgv1 as string;
-    if (savedConfigDir === undefined) delete process.env.AGENT_ANYWHERE_CONFIG_DIR;
-    else process.env.AGENT_ANYWHERE_CONFIG_DIR = savedConfigDir;
+    if (savedConfigDir === undefined) delete process.env.TALKCODE_CONFIG_DIR;
+    else process.env.TALKCODE_CONFIG_DIR = savedConfigDir;
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const shimPath = (): string => path.join(dir, 'bin', 'agent-anywhere');
+  const shimPath = (): string => path.join(dir, 'bin', 'talkcode');
 
   it('writes an executable shim re-executing this runtime when launched as the CLI', () => {
     process.argv[1] = '/app/dist/cli.js';
@@ -76,7 +76,7 @@ describe('ensureReverseCliShim', () => {
   it('regression: leaves an existing good shim alone rather than clobbering it', () => {
     // The damaging case is not the first write — it is a test run overwriting the shim a real
     // daemon put there. Refusing to guess has to mean refusing to TOUCH it.
-    process.argv[1] = '/usr/bin/agent-anywhere';
+    process.argv[1] = '/usr/bin/talkcode';
     ensureReverseCliShim();
     const good = fs.readFileSync(shimPath(), 'utf8');
 

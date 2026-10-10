@@ -6,7 +6,7 @@ import { DEFAULT_ASK_TIMEOUT_MS, DEFAULT_CHANNEL_LIMIT } from './protocol.js';
  *
  * One spec drives every place a command surfaces, avoiding scattered lists and silent drift:
  *  - `cli.ts`: registers commander subcommands from it.
- *  - `agent-anywhere help <topic>`: renders each spec onto the page its `topic` names.
+ *  - `talkcode help <topic>`: renders each spec onto the page its `topic` names.
  *  - `tools.ts`: the few commands an agent gets as native tools take their parameters and their
  *    validation (`build`) from here.
  *  - Execution dispatch stays in `daemon.ts` handleReverse (with exhaustive type guard).
@@ -32,7 +32,7 @@ export interface ReverseCommandSpec {
   /** Build one IpcAction from positionals + options. */
   build(positionals: string[], opts: Record<string, unknown>): IpcAction;
   /**
-   * Which `agent-anywhere help <topic>` page documents this command. Required, so a new command
+   * Which `talkcode help <topic>` page documents this command. Required, so a new command
    * cannot be added without deciding where an agent will find it — the help pages, reached from the
    * bundled skill, are how every command that is not a native tool gets discovered (see HELP_TOPICS).
    */
@@ -40,7 +40,7 @@ export interface ReverseCommandSpec {
 }
 
 /**
- * The pages of `agent-anywhere help`: the reference an agent loads when it needs one.
+ * The pages of `talkcode help`: the reference an agent loads when it needs one.
  *
  * ── Nothing about the gateway is put in the agent's prompt ────────────────────────────────────
  * The gateway aims to be invisible to the agent: no text of its own in the conversation, ever. What
@@ -85,7 +85,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       '--prompt with --session new: every run is a fresh session, in a new topic where the platform can open one (web UI, Telegram forum groups, Discord), otherwise posted straight into the chat. --agent picks who answers; --cwd where it starts.',
       '--bash: the gateway runs the command with `bash -lc` in --cwd (default: your working directory) and posts the exit code, duration and the end of the output; long output is attached as a file. --timeout defaults to 10m, at most 6h.',
       '--at takes +30m / +2h / 08:00 (the next time the clock reads that) / "2026-10-01 08:00" / an ISO time with a zone. --cron takes 5 fields (minute hour day month weekday). Both are read in --tz, default the gateway\'s own zone.',
-      '--channel is where output goes (ids from `agent-anywhere channels`); default this conversation.',
+      '--channel is where output goes (ids from `talkcode channels`); default this conversation.',
       'A run missed while the gateway was down is made once if it is less than an hour late, otherwise recorded as missed. A run that comes due while the previous one is still going is skipped.',
       '`add` and `show` print the task id; `list` shows every task with its next run and last result; pause / resume / run (run it now, once) / rm take the id.',
       'Where you have a schedule tool, it is this same command.',
@@ -137,24 +137,24 @@ export const HELP_TOPICS: HelpTopic[] = [
   },
 ];
 
-/** `agent-anywhere help`: one line per topic. */
+/** `talkcode help`: one line per topic. */
 export function renderHelpIndex(): string {
   const width = Math.max(...HELP_TOPICS.map((t) => t.name.length));
   return [
-    'agent-anywhere commands, by topic.',
-    'Run `agent-anywhere help <topic>` for a topic\'s commands and rules.',
+    'talkcode commands, by topic.',
+    'Run `talkcode help <topic>` for a topic\'s commands and rules.',
     '',
     ...HELP_TOPICS.map((t) => `  ${t.name.padEnd(width)}  ${t.summary}`),
   ].join('\n');
 }
 
-/** `agent-anywhere help <topic>`: its commands, rendered from the specs, then its notes. */
+/** `talkcode help <topic>`: its commands, rendered from the specs, then its notes. */
 export function renderHelpTopic(name: string): string | undefined {
   const topic = HELP_TOPICS.find((t) => t.name === name.toLowerCase());
   if (!topic) return undefined;
   const lines = [`${topic.name} — ${topic.summary}`, ''];
   for (const spec of REVERSE_COMMANDS.filter((c) => c.topic === topic.name)) {
-    lines.push(`  agent-anywhere ${spec.usage}`, `    ${spec.description}`);
+    lines.push(`  talkcode ${spec.usage}`, `    ${spec.description}`);
     for (const opt of [...spec.options, CHANNEL_OPTION]) lines.push(`      ${opt.flags}${opt.description ? `  ${opt.description}` : ''}`);
     lines.push('');
   }
@@ -171,7 +171,7 @@ export function renderHelpTopic(name: string): string | undefined {
  */
 export const CHANNEL_OPTION: ReverseOption = {
   flags: '-c, --channel <id>',
-  description: 'where to post, as an id from `agent-anywhere channels` (default: this conversation)',
+  description: 'where to post, as an id from `talkcode channels` (default: this conversation)',
 };
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
@@ -286,7 +286,7 @@ function buildSchedule(p: string[], opts: Record<string, unknown>): IpcAction {
   if (str(opts.channel) !== undefined) throw new Error(`--channel only applies to \`schedule add\` (where output goes)`);
   const id = (): string => {
     const v = p[1]?.replace(/^#/, '');
-    if (!v) throw new Error(`schedule ${action} needs a task id (\`agent-anywhere schedule list\` shows them)`);
+    if (!v) throw new Error(`schedule ${action} needs a task id (\`talkcode schedule list\` shows them)`);
     return v;
   };
   switch (action) {

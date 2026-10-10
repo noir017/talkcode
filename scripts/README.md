@@ -30,7 +30,7 @@ Keep it narrow. A broader pattern here would kill the agent you are working in.
 ## `probe.mjs` — Discord gateway probe
 
 A diagnostic that connects to Discord with the token from
-`~/.config/agent-anywhere/config.yaml` and prints what arrives: whether the gateway
+`~/.config/talkcode/config.yaml` and prints what arrives: whether the gateway
 connects, whether messages are received, and whether the configured intents are
 sufficient. Useful when the bot is online but silent.
 
@@ -74,13 +74,13 @@ arguments, and starts one stream-json agy with the daemon's fd 3 to count the st
 frames that reach it — the one undocumented behaviour the footer rests on, checked without
 sending a prompt. It talks to the real CLI and the real home directory, so it is a
 development utility, not a test; on a machine whose daemon runs another version, isolate
-`HOME` and `AGENT_ANYWHERE_CONFIG_DIR` first (the script's header says how), or step one
+`HOME` and `TALKCODE_CONFIG_DIR` first (the script's header says how), or step one
 replaces that daemon's shim.
 
 ## `verify-sso.mts` — drive the web UI's SSO door against a real provider
 
 ```bash
-AGENT_ANYWHERE_CONFIG_DIR=$(mktemp -d) npx tsx scripts/verify-sso.mts
+TALKCODE_CONFIG_DIR=$(mktemp -d) npx tsx scripts/verify-sso.mts
 ```
 
 `sso.test.ts` and `server.test.ts` cover the verifier and the gate, but both inject `fetch`,

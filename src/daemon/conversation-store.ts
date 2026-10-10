@@ -61,7 +61,7 @@ export interface ConversationRecord {
   titlePinned?: boolean;
   /**
    * Where this conversation was last answered: the platform instance and the address its last turn
-   * ran at. What `agent-anywhere channels` lists, so an agent can name a place to post to.
+   * ran at. What `talkcode channels` lists, so an agent can name a place to post to.
    *
    * Persisted rather than parsed back out of the key, because a key is opaque by design (see
    * core/conversation.ts KEY_SEP) and under `per_user` / `shared` it names no place at all.

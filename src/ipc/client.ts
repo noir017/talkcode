@@ -4,22 +4,22 @@ import type { IpcAction, IpcRequest, IpcResponse } from './protocol.js';
 
 /**
  * CLI-side IPC client. Reverse-command processes use it to connect back to the daemon.
- * The token is read from AGENT_ANYWHERE_TURN_TOKEN (injected by the daemon when it spawns the agent).
+ * The token is read from TALKCODE_TURN_TOKEN (injected by the daemon when it spawns the agent).
  */
 export async function callDaemon(
   socketPath: string,
   action: IpcAction,
-  token = process.env.AGENT_ANYWHERE_TURN_TOKEN,
+  token = process.env.TALKCODE_TURN_TOKEN,
   /** Explicit override for the client wait timeout (ms). Blocking commands (e.g. ask) pass a larger value. */
   timeoutMs?: number
 ): Promise<IpcResponse> {
   if (!token) {
-    return { ok: false, error: 'AGENT_ANYWHERE_TURN_TOKEN is not set: reverse commands must be invoked within an agent turn driven by the daemon' };
+    return { ok: false, error: 'TALKCODE_TURN_TOKEN is not set: reverse commands must be invoked within an agent turn driven by the daemon' };
   }
   const req: IpcRequest = { token, action };
 
   // Timeout precedence:
-  //  - Parse env (AGENT_ANYWHERE_IPC_TIMEOUT_MS): accept only finite positive numbers. Bad
+  //  - Parse env (TALKCODE_IPC_TIMEOUT_MS): accept only finite positive numbers. Bad
   //    values (NaN/negative/non-numeric) aren't silently swallowed into undefined;
   //    they're warned on stderr and ignored — so a "valid 0" and a "bad NaN" aren't
   //    both eaten by `|| undefined`, leaving an operator's misconfig with no feedback.
@@ -27,7 +27,7 @@ export async function callDaemon(
   //    on a button), take max(env, explicit) so a small operator env can't truncate a
   //    large timeout and make the client give up before the daemon. Without an explicit
   //    value, use env or the 10s default.
-  const envTimeout = parseEnvTimeout(process.env.AGENT_ANYWHERE_IPC_TIMEOUT_MS);
+  const envTimeout = parseEnvTimeout(process.env.TALKCODE_IPC_TIMEOUT_MS);
   const TIMEOUT_MS =
     timeoutMs !== undefined
       ? Math.max(envTimeout ?? 0, timeoutMs)
@@ -71,7 +71,7 @@ export async function callDaemon(
 }
 
 /**
- * Parse AGENT_ANYWHERE_IPC_TIMEOUT_MS. Unset -> undefined; set but bad (non-finite/negative)
+ * Parse TALKCODE_IPC_TIMEOUT_MS. Unset -> undefined; set but bad (non-finite/negative)
  * -> warn on stderr and ignore (return undefined) rather than swallow silently.
  * Note: 0 is treated as bad here — a 0 timeout is meaningless, and rejecting it
  * explicitly avoids a misconfig making every IPC call time out instantly.
@@ -80,7 +80,7 @@ function parseEnvTimeout(raw: string | undefined): number | undefined {
   if (raw === undefined || raw === '') return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
-    console.error(`[ipc] ignoring invalid AGENT_ANYWHERE_IPC_TIMEOUT_MS=${JSON.stringify(raw)} (must be a positive number of milliseconds)`);
+    console.error(`[ipc] ignoring invalid TALKCODE_IPC_TIMEOUT_MS=${JSON.stringify(raw)} (must be a positive number of milliseconds)`);
     return undefined;
   }
   return n;

@@ -61,7 +61,7 @@ export function runBashCommand(opts: {
   const logFile = openLog(opts.logDir, opts.stamp);
   const log = logFile ? fs.createWriteStream(logFile, { mode: 0o600 }) : undefined;
   const env: Record<string, string | undefined> = { ...process.env };
-  delete env.AGENT_ANYWHERE_TURN_TOKEN;
+  delete env.TALKCODE_TURN_TOKEN;
 
   return new Promise((resolve) => {
     let tail = Buffer.alloc(0);

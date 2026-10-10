@@ -43,13 +43,13 @@ export function expandHome(p: string): string {
  *
  * - Explicit config `cwd`: used as-is (after ~ expansion) — the project you want the agent to act on;
  *   not auto-created (a missing dir likely means a typo, better surfaced than silently masked).
- * - Unset: each agent gets an isolated, auto-created workspace at ~/.agent-anywhere/agents/<id>. This keeps an
- *   unconfigured agent out of agent-anywhere's own source tree (the previous fallback) and gives it a clean,
+ * - Unset: each agent gets an isolated, auto-created workspace at ~/.talkcode/agents/<id>. This keeps an
+ *   unconfigured agent out of talkcode's own source tree (the previous fallback) and gives it a clean,
  *   per-agent home that's stable across this agent's sessions.
  */
 export function resolveAgentCwd(def: AgentDef): string {
   if (def.cwd) return resolve(expandHome(def.cwd));
-  const dir = join(homedir(), '.agent-anywhere', 'agents', def.id);
+  const dir = join(homedir(), '.talkcode', 'agents', def.id);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -113,7 +113,7 @@ export function buildHarnessEnv(def: AgentDef): Record<string, string | undefine
  * Build the environment for an agent child process: merged process.env + expanded def.env +
  * the per-session reverse-command wiring.
  *
- * Shared verbatim by both runtimes so the reverse CLI (`agent-anywhere …`) behaves the same
+ * Shared verbatim by both runtimes so the reverse CLI (`talkcode …`) behaves the same
  * regardless of which harness is running. Called at every spawn, which also makes it the one place
  * both runtimes provision what that CLI depends on: the shim on PATH, and the skill that names it.
  */
@@ -123,10 +123,10 @@ export function buildAgentEnv(
   socketPath: string
 ): Record<string, string | undefined> {
   const env = buildHarnessEnv(def);
-  env.AGENT_ANYWHERE_TURN_TOKEN = sessionToken;
-  env.AGENT_ANYWHERE_SOCKET = socketPath;
+  env.TALKCODE_TURN_TOKEN = sessionToken;
+  env.TALKCODE_SOCKET = socketPath;
   // Guarantee the reverse CLI the skill promises: prepend the self-provisioned shim dir so
-  // `agent-anywhere` resolves to THIS daemon's own entry regardless of launch mode (see reverse-cli-shim).
+  // `talkcode` resolves to THIS daemon's own entry regardless of launch mode (see reverse-cli-shim).
   const shimDir = ensureReverseCliShim();
   if (shimDir) env.PATH = `${shimDir}${delimiter}${env.PATH ?? ''}`;
   // The skill goes under the home THIS agent runs as — an `env.HOME` override included — because

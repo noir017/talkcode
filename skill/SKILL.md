@@ -1,16 +1,16 @@
 ---
-name: agent-anywhere
+name: talkcode
 description: >-
   Send a file to the user; schedule a prompt or a bash command to run later or repeatedly,
   surviving restarts; post to another chat or topic; read earlier messages in the
   conversation; reply to, edit, react to or delete a message; open a thread; ask with
-  buttons; check what a voice message said — all through the `agent-anywhere` command. Also
-  for diagnosing or reconfiguring agent-anywhere itself.
+  buttons; check what a voice message said — all through the `talkcode` command. Also
+  for diagnosing or reconfiguring talkcode itself.
 ---
 
-# agent-anywhere
+# talkcode
 
-The `agent-anywhere` command on your PATH acts on the conversation you are answering in. It is
+The `talkcode` command on your PATH acts on the conversation you are answering in. It is
 already authenticated for it, and every command targets it unless `--channel` names another.
 
 If you have `send_file` and `schedule` tools, they are the `send-file` and `schedule` commands
@@ -18,9 +18,9 @@ below — use the tools.
 
 ## Commands, by topic
 
-Before using a topic, run `agent-anywhere help <topic>`: it prints that topic's commands, their
+Before using a topic, run `talkcode help <topic>`: it prints that topic's commands, their
 options and the rules that go with them, generated from the command itself, so it is always
-current. `agent-anywhere help` lists the topics.
+current. `talkcode help` lists the topics.
 
 | topic | for |
 |---|---|
@@ -39,28 +39,28 @@ Every command prints TOON on stdout, failures included (with exit code 1).
 
 - `unsupported operation: …` — this platform cannot do that (editing, threads and buttons vary).
   Don't retry; fall back to the nearest thing that works, such as a new message instead of an edit.
-- `AGENT_ANYWHERE_TURN_TOKEN is not set` — this shell is not inside an agent-anywhere session, so
+- `TALKCODE_TURN_TOKEN is not set` — this shell is not inside a talkcode session, so
   these commands are unavailable here.
-- `cannot reach the daemon` — agent-anywhere is not running; tell the user.
+- `cannot reach the daemon` — talkcode is not running; tell the user.
 
-## Diagnosing and configuring agent-anywhere
+## Diagnosing and configuring talkcode
 
-When the user reports agent-anywhere itself misbehaving ("Slack stopped responding", "add my
+When the user reports talkcode itself misbehaving ("Slack stopped responding", "add my
 Telegram bot", "why can't you edit messages here?"):
 
 ```bash
-agent-anywhere doctor
+talkcode doctor
 ```
 
 `doctor` is a read-only self-check — config validity, platform credentials, daemon socket, and
 whether each agent harness is installed and signed in. Run it first and report what it finds.
 
-- **Config file**: `$AGENT_ANYWHERE_CONFIG_FILE` if set (you inherit the daemon's environment, so
-  this is the file it loaded), else `~/.config/agent-anywhere/config.yaml`. **Before writing any
+- **Config file**: `$TALKCODE_CONFIG_FILE` if set (you inherit the daemon's environment, so
+  this is the file it loaded), else `~/.config/talkcode/config.yaml`. **Before writing any
   config, read [references/config.md](references/config.md)**: it is the complete field reference,
-  and the loader rejects keys that are not in it. Validate with `agent-anywhere doctor` afterwards.
+  and the loader rejects keys that are not in it. Validate with `talkcode doctor` afterwards.
 - **Changes take effect on a daemon restart — never restart it yourself.** You are running as a
   child of that daemon, so stopping it ends your own session mid-answer. Make the edit, then tell
   the user to restart it.
-- **`agent-anywhere setup`** is an interactive wizard for a person at a terminal. Don't run it — it
+- **`talkcode setup`** is an interactive wizard for a person at a terminal. Don't run it — it
   waits for keyboard input you cannot give. Edit the config file instead.

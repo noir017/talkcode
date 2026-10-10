@@ -6,7 +6,7 @@ import { findNativeTool, NATIVE_TOOLS, toolAction, toolInputSchema } from '../ip
 import { friendlyError, normalizeActionPaths, renderResult } from './reverse.js';
 
 /**
- * `agent-anywhere mcp` — an MCP server on stdio that gives an agent `send_file` and `schedule` as
+ * `talkcode mcp` — an MCP server on stdio that gives an agent `send_file` and `schedule` as
  * native tools (see ipc/tools.ts for why those two). The daemon lists it in `session/new`'s
  * `mcpServers` for every ACP session, and the harness starts one per session as its own child.
  *
@@ -20,9 +20,9 @@ import { friendlyError, normalizeActionPaths, renderResult } from './reverse.js'
  * never from config.yaml: a harness may start MCP servers with an environment of its own choosing
  * (codex passes a short allowlist plus what the entry names), so neither the daemon's variables nor
  * the `${VAR}`s config.yaml expands can be assumed to be there.
- *  - AGENT_ANYWHERE_TURN_TOKEN — the session's token (read by callDaemon).
- *  - AGENT_ANYWHERE_SOCKET — the daemon's socket.
- *  - AGENT_ANYWHERE_CWD — the session's working directory, which relative paths are resolved
+ *  - TALKCODE_TURN_TOKEN — the session's token (read by callDaemon).
+ *  - TALKCODE_SOCKET — the daemon's socket.
+ *  - TALKCODE_CWD — the session's working directory, which relative paths are resolved
  *    against. Not this process's CWD: ACP's stdio entry has no `cwd`, so where the harness starts
  *    the server is up to the harness.
  *
@@ -124,7 +124,7 @@ function initializeResult(params: unknown, version: string): unknown {
   return {
     protocolVersion,
     capabilities: { tools: { listChanged: false } },
-    serverInfo: { name: 'agent-anywhere', version },
+    serverInfo: { name: 'talkcode', version },
   };
 }
 
@@ -155,19 +155,19 @@ async function callTool(params: unknown, deps: McpDeps): Promise<Outcome> {
   return toolText([out.stdout, out.stderr].filter(Boolean).join('\n'));
 }
 
-/** Entry point for `agent-anywhere mcp`: serve stdin → stdout until stdin closes. */
+/** Entry point for `talkcode mcp`: serve stdin → stdout until stdin closes. */
 export async function runMcp(version: string): Promise<void> {
-  const socket = process.env.AGENT_ANYWHERE_SOCKET ?? '';
+  const socket = process.env.TALKCODE_SOCKET ?? '';
   const deps: McpDeps = {
     socket,
     version,
-    cwd: process.env.AGENT_ANYWHERE_CWD || process.cwd(),
+    cwd: process.env.TALKCODE_CWD || process.cwd(),
     call: (action) =>
       socket
         ? callDaemon(socket, action)
         : Promise.resolve({
             ok: false,
-            error: 'AGENT_ANYWHERE_SOCKET is not set: this server is started by an agent-anywhere session, not by hand',
+            error: 'TALKCODE_SOCKET is not set: this server is started by a talkcode session, not by hand',
           }),
   };
   const write = (r: JsonRpcResponse | JsonRpcResponse[]): void => {

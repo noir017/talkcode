@@ -93,7 +93,7 @@ function authNote(def: import('../config/schema.js').AgentDef): string {
 }
 
 /**
- * `agent-anywhere doctor` — self-check. Each item reports ✅/⚠️/❌; doesn't exit on the first
+ * `talkcode doctor` — self-check. Each item reports ✅/⚠️/❌; doesn't exit on the first
  * failure, summarizes after running all.
  */
 interface Check {
@@ -157,7 +157,7 @@ function tildify(p: string): string {
 
 /** AXI §10: identify the tool before the live data — absolute bin path + one-line description. */
 function printIdentity(): void {
-  console.log(`bin: ${tildify(process.argv[1] ?? 'agent-anywhere')}`);
+  console.log(`bin: ${tildify(process.argv[1] ?? 'talkcode')}`);
   console.log(`config: ${tildify(configPath())}`);
   console.log('description: Gateway connecting IM platforms to coding agents; this is its self-check.');
 }
@@ -429,8 +429,8 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
         if (!cfg) return { ok: false, detail: 'config unavailable, cannot check agents' };
         const agyAgents = cfg.agents.filter((a) => a.harness === 'agy');
         if (agyAgents.length === 0) return { ok: true, detail: 'no agy agent configured' };
-        if (process.env.AGENT_ANYWHERE_NO_AGY_STATUSLINE) {
-          return { ok: true, level: 'warn', detail: 'AGENT_ANYWHERE_NO_AGY_STATUSLINE is set — agy will report no context usage' };
+        if (process.env.TALKCODE_NO_AGY_STATUSLINE) {
+          return { ok: true, level: 'warn', detail: 'TALKCODE_NO_AGY_STATUSLINE is set — agy will report no context usage' };
         }
         const lines: string[] = [];
         let anyUnwired = false;
@@ -444,7 +444,7 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
             command = undefined;
           }
           if (command?.includes('agy-statusline')) {
-            lines.push(`${file} → agent-anywhere shim ✓`);
+            lines.push(`${file} → talkcode shim ✓`);
           } else {
             anyUnwired = true;
             lines.push(`${file} → ${command ?? 'no statusLine'} (the daemon rewires this on start, and again before starting agy)`);

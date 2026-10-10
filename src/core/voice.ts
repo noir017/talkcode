@@ -9,7 +9,7 @@
  * SHOWN to the user — clearly labelled as a transcript — and, once they confirm it (or at once, with
  * `voice.confirm: false`), it re-enters the gateway exactly as if they had typed it. The agent never
  * learns that the words were spoken: no marker in the prompt, no attachment line, no hint. What it
- * can do, when a transcript reads oddly, is look it up (`agent-anywhere voice-log`), because every
+ * can do, when a transcript reads oddly, is look it up (`talkcode voice-log`), because every
  * transcription is logged with its audio file, model and outcome.
  *
  * ── Why a transcript is typed text, not an annotated attachment ───────────────
@@ -188,9 +188,10 @@ export function sniffAudio(bytes: Uint8Array): AudioFormat | undefined {
  *  - Simplified characters — the same Mandarin voice note came back in Traditional on one call and
  *    Simplified on the next. This deployment's users write Simplified; a transcript in the other
  *    script reads as someone else's words.
- *  - the glossary — without it "Agent Anywhere" came back as "Agent 或者 Anyway" and "agent or
- *    anyway"; with it, six runs out of six got it right. The names are the ones people using this
- *    gateway actually say out loud.
+ *  - the glossary — without it the project's name at the time, "Agent Anywhere", came back as
+ *    "Agent 或者 Anyway" and "agent or anyway"; with it, six runs out of six got it right. The names
+ *    are the ones people using this gateway actually say out loud. "talkcode" took that entry's
+ *    place in the rename of 2026-10-10 without a transcript to check it against.
  *  - `[no speech]` — a sentinel instead of an empty answer, so silence is distinguishable from a
  *    response that went missing.
  *
@@ -202,7 +203,7 @@ export const TRANSCRIBE_INSTRUCTIONS = [
   'Output only the transcript: no preface, no quotes, no timestamps, no speaker labels, no translation, no summary.',
   'Add natural punctuation. Write Chinese in Simplified characters (简体中文), never Traditional.',
   'Keep technical terms, product names, file names, commands and code identifiers exactly as spoken; do not translate them.',
-  'Names that often come up: Agent Anywhere, Claude Code, Codex, OpenCode, Antigravity, agy, Telegram, 飞书, GitHub, PR, CI.',
+  'Names that often come up: talkcode, Claude Code, Codex, OpenCode, Antigravity, agy, Telegram, 飞书, GitHub, PR, CI.',
   'If the audio contains no intelligible speech, output exactly: [no speech]',
 ].join('\n');
 

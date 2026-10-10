@@ -1,4 +1,4 @@
-# Agent Anywhere config file reference
+# talkcode config file reference
 
 Everything the operator can set lives in **one YAML file**. This document mirrors the
 validation schema in the source (`src/config/schema.ts`, `src/platform/config-schemas.ts`);
@@ -7,13 +7,13 @@ per-field error message, so don't invent keys.
 
 ## Location & lifecycle
 
-- Active file: `$AGENT_ANYWHERE_CONFIG_FILE` if set (you inherit the daemon's env, so
-  this is the file the daemon loaded); else `$AGENT_ANYWHERE_CONFIG_DIR/config.yaml`;
-  else `~/.config/agent-anywhere/config.yaml`.
+- Active file: `$TALKCODE_CONFIG_FILE` if set (you inherit the daemon's env, so
+  this is the file the daemon loaded); else `$TALKCODE_CONFIG_DIR/config.yaml`;
+  else `~/.config/talkcode/config.yaml`.
 - Every string supports `${VAR}` expansion from the environment, and a `.env` file next
   to the config is loaded first — prefer `token: ${DISCORD_TOKEN}` + `.env` over pasting
   secrets into the YAML.
-- After editing: run `agent-anywhere doctor` to validate (it aggregates *all* schema
+- After editing: run `talkcode doctor` to validate (it aggregates *all* schema
   errors at once), then have the **user** restart the daemon — changes only apply on
   restart, and you must never restart it yourself (you are its child process).
 
@@ -21,7 +21,7 @@ per-field error message, so don't invent keys.
 
 ```yaml
 version: 1          # literal 1 (v0 single-`platform:` files are auto-migrated;
-                    # `agent-anywhere doctor --migrate-config` rewrites the file)
+                    # `talkcode doctor --migrate-config` rewrites the file)
 
 platforms:          # map of instance-id -> platform entry; at least one required.
   discord-main:     # id: 1-32 chars [a-z0-9_-], starts alphanumeric. Routing and
@@ -151,7 +151,7 @@ DMs always get a response regardless of `requireMention` (frozen behavior).
   command: /path/bin    # required only when harness: custom (any ACP-speaking executable)
   args: []              # extra CLI args appended to the harness command
                         # (harness-specific switches go here, e.g. claude's --setting-sources)
-  cwd: ~/projects/main  # working dir; empty = auto workspace at ~/.agent-anywhere/agents/<id>
+  cwd: ~/projects/main  # working dir; empty = auto workspace at ~/.talkcode/agents/<id>
   model: <model-id>     # best-effort; whether it applies depends on the harness
   env:                  # env vars injected into the agent subprocess; ${VAR} expands
     ANTHROPIC_API_KEY: ${MY_KEY}

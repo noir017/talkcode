@@ -95,11 +95,11 @@ report.
 
 `configDir()` / `configPath()` resolve, highest first:
 
-1. `AGENT_ANYWHERE_CONFIG_FILE` — an explicit file; its parent is the dir.
-2. `AGENT_ANYWHERE_CONFIG_DIR` — a directory containing `config.yaml`.
-3. `~/.config/agent-anywhere/`.
+1. `TALKCODE_CONFIG_FILE` — an explicit file; its parent is the dir.
+2. `TALKCODE_CONFIG_DIR` — a directory containing `config.yaml`.
+3. `~/.config/talkcode/`.
 
-The `--config <path>` flag works by *setting* `AGENT_ANYWHERE_CONFIG_FILE` on
+The `--config <path>` flag works by *setting* `TALKCODE_CONFIG_FILE` on
 `process.env` (see `cli.ts`), so the agent subprocess inherits it and its reverse
 commands resolve the same config and socket. That is why the env var exists rather than
 threading a parameter.
@@ -168,7 +168,7 @@ v0 files had a single `platform:` object with Discord fields on the top level an
 platforms' credentials in an untyped `options` pocket. v1 is the typed `platforms:` map.
 
 `loadConfig` migrates **in memory** with a one-line warning, so old files keep working.
-`agent-anywhere doctor --migrate-config` rewrites the file (backing up to
+`talkcode doctor --migrate-config` rewrites the file (backing up to
 `config.yaml.bak` first).
 
 This module is deliberately self-contained and **disposable**: delete it one major

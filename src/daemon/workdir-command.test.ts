@@ -33,7 +33,7 @@ import type { WorkdirOption } from '../core/workdir-menu.js';
  */
 
 const root = mkdtempSync(join(tmpdir(), 'workdir-cmd-'));
-for (const name of ['quantlab', 'agent-anywhere', 'uniagent']) mkdirSync(join(root, name));
+for (const name of ['quantlab', 'gateway', 'uniagent']) mkdirSync(join(root, name));
 const QUANTLAB = join(root, 'quantlab');
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -163,7 +163,7 @@ describe('when the directory question is asked', () => {
     // The root leads, then the projects alphabetically.
     expect(menus[0]!.options.map((o) => o.name)).toEqual([
       menus[0]!.options[0]!.name,
-      'agent-anywhere',
+      'gateway',
       'quantlab',
       'uniagent',
     ]);
@@ -280,7 +280,7 @@ describe('moving a conversation', () => {
 
   it('refuses to guess between two matches, and changes nothing', async () => {
     const { send, replies, store, key } = rig();
-    await send('/cd a'); // matches agent-anywhere and quantlab (both contain "a")
+    await send('/cd a'); // matches gateway and quantlab (both contain "a")
     expect(replies().at(-1)).toContain('matches');
     expect(store.conversationCwd(key)).toBeUndefined();
   });
@@ -324,7 +324,7 @@ describe('ordering by use', () => {
     await send('/cc');
     expect(menus[0]!.options.map((o) => o.name)).toEqual([
       menus[0]!.options[0]!.name,
-      'agent-anywhere',
+      'gateway',
       'quantlab',
       'uniagent',
     ]);
@@ -340,7 +340,7 @@ describe('ordering by use', () => {
     const names = menus[0]!.options.map((o) => o.name);
     expect(names[0]).toBe(menus[0]!.options[0]!.name);
     expect(menus[0]!.options[0]!.root).toBe(true);
-    expect(names.slice(1)).toEqual(['uniagent', 'agent-anywhere', 'quantlab']);
+    expect(names.slice(1)).toEqual(['uniagent', 'gateway', 'quantlab']);
   });
 
   it('carries the history across daemon restarts, into a conversation that never chose anything', async () => {
@@ -353,7 +353,7 @@ describe('ordering by use', () => {
     await send('/cc');
     expect(menus[0]!.options.map((o) => o.name).slice(1)).toEqual([
       'uniagent',
-      'agent-anywhere',
+      'gateway',
       'quantlab',
     ]);
   });
@@ -384,7 +384,7 @@ describe('ordering by use', () => {
     const { send, replies } = rig({ buttons: false, usage });
     await send('/cd');
     const text = replies().at(-1)!;
-    expect(text.indexOf('/cd uniagent')).toBeLessThan(text.indexOf('/cd agent-anywhere'));
+    expect(text.indexOf('/cd uniagent')).toBeLessThan(text.indexOf('/cd gateway'));
   });
 });
 

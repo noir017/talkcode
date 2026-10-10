@@ -1,15 +1,15 @@
 {
-  "name": "agent-anywhere-cli",
+  "name": "talkcode",
   "version": "1.40.0",
   "license": "MIT",
   "comments": {
     "pinnedDeps": "@satorijs/adapter-slack and @satorijs/core are pinned to exact versions: the Slack profile relies on their undocumented internal behavior (see the header comment in src/platform/profiles/slack.ts). Before upgrading either, you must manually regress Slack button/slash reception—no CI covers this path.",
     "jsdom": "Held at ^27 by CI's Node version, not by taste. jsdom 28+ nests an undici that calls webidl.util.markAsUncloneable, which Node 20 does not have, so npm ci installs happily and then every test in page.dom.test.ts dies at import. jsdom's own engines field says so, but nothing enforces it. Raising this pin means raising node-version in ci.yml and the >=20 engines below together."
   },
-  "description": "A gateway CLI that connects Claude Code to IM platforms: Koishi for inbound/outbound + claude agent sdk for processing, with streaming replies aligned to the hermes experience",
+  "description": "Your coding agent in every chat app: a gateway daemon connecting Telegram, Discord, Slack, Lark and more, or its own web UI, to Claude Code, Codex, OpenCode or Antigravity",
   "type": "module",
   "bin": {
-    "agent-anywhere": "./dist/cli.js"
+    "talkcode": "./dist/cli.js"
   },
   "files": [
     "dist",
@@ -71,11 +71,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/noir017/agent-anywhere.git"
+    "url": "git+https://github.com/noir017/talkcode.git"
   },
-  "homepage": "https://github.com/noir017/agent-anywhere#readme",
+  "homepage": "https://github.com/noir017/talkcode#readme",
   "bugs": {
-    "url": "https://github.com/noir017/agent-anywhere/issues"
+    "url": "https://github.com/noir017/talkcode/issues"
   },
   "keywords": [
     "claude-code",

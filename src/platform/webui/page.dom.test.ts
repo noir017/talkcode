@@ -757,16 +757,16 @@ describe('webui page: topics', () => {
     await h.emit({
       t: 'topics',
       topics: [
-        { id: 'a1b2c3d4', title: 'fix the parser', lastAt: 1000, msgCount: 0, dir: { name: 'agent-anywhere', path: '/home/user/workspace/agent-anywhere' } },
+        { id: 'a1b2c3d4', title: 'fix the parser', lastAt: 1000, msgCount: 0, dir: { name: 'talkcode', path: '/home/user/workspace/talkcode' } },
         { id: 'b2c3d4e5', title: 'bump the image', lastAt: 999, msgCount: 0, dir: { name: 'uniagent', path: '/home/user/workspace/uniagent' } },
       ],
     });
 
     const dirs = Array.from(h.doc.querySelectorAll('.topic-dir'));
-    expect(dirs.map((d) => d.textContent)).toEqual(['agent-anywhere', 'uniagent']);
+    expect(dirs.map((d) => d.textContent)).toEqual(['talkcode', 'uniagent']);
     // The column is 240px wide, so the row shows the last segment and the tooltip carries the
     // path that tells two checkouts of one project apart.
-    expect(dirs[0]!.getAttribute('title')).toBe('/home/user/workspace/agent-anywhere');
+    expect(dirs[0]!.getAttribute('title')).toBe('/home/user/workspace/talkcode');
   });
 
   it('leaves the row alone for a daemon that offered no directory', async () => {

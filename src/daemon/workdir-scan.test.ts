@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'workdir-scan-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 mkdirSync(join(root, 'quantlab'));
-mkdirSync(join(root, 'agent-anywhere'));
+mkdirSync(join(root, 'gateway'));
 mkdirSync(join(root, 'node_modules'));
 mkdirSync(join(root, '.git'));
 writeFileSync(join(root, 'README.md'), '#');
@@ -38,7 +38,7 @@ describe('scanWorkdirs', () => {
   it('lists directories one level down, alphabetically', () => {
     if (!scan.ok) return;
     expect(scan.options.slice(1).map((o) => o.name)).toEqual([
-      'agent-anywhere',
+      'gateway',
       'mounted',
       'quantlab',
     ]);

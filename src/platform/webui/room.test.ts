@@ -614,11 +614,11 @@ describe('WebRoom: which directory a topic is working in', () => {
 
   it('labels each topic with the last segment, keeping the full path for the tooltip', () => {
     const { room, topic } = attached();
-    room.useWorkdirLookup((ref) => (ref.thread === topic ? '/home/user/workspace/agent-anywhere' : undefined));
+    room.useWorkdirLookup((ref) => (ref.thread === topic ? '/home/user/workspace/talkcode' : undefined));
 
     expect(room.topicList().find((t) => t.id === topic)?.dir).toEqual({
-      name: 'agent-anywhere',
-      path: '/home/user/workspace/agent-anywhere',
+      name: 'talkcode',
+      path: '/home/user/workspace/talkcode',
     });
   });
 

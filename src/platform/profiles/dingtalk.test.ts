@@ -114,6 +114,6 @@ describe('deriveNotificationTitle', () => {
   });
 
   it('falls back to a static name for empty input', () => {
-    expect(deriveNotificationTitle('')).toBe('agent-anywhere');
+    expect(deriveNotificationTitle('')).toBe('talkcode');
   });
 });

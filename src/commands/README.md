@@ -1,6 +1,6 @@
 # `src/commands/` — CLI entry points
 
-What `agent-anywhere` can do. `cli.ts` (one level up) wires these into
+What `talkcode` can do. `cli.ts` (one level up) wires these into
 commander; this module implements them.
 
 | Command | File | Purpose |
@@ -13,7 +13,7 @@ commander; this module implements them.
 
 ## `doctor` is the default
 
-Running `agent-anywhere` with no arguments runs `doctor`, not `start`. It is read-only,
+Running `talkcode` with no arguments runs `doctor`, not `start`. It is read-only,
 so triggering it accidentally is safe — unlike starting a daemon. It also means a bare
 invocation shows live state, which is what someone typing the command blind usually
 wants.
@@ -68,7 +68,7 @@ instance → open the session store → build the agent factory → run the daem
 Two deliberate choices:
 
 - **The shim is provisioned up front**, before anything else, so a problem fails loudly
-  at startup rather than on the agent's first `agent-anywhere` call mid-conversation.
+  at startup rather than on the agent's first `talkcode` call mid-conversation.
   (`agent-acp` refreshes it per spawn as well.)
 - **`unhandledRejection` and `uncaughtException` are logged, never fatal.** This is a
   long-running daemon; an occasional network blip — a transient TLS drop while sending a
@@ -104,14 +104,14 @@ Two details that exist for correctness, not style:
 
 ## `mcp.ts`
 
-`agent-anywhere mcp` is an MCP server on stdio serving `send_file` and `schedule`
+`talkcode mcp` is an MCP server on stdio serving `send_file` and `schedule`
 ([`src/ipc/README.md`](../ipc/README.md#why-exactly-two-tools) says why those two). The daemon
 lists it in every ACP session, and the harness starts one per session as its own child.
 
 - **Hand-rolled**, not `@modelcontextprotocol/sdk`: four stateless methods (`initialize`, `ping`,
   `tools/list`, `tools/call`), and `handleMcpMessage` stays a pure function the tests drive.
-- **Configured by its environment only** — `AGENT_ANYWHERE_TURN_TOKEN`, `AGENT_ANYWHERE_SOCKET`,
-  `AGENT_ANYWHERE_CWD`, all written into the server's ACP entry by the daemon. It never loads
+- **Configured by its environment only** — `TALKCODE_TURN_TOKEN`, `TALKCODE_SOCKET`,
+  `TALKCODE_CWD`, all written into the server's ACP entry by the daemon. It never loads
   config.yaml: a harness may start MCP servers with an environment of its own choosing, so the
   `${VAR}`s the config expands may simply not be there.
 - **No `instructions`** in `initialize`. Claude Code would put them in the system prompt, which is

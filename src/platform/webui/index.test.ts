@@ -15,12 +15,12 @@ let dir = '';
 let saved: string | undefined;
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-adapter-'));
-  saved = process.env.AGENT_ANYWHERE_CONFIG_DIR;
-  process.env.AGENT_ANYWHERE_CONFIG_DIR = dir;
+  saved = process.env.TALKCODE_CONFIG_DIR;
+  process.env.TALKCODE_CONFIG_DIR = dir;
 });
 afterEach(() => {
-  if (saved === undefined) delete process.env.AGENT_ANYWHERE_CONFIG_DIR;
-  else process.env.AGENT_ANYWHERE_CONFIG_DIR = saved;
+  if (saved === undefined) delete process.env.TALKCODE_CONFIG_DIR;
+  else process.env.TALKCODE_CONFIG_DIR = saved;
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

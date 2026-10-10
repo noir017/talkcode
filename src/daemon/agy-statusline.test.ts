@@ -48,16 +48,16 @@ const FRAME = {
   terminal_width: 80,
 };
 
-const saved = process.env.AGENT_ANYWHERE_CONFIG_DIR;
+const saved = process.env.TALKCODE_CONFIG_DIR;
 afterEach(() => {
-  if (saved === undefined) delete process.env.AGENT_ANYWHERE_CONFIG_DIR;
-  else process.env.AGENT_ANYWHERE_CONFIG_DIR = saved;
-  delete process.env.AGENT_ANYWHERE_NO_AGY_STATUSLINE;
+  if (saved === undefined) delete process.env.TALKCODE_CONFIG_DIR;
+  else process.env.TALKCODE_CONFIG_DIR = saved;
+  delete process.env.TALKCODE_NO_AGY_STATUSLINE;
 });
 
 /** A temp config dir for the daemon plus a temp home carrying an existing agy settings file. */
 function rig(settings?: Record<string, unknown>): { home: string; settingsFile: string } {
-  process.env.AGENT_ANYWHERE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'aa-cfg-'));
+  process.env.TALKCODE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'aa-cfg-'));
   const home = mkdtempSync(join(tmpdir(), 'aa-home-'));
   const dir = join(home, '.gemini', 'antigravity-cli');
   mkdirSync(dir, { recursive: true });
@@ -77,7 +77,7 @@ function runShim(input: string, opts: { pipe?: boolean; armed?: boolean } = {}) 
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (armed) env[AGY_STATUS_FD_ENV] = String(AGY_STATUS_FD);
   else delete env[AGY_STATUS_FD_ENV];
-  const r = spawnSync(join(process.env.AGENT_ANYWHERE_CONFIG_DIR!, 'bin', 'agy-statusline'), {
+  const r = spawnSync(join(process.env.TALKCODE_CONFIG_DIR!, 'bin', 'agy-statusline'), {
     input,
     env,
     encoding: 'utf8',
@@ -116,7 +116,7 @@ describe('ensureAgyStatusLine', () => {
   it('keeps the operator’s original settings in a backup, and does not overwrite it later', () => {
     const { home, settingsFile } = rig({ statusLine: { type: 'command', command: '/theirs.sh', enabled: true } });
     installStatusLine(home);
-    const backup = `${settingsFile}.bak-agent-anywhere`;
+    const backup = `${settingsFile}.bak-talkcode`;
     expect(JSON.parse(readFileSync(backup, 'utf8'))).toMatchObject({ statusLine: { command: '/theirs.sh' } });
 
     // A second install must not replace the backup with our own output — the first version seen is
@@ -135,7 +135,7 @@ describe('ensureAgyStatusLine', () => {
   it('leaves a machine where agy has never run completely alone', () => {
     // No agy config directory: creating one would be inventing configuration for a product the
     // operator may not use on this machine.
-    process.env.AGENT_ANYWHERE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'aa-cfg-'));
+    process.env.TALKCODE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'aa-cfg-'));
     const home = mkdtempSync(join(tmpdir(), 'aa-home-'));
     expect(installStatusLine(home)).toBe('skipped');
     expect(existsSync(join(home, '.gemini'))).toBe(false);
@@ -143,7 +143,7 @@ describe('ensureAgyStatusLine', () => {
 
   it('honours the opt-out', () => {
     const { home, settingsFile } = rig({ statusLine: { type: 'command', command: '/theirs.sh', enabled: true } });
-    process.env.AGENT_ANYWHERE_NO_AGY_STATUSLINE = '1';
+    process.env.TALKCODE_NO_AGY_STATUSLINE = '1';
     expect(ensureAgyStatusLine(home)).toBe('skipped');
     expect(JSON.parse(readFileSync(settingsFile, 'utf8'))).toMatchObject({ statusLine: { command: '/theirs.sh' } });
   });
@@ -161,7 +161,7 @@ describe('ensureAgyStatusLine', () => {
     // Nothing reads them any more and nothing else would ever delete them — the machine that
     // prompted the pipe had accumulated 39.
     const { home } = rig({});
-    const legacy = join(process.env.AGENT_ANYWHERE_CONFIG_DIR!, 'agy-usage');
+    const legacy = join(process.env.TALKCODE_CONFIG_DIR!, 'agy-usage');
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, 'some-conversation.json'), JSON.stringify({ used: 1, size: 2 }));
     installStatusLine(home);
