@@ -18,6 +18,21 @@ All notable changes to this project are documented here. The format is based on
   Chinese description of topic naming, which still said the name was chosen after the first answer,
   now matches the English — it is asked for as the turn starts.
 
+### Fixed
+
+- **A subagent's tool calls no longer pass for the main agent's.** When Claude Code hands work to a
+  subagent, every tool call the subagent makes arrives tagged with the call that spawned it, but the
+  gateway ignored the tag and drew those calls exactly like the main agent's own — so a background
+  subagent's half-hour of fetching and backtesting read as the main agent doing eighty things it
+  never did, in the same bubble. Its lines now lead with `↳` and the subagent's name, the short
+  description the main agent gave the job (`↳ 回测按分红选股的收益与回撤 · 💻 Bash: "python3 …"`),
+  which also tells two parallel subagents apart. The bubble for the spawning call itself now waits
+  for that description and shows it, where it used to show whichever argument streamed in first —
+  typically `{"subagent_type":"general-purpose"}`, which named nothing. A subagent's own narration
+  stays out of the reply as before: the adapter keeps it internal, and the main agent's account of
+  what the subagent found is what you read. Only the `claude` harness reports attribution; the
+  others are unchanged.
+
 ## [2.0.0] - 2026-10-10
 
 ### Changed

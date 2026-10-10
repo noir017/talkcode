@@ -321,6 +321,13 @@ and is the one place a `RateLimitedError` becomes a lane pause.
 
 Renders tool progress as bubbles *separate from the body*: `{emoji} {tool}: "{preview}"`.
 
+A tool a **subagent** ran (`ToolEvent.agent` set) is drawn `↳ {subagent} · {emoji} {tool}:
+"{preview}"`. The marker is text, not indentation or styling, because it has to survive every
+renderer — chat markdown collapses leading whitespace, and only the web UI could style a line. The
+name is cut to 16 characters so the preview after it stays visible, and `new` mode compares
+owner + name, so a subagent's `Bash` right after the main agent's is not swallowed as a repeat.
+Where the attribution comes from is `daemon/agent-acp.ts` `claudeAttribution`.
+
 Four modes: `off`, `all`, `new` (dedupe consecutive same-name calls), `verbose`
 (append full args JSON). Two groupings:
 

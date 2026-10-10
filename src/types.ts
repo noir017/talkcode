@@ -256,6 +256,12 @@ export interface ToolEvent {
    * The accumulate grouping mode uses it to locate and edit the same bubble (in-place progress refresh).
    */
   index?: number;
+  /**
+   * Name of the subagent that ran this tool; undefined when the main agent ran it. The bubble line
+   * leads with it, because otherwise a subagent's tools are indistinguishable from the main agent's
+   * (see daemon/agent-acp.ts claudeAttribution).
+   */
+  agent?: string;
 }
 
 /**
