@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-10-10
+
 ### Changed
 
 - **A subagent's tool lines name it once, not on every line.** Since 2.0.1 each line a subagent
