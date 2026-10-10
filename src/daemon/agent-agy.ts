@@ -19,6 +19,7 @@ import {
   buildInputPreview,
   killChildProcess,
   resolveConversationCwd,
+  trimReason,
   truncateToolName,
 } from './agent-common.js';
 import {
@@ -52,7 +53,8 @@ const execFile = promisify(execFileCb);
  *   step_type:"tool" ACTIVE        ↔ onToolStart
  *   step_type:"tool" DONE          ↔ onToolFinish
  *   text↔tool boundary             ↔ onSegmentBreak
- *   event:"result"                 ↔ turn end (status SUCCESS, else an error for the upper layer)
+ *   event:"result"                 ↔ turn end (SUCCESS; ERROR fails the turn only when the turn did
+ *                                    not end in the agent's reply — see settleErrorResult)
  *   init.conversation_id           ↔ SessionStore entry, replayed via --conversation after a restart
  *   init.model                     ↔ onModel (stored at spawn, replayed at the start of every turn)
  *   status line, over fd 3         ↔ onUsage and onQuota (live, and settled at turn end), and onModel
@@ -866,7 +868,10 @@ function createAgySession(
 
       const state: AgyTurnState = {
         handlers,
+        agentId: def.id,
         lastSegment: 'none',
+        endsInReply: false,
+        sawErrorStep: false,
         toolLedger: new Map(),
         toolIndexSeq: 0,
       };
@@ -1034,7 +1039,7 @@ export interface AgyEvent {
     step_index?: number;
     /** 'ACTIVE' while running, 'DONE' when that step finished. */
     state?: string;
-    /** 'user_input' | 'agent_response' | 'tool' | 'checkpoint' | … */
+    /** 'user_input' | 'agent_response' | 'tool' | 'error_message' | 'system_message' | 'checkpoint' | … */
     step_type?: string;
     tool_name?: string;
     /** Incremental text (NOT cumulative). */
@@ -1058,8 +1063,19 @@ export interface AgyEvent {
 
 export interface AgyTurnState {
   handlers: AgentStreamHandlers;
+  /** The agent's config id, for the notice a recovered error gets (see settleErrorResult). */
+  agentId: string;
   /** 'none' start / 'text' streaming body / 'tool' just had a tool. Drives onSegmentBreak. */
   lastSegment: 'none' | 'text' | 'tool';
+  /**
+   * Whether the latest thing this turn produced is the agent's own reply text — set by visible text,
+   * cleared by a tool or an `error_message` step. Unlike `lastSegment`, an error step clears it,
+   * because what it answers is "did the reply come out AFTER whatever went wrong". It is what
+   * decides whether a `status:ERROR` result is believed.
+   */
+  endsInReply: boolean;
+  /** An `error_message` step arrived during this turn: agy hit an error and retried. */
+  sawErrorStep: boolean;
   /** step_index → evolving tool state (ACTIVE then DONE arrive as separate frames). */
   toolLedger: Map<number, AgyToolRec>;
   toolIndexSeq: number;
@@ -1081,6 +1097,10 @@ interface AgyToolRec {
 export function translateAgyEvent(msg: AgyEvent, st: AgyTurnState): boolean {
   if (msg.event === 'result') {
     const status = msg.result?.status ?? 'SUCCESS';
+    if (status === 'ERROR' && st.endsInReply) {
+      settleErrorResult(msg.result?.error, st);
+      return true;
+    }
     // CANCELED/INTERRUPTED are our own doing (abort); the session layer treats them as non-errors and
     // runTurn's `aborting` check swallows them, so surfacing them as errors here is still correct.
     if (status !== 'SUCCESS') {
@@ -1094,14 +1114,59 @@ export function translateAgyEvent(msg: AgyEvent, st: AgyTurnState): boolean {
 
   if (s.step_type === 'tool') {
     ingestToolStep(s, st);
+    st.endsInReply = false;
+  } else if (s.step_type === 'error_message') {
+    // The frame names no reason (agy 1.3.2 sends only the step's index and state; the text reaches
+    // the wire only inside `result.error`), so it renders nothing — it only moves the line that
+    // decides whether the turn's reply came out after the trouble.
+    st.sawErrorStep = true;
+    st.endsInReply = false;
   } else if (s.step_type === 'agent_response' && s.text_delta) {
     // Agent text: text_delta is incremental, so push it straight through.
     // Only agent_response carries display text; user_input/checkpoint frames are bookkeeping.
     if (st.lastSegment === 'tool') st.handlers.onSegmentBreak(); // tool → text boundary
     st.lastSegment = 'text';
     st.handlers.onText(s.text_delta);
+    // Whitespace alone is not a reply: the DONE frame often carries just the closing "\n", and it
+    // must neither make a reply out of nothing nor unmake the one just written.
+    if (s.text_delta.trim()) st.endsInReply = true;
   }
   return false;
+}
+
+/**
+ * A `status:ERROR` result for a turn whose last output was the agent's own reply: the turn is done.
+ *
+ * agy's `result` describes the CONVERSATION, not the turn. Measured on agy 1.3.2 (2026-10-10):
+ * `num_turns`, `duration_seconds` and `usage` are running totals, and `status`/`error` follow
+ * suit — once a conversation has had an API error, even one agy retried past four seconds later
+ * ("API error (attempt 1): INTERNAL (code 500): Internal error encountered."), every later
+ * `result` in it says ERROR with that same error. That includes the turn it recovered in, every
+ * turn after, and a fresh process resumed with `--conversation` whose one model call was clean.
+ * Reported the same day: a scheduled run wrote its whole 2.4k-character report, was then marked ❌
+ * and its schedule recorded as failed, and so was every turn in that topic afterwards.
+ *
+ * So the status alone cannot be believed, and what is believed instead is the stream: a turn that
+ * really failed ends in an error step (retries exhausted), in a tool, or in nothing at all. One
+ * whose last output is reply text written after its last error step got its answer out. Only
+ * ERROR is reconsidered — CANCELED and INTERRUPTED are this daemon's own aborts, handled upstream.
+ *
+ * Said once, where it happened: a turn that saw an error step gets a notice, since that error is
+ * plausibly this turn's and the user may wonder at the hiccup. A turn that saw none is agy
+ * repeating an old error, and saying so on every later turn would be noise about something
+ * already over — so it is logged and nothing more.
+ */
+function settleErrorResult(error: string | undefined, st: AgyTurnState): void {
+  const reason = error ? trimReason(error) : 'no reason given';
+  if (st.sawErrorStep) {
+    console.log(`[agy] ${st.agentId}: hit an error this turn and recovered, finishing its reply: ${reason}`);
+    st.handlers.onNotice?.(`⚠️ ${st.agentId} hit an error and recovered: ${reason}`);
+    return;
+  }
+  console.log(
+    `[agy] ${st.agentId}: result says ERROR but the turn ended in a reply with no error of its own; ` +
+      `taking it as agy repeating an earlier, recovered one: ${reason}`
+  );
 }
 
 /** Tool step: the first frame (ACTIVE) opens the bubble, DONE closes it. `tool_info.error` marks failure. */

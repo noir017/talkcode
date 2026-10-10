@@ -50,8 +50,12 @@ function recorder(): { st: AgyTurnState; events: string[] } {
       onToolFinish: (e) => events.push(`finish:${e.name}|${e.ok}|${e.durationMs}`),
       onSegmentBreak: () => events.push('seg'),
       onAvailableCommands: () => events.push('cmds'),
+      onNotice: (t) => events.push(`notice:${t}`),
     },
+    agentId: 'ag',
     lastSegment: 'none',
+    endsInReply: false,
+    sawErrorStep: false,
     toolLedger: new Map(),
     toolIndexSeq: 0,
   };
@@ -210,6 +214,100 @@ describe('translateAgyEvent — turn termination', () => {
     expect(() =>
       feed(st, { event: 'result', result: { status: 'ERROR', error: 'stream input cancelled: context canceled' } })
     ).toThrow(/stream input cancelled/);
+  });
+});
+
+/**
+ * agy's `result` is conversation-wide (agy 1.3.2, 2026-10-10): once a conversation has had an API
+ * error, every later result says ERROR with it, recovered or not. Frames below are verbatim shapes
+ * from that day — the incident's own conversation resumed in isolation, and a probe that injected a
+ * mid-stream failure through a local proxy (project-scripts/talkcode-agy-stale-error/).
+ */
+describe('translateAgyEvent — an ERROR result after the turn already replied', () => {
+  const STALE_500 = 'API error (attempt 1): INTERNAL (code 500): Internal error encountered.';
+  const errorStep = (i: number) => ({
+    event: 'step_update',
+    step_update: { step_index: i, state: 'DONE', step_type: 'error_message', duration_seconds: 0.00009888 },
+  });
+  const text = (i: number, delta: string, state = 'ACTIVE') => ({
+    event: 'step_update',
+    step_update: { step_index: i, state, step_type: 'agent_response', text_delta: delta },
+  });
+  const tool = (i: number, state: string) => ({
+    event: 'step_update',
+    step_update: { step_index: i, state, step_type: 'tool', tool_info: { name: 'run_command', parameters: { CommandLine: 'ls' } } },
+  });
+  const errorResult = { event: 'result', result: { status: 'ERROR', response: 'RESUMED\n', error: STALE_500 } };
+
+  it('an error step, then the reply: the turn is done, and the recovery is said once', () => {
+    // The incident's first turn: a 500 early on, agy retried, worked for 14 minutes, wrote its report.
+    const { st, events } = recorder();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    feed(st, errorStep(9));
+    feed(st, tool(10, 'ACTIVE'));
+    feed(st, tool(10, 'DONE'));
+    feed(st, text(11, '### 结论先行'));
+    feed(st, text(11, '\n', 'DONE'));
+    expect(feed(st, errorResult)).toBe(true);
+    expect(events.filter((e) => e.startsWith('notice:'))).toEqual([`notice:⚠️ ag hit an error and recovered: ${STALE_500}`]);
+    log.mockRestore();
+  });
+
+  it('no error step this turn, yet ERROR: agy repeating an old one — done, logged, not announced', () => {
+    // Verbatim from the resumed conversation: user_input, system_message, the reply, then a result
+    // naming the 500 from the turn before (num_turns 3, duration 6239s — conversation totals).
+    const { st, events } = recorder();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    feed(st, { event: 'step_update', step_update: { step_index: 112, state: 'DONE', step_type: 'user_input' } });
+    feed(st, { event: 'step_update', step_update: { step_index: 113, state: 'DONE', step_type: 'system_message', duration_seconds: 0.000185761 } });
+    feed(st, text(114, 'RESUMED'));
+    feed(st, text(114, '\n', 'DONE'));
+    expect(feed(st, errorResult)).toBe(true);
+    expect(events).toEqual(['text:RESUMED', 'text:\n']);
+    expect(log.mock.calls.some((c) => String(c[0]).includes('repeating an earlier'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it('reply first, then an error step and nothing after it: retries ran out — still a failure', () => {
+    const { st } = recorder();
+    feed(st, text(1, "I'll check the logs"));
+    feed(st, errorStep(2));
+    feed(st, errorStep(3));
+    expect(() => feed(st, errorResult)).toThrow(/status ERROR: API error/);
+  });
+
+  it('reply first, then a tool, then ERROR: the turn stopped mid-work — still a failure', () => {
+    // e.g. "Agent execution terminated due to error" after a tool started.
+    const { st } = recorder();
+    feed(st, text(1, 'Running it now.'));
+    feed(st, tool(2, 'ACTIVE'));
+    expect(() =>
+      feed(st, { event: 'result', result: { status: 'ERROR', error: 'Agent execution terminated due to error.' } })
+    ).toThrow(/terminated due to error/);
+  });
+
+  it('only whitespace after the error step is not a reply', () => {
+    const { st } = recorder();
+    feed(st, text(1, 'Partial answer'));
+    feed(st, errorStep(2));
+    feed(st, text(3, '\n', 'DONE'));
+    expect(() => feed(st, errorResult)).toThrow(/status ERROR/);
+  });
+
+  it('a trailing "\\n" frame does not unmake a reply that was already written', () => {
+    const { st } = recorder();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    feed(st, text(1, 'Done.'));
+    feed(st, text(1, '\n', 'DONE'));
+    expect(feed(st, errorResult)).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it('only ERROR is reconsidered: CANCELED after a reply still settles as an error', () => {
+    // Our own aborts produce these; runTurn's `aborting` check is what swallows them, not this.
+    const { st } = recorder();
+    feed(st, text(1, 'Half'));
+    expect(() => feed(st, { event: 'result', result: { status: 'CANCELED' } })).toThrow(/status CANCELED/);
   });
 });
 
@@ -608,7 +706,7 @@ describe('agy session — what the status pipe tells the footer', () => {
    */
   function scriptSpawn(
     init: Record<string, unknown>,
-    frames: { boot?: string[]; during?: string[]; after?: string[] } = {}
+    frames: { boot?: string[]; during?: string[]; after?: string[]; turns?: unknown[][] } = {}
   ): void {
     vi.mocked(spawn).mockImplementation(() => {
       const statusPipe = new PassThrough();
@@ -626,10 +724,14 @@ describe('agy session — what the status pipe tells the footer', () => {
       };
       report(frames.boot);
       setImmediate(() => child.stdout.write(`${JSON.stringify({ event: 'init', ...init })}\n`));
+      // `turns[n]` is what the n-th prompt gets on stdout, its own `result` included; without it, a
+      // bare SUCCESS.
+      let prompt = 0;
       child.stdin.on('data', () => {
+        const stdout = frames.turns?.[prompt++] ?? [{ event: 'result', result: { status: 'SUCCESS' } }];
         report(frames.during);
         setTimeout(() => {
-          child.stdout.write(`${JSON.stringify({ event: 'result', result: { status: 'SUCCESS' } })}\n`);
+          for (const f of stdout) child.stdout.write(`${JSON.stringify(f)}\n`);
           setTimeout(() => report(frames.after), 30);
         }, 10);
       });
@@ -844,6 +946,32 @@ describe('agy session — what the status pipe tells the footer', () => {
 
     expect(seen.usage[0]).toEqual({ used: 50, size: 1000 });
     expect(seen.usage.at(-1)).toEqual({ used: 60, size: 1000 });
+    factory.dispose('conv-1');
+  });
+
+  it('a conversation whose result keeps saying ERROR still completes the turns that replied', async () => {
+    // The 2026-10-10 topic, in order: a 500 retried past, the report, `result` ERROR; then the next
+    // turn — no error of its own — gets the very same ERROR. Both used to fail; both replied.
+    const STALE = { status: 'ERROR', error: 'API error (attempt 1): INTERNAL (code 500): Internal error encountered.' };
+    const reply = (i: number, t: string) => ({ event: 'step_update', step_update: { step_index: i, state: 'DONE', step_type: 'agent_response', text_delta: t } });
+    scriptSpawn(INIT_DEFAULT, {
+      turns: [
+        [{ event: 'step_update', step_update: { step_index: 9, state: 'DONE', step_type: 'error_message' } }, reply(89, 'report'), { event: 'result', result: STALE }],
+        [reply(111, 'second answer'), { event: 'result', result: STALE }],
+      ],
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const factory = makeFactory();
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const notices: string[] = [];
+    const { handlers } = recordingHandlers();
+    handlers.onNotice = (t) => notices.push(t);
+
+    await expect(session.runTurn({ prompt: 'one', sessionToken: 'sess_x' }, handlers)).resolves.toBeUndefined();
+    await expect(session.runTurn({ prompt: 'two', sessionToken: 'sess_x' }, handlers)).resolves.toBeUndefined();
+
+    // Announced where it happened, and not again for agy repeating it.
+    expect(notices).toEqual(['⚠️ ag hit an error and recovered: API error (attempt 1): INTERNAL (code 500): Internal error encountered.']);
     factory.dispose('conv-1');
   });
 });
