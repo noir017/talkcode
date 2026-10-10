@@ -759,8 +759,8 @@ export class Daemon {
         }
         return false;
       },
-      // A message typed while a question is on screen answers the question instead of starting a
-      // turn (which would have interrupted the one the question belongs to).
+      // A message typed while a question is on screen answers the question instead of going to the
+      // agent as a new message (the turn it would join is the one blocked on the question).
       answerPendingAsk: (id, text) => this.answerPendingAskWithText(id, text),
       // `/stop` and `/new` abandon whatever is still being asked here, so nothing is left pinned,
       // clickable, or able to swallow the next message.

@@ -243,8 +243,8 @@ const ExperienceSchema = z.object({
       mergeWindowMs: z.number().int().positive().default(1_500),
       /** Hard cap on the merge window: force the turn to start past this, avoiding turn starvation. */
       maxMergeWindowMs: z.number().int().positive().default(5_000),
-      /** Whether a new message interrupts a running turn (cancel + finalize partial, then start fresh). */
-      interruptOnNewMessage: z.boolean().default(true),
+      // No `interruptOnNewMessage` any more: a message sent mid-turn is offered to the running turn
+      // or queued behind it, and `/stop` is the one way to cut a turn short (core/inbound-merger.ts).
       /** Re-fire interval (ms) for the typing-keepalive loop (Discord typing expires ~10s → 8s). */
       typingIntervalMs: z.number().int().positive().default(8000),
       /**

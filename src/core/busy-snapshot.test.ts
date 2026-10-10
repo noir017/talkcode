@@ -63,7 +63,7 @@ describe('formatElapsed', () => {
 describe('busyNote', () => {
   it('says why the gateway answered and how to get the harness’s own answer', () => {
     const note = busyNote('usage', 'cc');
-    expect(note).toContain('would have interrupted');
+    expect(note).toContain('would only have been answered after it');
     expect(note).toContain('Send /usage again once the turn ends');
     expect(note).toContain("cc's own full answer");
   });

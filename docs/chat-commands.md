@@ -19,8 +19,36 @@ Discord, Slack), and equally usable as plain text everywhere else.
 
 `/usage` and `/context` sent while the agent is in the middle of a turn are answered by the
 gateway itself — context, cost so far, how long the turn has run — instead of being passed to the
-agent, which would interrupt the turn. Send them again once it finishes for the agent's own, fuller
-answer.
+agent, where they would wait for the whole turn to end. Send them again once it finishes for the
+agent's own, fuller answer.
+
+## Sending while the agent works
+
+A message sent while the agent is in the middle of a turn **does not stop it**. Like typing into
+Claude Code's own CLI while it works, the message is handed to the agent, which reads it at its
+next natural point — after the command it is running finishes, before it decides what to do next —
+and answers it as part of the same reply:
+
+```
+you    run the full test suite
+agent  ⚙ npm test …                  ← still running
+you    and check the docs build too   ← the tests keep running
+agent  All 2070 tests pass, and the docs build is clean.
+```
+
+Not every agent can take a message mid-turn. Where one cannot, the message waits and is sent as
+soon as the turn ends — still without stopping anything:
+
+| Harness | A message sent mid-turn |
+|---|---|
+| `claude` | joins the running turn |
+| `codex` | joins the running turn |
+| `opencode` | waits for the turn to end |
+| `agy` | waits for the turn to end |
+
+Slash commands (`/compact`, …) always wait for the turn to end: a command only runs as one at the
+start of a message. To actually stop the agent, use **`/stop`** — it is the only thing that does.
+Anything you sent that had not reached the agent yet is dropped with it.
 
 ## Agent commands
 

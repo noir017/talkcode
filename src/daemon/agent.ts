@@ -5,14 +5,15 @@ import type {
   ElicitAnswer,
   ModelSelector,
   QuotaPool,
+  SteerOutcome,
   ToolEvent,
   ToolFinishEvent,
 } from '../types.js';
 
 // ModelSelector lives in types.ts rather than here: core/model-menu.ts renders it into a paginated
 // button menu, and core may not import daemon/. Re-exported so the runtimes keep one import site.
-// EffortSelector likewise, for core/effort-menu.ts.
-export type { EffortSelector, ModelSelector };
+// EffortSelector likewise, for core/effort-menu.ts; SteerOutcome for core/inbound-merger.ts.
+export type { EffortSelector, ModelSelector, SteerOutcome };
 
 /**
  * Thin wrapper over the agent runtime (ACP implementation in agent-acp.ts). One AgentSession per session
@@ -174,7 +175,20 @@ export interface AgentSession {
    * resolve = turn ended naturally; reject = error; abort() can interrupt.
    */
   runTurn(input: RunTurnInput, handlers: AgentStreamHandlers): Promise<void>;
-  /** Interrupt the current turn (for fresh-window continuation, skipping the aborted tool call). */
+  /**
+   * Hand a message to the turn that is running right now, for the harness to take in at its own next
+   * natural point — between tool calls, before its next request to the model — the way a coding
+   * agent's CLI treats what is typed while it works. Nothing is cancelled: the tool running now
+   * finishes, and the turn's reply answers the new message too. The turn ends only once it has.
+   *
+   * `refused` whenever that cannot be promised: no turn running, the turn already ending, a cancel
+   * under way, or a harness with no way to take input mid-turn. The caller still owns the message
+   * then, and sends it as the next turn.
+   *
+   * Optional: a runtime with no notion of it omits it, which reads as `refused` every time.
+   */
+  steer?(input: Pick<RunTurnInput, 'prompt'>): Promise<SteerOutcome>;
+  /** Interrupt the current turn (`/stop`). */
   abort(): void;
   /**
    * Install the destination for output this session produces outside any turn (see FollowUpSink).

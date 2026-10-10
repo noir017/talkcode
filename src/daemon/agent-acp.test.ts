@@ -963,7 +963,7 @@ describe('parseFormElicitation (agent asks the user, ACP elicitation/create)', (
  */
 describe('what the agent is given', () => {
   it('sends the user\'s text as the only prompt block — no preamble on any turn', () => {
-    expect(promptBlocks({ prompt: 'fix the build', sessionToken: 't' })).toEqual([{ type: 'text', text: 'fix the build' }]);
+    expect(promptBlocks({ prompt: 'fix the build' })).toEqual([{ type: 'text', text: 'fix the build' }]);
   });
 
   it('hands every session the stdio tool server, with token, socket and cwd in its own env', () => {
