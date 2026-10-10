@@ -917,10 +917,11 @@ export class ConversationRegistry {
     //
     //  - after the daemon commands, so `/stop` and `/new` still reach the user's own escape hatch
     //    rather than being filed away as an answer to a question they are trying to get out of;
-    //  - before the merger, because the merger interrupts the running turn — and that turn is the
-    //    one blocked on the question. Typing an answer to question 2 of a 3-question form used to
-    //    kill the agent mid-form, so questions 1 and 2 were answered for nothing and question 3
-    //    was never asked.
+    //  - before the merger, because the merger would hand it to the running turn as a new message —
+    //    and that turn is the one blocked on the question, waiting for exactly this answer. Before
+    //    this check existed, typing an answer to question 2 of a 3-question form killed the agent
+    //    mid-form (the merger then cancelled the turn), so questions 1 and 2 were answered for
+    //    nothing and question 3 was never asked.
     if (this.answersPendingQuestion(key, msg)) return;
 
     // An agent command naming a harness this deployment doesn't run (`/agy` with no agy agent):
@@ -968,8 +969,8 @@ export class ConversationRegistry {
     // A voice message is transcribed and shown to the user before anything else happens to it. Past
     // the gate and the daemon commands (a stranger must not spend transcription quota, and `/stop`
     // stays `/stop`), past the binding (so the conversation exists when the transcript returns), and
-    // before the merger — which would interrupt the running turn on behalf of words nobody has
-    // approved yet. The transcript re-enters through route() once confirmed.
+    // before the merger — which would hand words nobody has approved yet to the running turn. The
+    // transcript re-enters through route() once confirmed.
     if (this.takesVoice(key, msg, opts)) return;
 
     // Generic-command translation. Must sit here: it is the first point that knows WHICH agent
@@ -1542,9 +1543,9 @@ export class ConversationRegistry {
    * route() is the load-bearing part).
    *
    * Attachments are NOT an answer: the wire field a typed answer travels in takes a string, so an
-   * image sent here could only be silently dropped. Such a message keeps its old meaning — a new
-   * instruction, interrupting the turn — which is also the way out of a question whose options are
-   * all wrong on a harness that offers no free-text field.
+   * image sent here could only be silently dropped. Such a message is an ordinary new message —
+   * offered to the running turn or queued behind it — and `/stop` stays the way out of a question
+   * whose options are all wrong on a harness that offers no free-text field.
    *
    * Nor is a command from the generic vocabulary (`/usage`, `/model`, `/compact`, …). Those are
    * menu entries the gateway registered itself, so a user tapping one is asking the gateway, not
@@ -1849,7 +1850,8 @@ export class ConversationRegistry {
    * busy (see GenericCommand.query for why forwarding it is the bug).
    *
    * "Busy" is anything but idle, and both non-idle phases earn it: a RUNNING turn is what a
-   * forwarded command interrupts, and a batch still inside its merge window is what it would be
+   * forwarded command would wait behind for as long as the turn runs (a command is never handed into
+   * a running turn — see TurnRunner.steer), and a batch still inside its merge window is what it would be
    * glued onto — `hello\n/usage` is one prompt, and the harness no longer sees a command in it.
    *
    * Only where the command would otherwise be FORWARDED (translated, or passed through to a
@@ -3003,7 +3005,6 @@ ${formatTokens(left)} left before compaction — ${name}`;
       {
         mergeWindowMs: this.config.inbound.mergeWindowMs,
         maxMergeWindowMs: this.config.inbound.maxMergeWindowMs,
-        interruptOnNewMessage: this.config.inbound.interruptOnNewMessage,
         reactions: this.config.inbound.reactions,
         reactionsEnabled: this.config.display.reactions.enabled,
       },
@@ -3014,14 +3015,17 @@ ${formatTokens(left)} left before compaction — ${name}`;
         // (a shared-scope conversation's platform may have changed since the merger was built).
         addReaction: (ref, emoji) => this.adapterFor(conversationId).addReaction(ref, emoji),
         runTurn: (batch, signal) => this.turnRunner.runTurn(conversationId, batch, signal),
+        // A message sent mid-turn is handed to the turn that is running, for a harness that can take
+        // it there (see TurnRunner.steer); otherwise the merger queues it behind the turn.
+        steer: (batch) => this.turnRunner.steer(conversationId, batch),
         abortTurn: () => {
           // A turn can be blocked on a question when it is cancelled — the agent is waiting on an
           // elicitation nobody has answered. The buttons have to go with the turn: left behind they
           // stay clickable against a request that no longer exists, keep the child pinned by
           // hasPendingWork for the rest of the ask timeout, and (since a typed reply now answers
           // the newest pending question) would read the NEXT message as their answer. This is the
-          // one choke point both ways of cancelling pass through — `/stop` and an interrupting
-          // message — so it is where they are retired.
+          // one choke point every cancel of a turn passes through (`/stop`), so it is where they
+          // are retired.
           this.hooks?.cancelPendingAsks?.(conversationId, 'interrupted');
           this.agents.getOrCreate(conversationId, this.agentIdOf(conversationId)).abort();
         },

@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **A message sent while the agent is working no longer stops it.** Until now every message that
+  arrived mid-turn cancelled the turn and started it again with the new input, so "also check the
+  docs" cost a half-finished test run, and the only way to add something without losing the work
+  was to wait. It now goes where Claude Code's own CLI puts what you type while it works: to the
+  agent, which reads it at its next natural point — after the command it is running, before its
+  next step — and answers it in the same reply. Probed on 2026-10-10 with a message sent six
+  seconds into a thirty-second foreground command: claude (another `session/prompt`, which Claude
+  Code queues and absorbs at the tool boundary) and codex (`_session/steering`, codex's
+  `turn/steer`) both let the command finish and answered both requests in one reply. opencode
+  rejects a second prompt over ACP and agy runs it as a separate turn, so on those two the message
+  waits and is sent as soon as the turn ends — still without stopping anything. Slash commands
+  always wait for the turn to end, since a command only runs at the start of a message. `/stop` is
+  now the one way to stop a turn, and also the way out of a question whose options all fit badly,
+  which used to be "type anything". The frozen `inbound.interruptOnNewMessage` switch is gone.
+
 ## [2.0.1] - 2026-10-10
 
 ### Changed

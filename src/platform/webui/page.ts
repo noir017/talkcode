@@ -2501,8 +2501,8 @@ __GATE__
           <button type="button" id="mic" title="Record a voice message" hidden>&#127908;</button>
           <!-- /stop, while there is a turn to stop. Beside Send because that is where the eye
                already is while a reply streams in, and separate from it because the composer
-               still sends mid-turn (queued behind the running turn, or interrupting it under
-               inbound.interruptOnNewMessage) — neither of which is "stop". -->
+               still sends mid-turn (into the running turn, or queued behind it) — neither of
+               which is "stop". -->
           <button type="button" id="stop-turn" title="Stop what the agent is doing — the conversation is kept (/stop)" hidden>Stop</button>
           <!-- A tooltip is a pointer's affordance, so it names the pointer's shortcut: under the
                narrow-screen layout Enter writes a newline, but nothing there can hover to read

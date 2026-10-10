@@ -61,13 +61,14 @@ export function formatUsageSnapshot(input: UsageSnapshotInput): string {
 
 /**
  * The line appended to every busy answer: why the gateway answered, and how to get the harness's
- * own. Worded for both states the caller treats as busy — a running turn, and a batch still in its
- * merge window, which a forwarded command would have been glued onto.
+ * own. Worded for both states the caller treats as busy — a running turn, which a forwarded command
+ * would have had to wait out, and a batch still in its merge window, which it would have been glued
+ * onto. Either way the command would not have been answered now.
  */
 export function busyNote(command: string, agent: string): string {
   return (
-    `⏳ ${agent} is busy with a turn, and forwarding /${command} would have interrupted it — so the ` +
-    `gateway answered from what it already holds. Send /${command} again once the turn ends for ` +
-    `${agent}'s own full answer.`
+    `⏳ ${agent} is busy with a turn, and forwarded /${command} would only have been answered after ` +
+    `it — so the gateway answered from what it already holds. Send /${command} again once the turn ` +
+    `ends for ${agent}'s own full answer.`
   );
 }
