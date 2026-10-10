@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is an introduction again, and the manual moved to `docs/`.** At 680 lines it described
+  every feature in full, so what a newcomer needs — what this is, what it looks like, how to install
+  it — sat above forty screens of `/effort` levels and SSO claims. It now holds that, a screenshot
+  of the web UI taken from a real Claude Code turn, the smallest working config, and an index. Each
+  feature's description moved to its own page under `docs/` with its wording kept, and the Chinese
+  to the same name under `docs/zh-CN/`. Three statements that had gone stale were corrected on the way: the web
+  UI's topics are in a sidebar, not a row across the top (since 1.14.0); a daemon restart no longer
+  empties the page, because the browser keeps its own copy of each topic (since 1.21.0); and the
+  Chinese description of topic naming, which still said the name was chosen after the first answer,
+  now matches the English — it is asked for as the turn starts.
+
 ## [2.0.0] - 2026-10-10
 
 ### Changed
