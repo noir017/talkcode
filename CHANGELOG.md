@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-10
+
 ### Changed
 
 - **The project is now talkcode, and every name it answers to changed with it.** It began as a fork
