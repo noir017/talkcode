@@ -125,6 +125,149 @@ describe('translateUpdate tool state machine (ACP generic)', () => {
 });
 
 /**
+ * Subagent attribution, from the `claude` adapter's `_meta.claudeCode`.
+ *
+ * CONTRACT TEST: the fixtures are claude-agent-acp 0.81.2's own updates, captured on the wire
+ * 2026-10-10 by project-scripts/subagent-output/probe.mjs (long fields shortened, nothing renamed).
+ * Neither `parentToolUseId` nor `subagent` is in the ACP schema; if an adapter upgrade renames
+ * them, these fail rather than the bubbles silently losing their owner again.
+ */
+describe('translateUpdate subagent attribution (claude adapter _meta)', () => {
+  const AGENT = 'toolu_01MddhweBrYt8mzCoULZaen4';
+  const agentMeta = { claudeCode: { toolName: 'Agent', subagent: true } };
+  const subMeta = { claudeCode: { toolName: 'Bash', parentToolUseId: AGENT } };
+
+  /** The spawning Agent call as the adapter streams it: placeholder title first, input field by field. */
+  function spawn(st: TurnState, id = AGENT, description = 'probe subagent'): void {
+    feed(st, { _meta: agentMeta, toolCallId: id, sessionUpdate: 'tool_call', rawInput: {}, status: 'pending', title: 'Task', kind: 'think' });
+    feed(st, { _meta: agentMeta, toolCallId: id, sessionUpdate: 'tool_call_update', rawInput: { subagent_type: 'general-purpose' }, title: 'Task', kind: 'think' });
+    feed(st, {
+      _meta: agentMeta,
+      toolCallId: id,
+      sessionUpdate: 'tool_call_update',
+      rawInput: { subagent_type: 'general-purpose', description },
+      title: description,
+      kind: 'think',
+    });
+    feed(st, {
+      _meta: agentMeta,
+      toolCallId: id,
+      sessionUpdate: 'tool_call_update',
+      rawInput: { subagent_type: 'general-purpose', description, prompt: 'Run the Bash command `echo probe-ok`…' },
+      title: description,
+      kind: 'think',
+    });
+  }
+
+  function subagentBash(st: TurnState, id: string, command: string, parent = AGENT): void {
+    const meta = { claudeCode: { ...subMeta.claudeCode, parentToolUseId: parent } };
+    feed(st, { _meta: meta, toolCallId: id, sessionUpdate: 'tool_call', rawInput: { command, description: 'x' }, status: 'pending', title: command, kind: 'execute' });
+    feed(st, { _meta: meta, toolCallId: id, sessionUpdate: 'tool_call_update', status: 'completed', rawOutput: 'probe-ok' });
+  }
+
+  /** A TurnState that records each started tool as `{name, preview, agent}`; `null` = no session map. */
+  function toolRecorder(subagents: Map<string, string> | null = new Map()) {
+    const { st, events } = recorder();
+    const started: Array<{ name: string; preview: string; agent?: string }> = [];
+    st.handlers.onToolStart = (e) => started.push({ name: e.name, preview: e.inputPreview, agent: e.agent });
+    if (subagents) st.subagents = subagents;
+    return { st, events, started };
+  }
+
+  it("marks a subagent's tool with the name of the call that spawned it, and leaves the main agent's unmarked", () => {
+    const { st, started } = toolRecorder();
+    spawn(st);
+    subagentBash(st, 'toolu_018RDD4EE8ecLgv1sapMnjRx', 'echo probe-ok');
+    feed(st, { sessionUpdate: 'tool_call', toolCallId: 'main-read', kind: 'read', rawInput: { file_path: 'a.ts' }, status: 'completed' });
+    expect(started).toEqual([
+      { name: 'Task', preview: 'probe subagent', agent: undefined },
+      { name: 'Bash', preview: 'echo probe-ok', agent: 'probe subagent' },
+      { name: 'Read', preview: 'a.ts', agent: undefined },
+    ]);
+  });
+
+  it('draws the spawning call only once its description is in, so it shows the name its subagent will carry', () => {
+    const { st, started } = toolRecorder();
+    feed(st, { _meta: agentMeta, toolCallId: AGENT, sessionUpdate: 'tool_call', rawInput: {}, status: 'pending', title: 'Task', kind: 'think' });
+    feed(st, { _meta: agentMeta, toolCallId: AGENT, sessionUpdate: 'tool_call_update', rawInput: { subagent_type: 'general-purpose' }, title: 'Task', kind: 'think' });
+    // Before: this update drew `Task: "{"subagent_type":"general-purpose"}"`.
+    expect(started).toEqual([]);
+    spawn(st); // the rest of the stream, description included
+    expect(started).toEqual([{ name: 'Task', preview: 'probe subagent', agent: undefined }]);
+  });
+
+  it('still draws a spawning call whose description never comes, once its status moves', () => {
+    const { st, started } = toolRecorder();
+    feed(st, { _meta: agentMeta, toolCallId: AGENT, sessionUpdate: 'tool_call', rawInput: { subagent_type: 'general-purpose' }, status: 'pending', title: 'Task', kind: 'think' });
+    expect(started).toEqual([]);
+    feed(st, { _meta: { claudeCode: { toolName: 'Agent' } }, toolCallId: AGENT, sessionUpdate: 'tool_call_update', status: 'completed' });
+    expect(started).toEqual([{ name: 'Task', preview: '{"subagent_type":"general-purpose"}', agent: undefined }]);
+  });
+
+  it('names a background subagent whose tools arrive in a later turn, through the session-wide map', () => {
+    const names = new Map<string, string>();
+    const first = toolRecorder(names);
+    spawn(first.st, AGENT, '回测按分红选股的收益与回撤');
+    // The call completes as soon as the subagent is launched, and the turn ends with it.
+    feed(first.st, { _meta: { claudeCode: { toolName: 'Agent' } }, toolCallId: AGENT, sessionUpdate: 'tool_call_update', status: 'completed' });
+
+    const later = toolRecorder(names); // a fresh TurnState: new ledger, same session
+    subagentBash(later.st, 'toolu_01Wbf38cV3mYb9WFfphZ63Lb', 'sleep 5; echo probe-ok');
+    expect(later.started).toEqual([{ name: 'Bash', preview: 'sleep 5; echo probe-ok', agent: '回测按分红选股的收益与回撤' }]);
+  });
+
+  it('tells two parallel subagents apart', () => {
+    const { st, started } = toolRecorder();
+    spawn(st, 'agent-a', 'fetch prices');
+    spawn(st, 'agent-b', 'build pools');
+    subagentBash(st, 'b1', 'python3 pools.py', 'agent-b');
+    subagentBash(st, 'a1', 'python3 fetch.py', 'agent-a');
+    expect(started.slice(2).map((s) => s.agent)).toEqual(['build pools', 'fetch prices']);
+  });
+
+  it('still marks a tool whose spawning call was never seen, as an unnamed subagent', () => {
+    const { st, started } = toolRecorder();
+    subagentBash(st, 't1', 'ls', 'toolu_never_seen');
+    expect(started).toEqual([{ name: 'Bash', preview: 'ls', agent: 'subagent' }]);
+  });
+
+  it('without a session map (pure tests, other callers) still marks the tool, unnamed', () => {
+    const { st, started } = toolRecorder(null);
+    spawn(st);
+    subagentBash(st, 't1', 'ls');
+    expect(started[1]).toEqual({ name: 'Bash', preview: 'ls', agent: 'subagent' });
+  });
+
+  it('forgets the oldest names past its bound rather than growing for the life of the session', () => {
+    const names = new Map<string, string>();
+    const { st } = toolRecorder(names);
+    for (let i = 0; i < 70; i++) spawn(st, `agent-${i}`, `job ${i}`);
+    expect(names.size).toBe(64);
+    expect(names.has('agent-0')).toBe(false);
+    expect(names.get('agent-69')).toBe('job 69');
+  });
+
+  it('keeps subagent-attributed text out of the reply body', () => {
+    const { st, events } = toolRecorder();
+    feed(st, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Launched.' } });
+    feed(st, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Raw data dir is gone.' },
+      _meta: { claudeCode: { parentToolUseId: AGENT } },
+    });
+    expect(events).toEqual(['text:Launched.']);
+  });
+
+  it('ignores malformed attribution instead of trusting it', () => {
+    const { st, started } = toolRecorder();
+    for (const _meta of [{ claudeCode: { parentToolUseId: 42 } }, { claudeCode: { parentToolUseId: '' } }, { claudeCode: 'x' }, null]) {
+      feed(st, { _meta, sessionUpdate: 'tool_call', toolCallId: `t-${started.length}`, kind: 'execute', rawInput: { command: 'ls' }, status: 'completed' });
+    }
+    expect(started.map((s) => s.agent)).toEqual([undefined, undefined, undefined, undefined]);
+  });
+});
+
+/**
  * usage_update → onUsage.
  *
  * These numbers are why the footer can show a real `18k / 1M (2%)`: `used` is the harness's own
