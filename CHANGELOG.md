@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-10
+
 ### Changed
 
 - **A message sent while the agent is working no longer stops it.** Until now every message that
