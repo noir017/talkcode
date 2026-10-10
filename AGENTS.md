@@ -4,8 +4,11 @@ Conventions for coding agents working in this repository. Read this first, then 
 the README of whichever module you are about to change — the details live there, not
 here.
 
-`README.md` / `README.zh-CN.md` are the *user*-facing docs (install, configure, run).
-This file and the module READMEs are the *contributor*-facing docs.
+`README.md` / `README.zh-CN.md` and `docs/` are the *user*-facing docs. The READMEs stay
+short — what it is, a screenshot, install, the smallest config, an index; each feature's
+full description lives in its own page under `docs/`, with its translation at the same name
+under `docs/zh-CN/`. A user-visible change updates both languages. This file and the module
+READMEs are the *contributor*-facing docs.
 
 `CLAUDE.md` is a symlink to this file, so Claude Code picks it up automatically. There is
 one document, not two — edit `AGENTS.md`.
