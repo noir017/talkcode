@@ -620,6 +620,17 @@ back into `AgentStreamHandlers`:
 | `session_info_update` | `onTitle` (renames the chat lane — see below) |
 | `session/request_permission` | **auto-approved** — see below |
 
+**Subagents.** The `claude` adapter tags everything a subagent produces with
+`_meta.claudeCode.parentToolUseId` — the id of the Agent/Task call that spawned it — and marks
+that call with `_meta.claudeCode.subagent`. `translateUpdate` reads both (`claudeAttribution`):
+the subagent's tools go out with `ToolEvent.agent` set to the spawning call's `description`, and
+any subagent text is kept out of the reply body. The name map is session-scoped, not per turn,
+because a background subagent's tools keep arriving after the turn that launched it has ended.
+Neither field is in the ACP schema; the contract test in `agent-acp.test.ts` replays the shapes
+claude-agent-acp 0.81.2 sent on 2026-10-10. The adapter keeps a subagent's own text internal for
+a client that declares neither ACP `subagents` nor `subagent-transcript`, and this one declares
+neither — declaring either would start delivering it, and it would then need somewhere to go.
+
 The `claude` adapter is **bundled** as a dependency and resolved via
 `resolveClaudeAdapterEntry`, so it needs no separate install. Every other harness —
 `codex`, `gemini`, `opencode`, `dsh`, `custom` — is located on PATH.

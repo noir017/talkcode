@@ -651,6 +651,49 @@ describe('new dedupe', () => {
     const text = edits[edits.length - 1]!.text;
     expect(text).toBe('📖 Read: "src/a.ts"\n✏️ Edit: "src/c.ts"');
   });
+
+  it("a subagent's call after the main agent's same-name call is not a repeat", async () => {
+    const { sink, sends, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'separate', mode: 'new' }), sink);
+
+    r.onToolStart(start('Bash', 'ls'));
+    r.onToolStart({ ...start('Bash', 'pwd'), agent: 'probe' });
+    r.onToolStart({ ...start('Bash', 'whoami'), agent: 'probe' }); // same owner, same name: deduped
+    await flush();
+
+    expect(sends).toEqual(['💻 Bash: "ls"', '↳ probe · 💻 Bash: "pwd"']);
+  });
+});
+
+/**
+ * A subagent's tools carry its name (ToolEvent.agent), so they can be told from the main agent's.
+ * Before, the two were indistinguishable: a background subagent's eighty calls read as the main
+ * agent's, in the same bubble, with the same look.
+ */
+describe('subagent tools', () => {
+  it('lead with ↳ and the subagent name; the main agent’s lines are unchanged', async () => {
+    const { sink, edits, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'accumulate' }), sink);
+
+    r.onToolStart(start('Task', 'probe subagent', 0));
+    r.onToolStart({ ...start('Bash', 'echo probe-ok', 1), agent: 'probe subagent' });
+    r.onToolFinish(finish('Bash', true, 1200, 1));
+    await flush();
+
+    expect(edits[edits.length - 1]!.text).toBe(
+      '⚙️ Task: "probe subagent"\n↳ probe subagent · 💻 Bash: "echo probe-ok" ✓ 1.2s'
+    );
+  });
+
+  it('cut a long name short, so the part of the line that changes stays readable', async () => {
+    const { sink, sends, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'separate' }), sink);
+
+    r.onToolStart({ ...start('Bash', 'python3 fetch_prices.py'), agent: '回测按分红选股的收益与回撤，并和红利ETF对比' });
+    await flush();
+
+    expect(sends).toEqual(['↳ 回测按分红选股的收益与回撤，并… · 💻 Bash: "python3 fetch_prices.py"']);
+  });
 });
 
 /**

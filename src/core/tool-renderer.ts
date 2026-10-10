@@ -4,7 +4,8 @@ import { MessageNotEditableError, retryAfterMsOf } from './outbound-errors.js';
 /**
  * Tool bubble renderer.
  *
- * Renders tool progress as bubbles separate from the body: {emoji} {tool}: "{preview≤N}".
+ * Renders tool progress as bubbles separate from the body: {emoji} {tool}: "{preview≤N}", and
+ * ↳ {subagent} · {emoji} {tool}: "{preview≤N}" for a tool a subagent ran (see ownerPrefix).
  * Four modes: off / all / new (dedupe consecutive same-name) / verbose (append args JSON).
  *
  * Grouping:
@@ -54,6 +55,11 @@ const DEFAULT_RETRY_INTERVAL_MS = 1_200;
 const DEFAULT_MAX_RETRY_MS = 30_000;
 /** Ceiling on a wait the platform states, so one absurd number cannot freeze the bubble. */
 const DEFAULT_MAX_RETRY_AFTER_MS = 300_000;
+/**
+ * Longest subagent name a bubble line carries. Sixteen CJK characters already fill half a phone's
+ * width, and the name repeats on every line that subagent produces.
+ */
+const AGENT_LABEL_LIMIT = 16;
 
 export interface ToolRendererOptions {
   mode: ToolMode;
@@ -137,7 +143,8 @@ interface ToolLine {
 }
 
 export class ToolRenderer {
-  private lastToolName: string | null = null;
+  /** What `new` mode compares the next tool against: its name, plus its owner when a subagent's. */
+  private lastToolKey: string | null = null;
 
   // ---- accumulate segment state ----
   private lines: ToolLine[] = [];
@@ -207,14 +214,17 @@ export class ToolRenderer {
     // lost; either way it is not this segment's business.
     if (this.closeAtRev !== null) this.rotate();
 
-    if (this.opts.mode === 'new' && evt.name === this.lastToolName) {
+    // A subagent's Bash right after the main agent's is a different call, not a repeat, so the
+    // owner is part of what `new` compares.
+    const dedupeKey = evt.agent === undefined ? evt.name : `${evt.agent}\u0000${evt.name}`;
+    if (this.opts.mode === 'new' && dedupeKey === this.lastToolKey) {
       return; // dedupe consecutive same-name (applies under both groupings)
     }
-    this.lastToolName = evt.name;
+    this.lastToolKey = dedupeKey;
 
     const emoji = this.opts.emojiMap[evt.name] ?? this.opts.defaultEmoji;
     const preview = this.truncate(evt.inputPreview, this.opts.previewLimit);
-    const body = `${emoji} ${evt.name}: "${preview}"`;
+    const body = `${this.ownerPrefix(evt.agent)}${emoji} ${evt.name}: "${preview}"`;
     const json =
       this.opts.mode === 'verbose' && evt.input !== undefined
         ? '```json\n' + safeJson(evt.input) + '\n```'
@@ -265,7 +275,7 @@ export class ToolRenderer {
    * which is precisely the failure asynchronous painting would otherwise reintroduce.
    */
   resetSegment(): void {
-    this.lastToolName = null;
+    this.lastToolKey = null;
     if (this.aborted || this.lines.length === 0) {
       this.rotate();
       return;
@@ -619,6 +629,18 @@ export class ToolRenderer {
   private truncate(s: string, n: number): string {
     const flat = s.replace(/\s+/g, ' ').trim();
     return flat.length <= n ? flat : flat.slice(0, n - 1) + '…';
+  }
+
+  /**
+   * `↳ {subagent} · ` before a subagent's tool, nothing before the main agent's.
+   *
+   * Text rather than indentation or styling because it has to survive every renderer: leading
+   * whitespace is collapsed by most chat markdown, and only the web UI could style a line. The
+   * name is what tells two parallel subagents apart; it is the model's own short label for the
+   * job, cut to AGENT_LABEL_LIMIT so the preview after it — the part that changes — stays visible.
+   */
+  private ownerPrefix(agent: string | undefined): string {
+    return agent === undefined ? '' : `↳ ${this.truncate(agent, AGENT_LABEL_LIMIT)} · `;
   }
 }
 
