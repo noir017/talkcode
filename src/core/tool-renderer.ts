@@ -5,7 +5,8 @@ import { MessageNotEditableError, retryAfterMsOf } from './outbound-errors.js';
  * Tool bubble renderer.
  *
  * Renders tool progress as bubbles separate from the body: {emoji} {tool}: "{preview≤N}", and
- * ↳ {subagent} · {emoji} {tool}: "{preview≤N}" for a tool a subagent ran (see ownerPrefix).
+ * ↳ {subagent} · {emoji} {tool}: "{preview≤N}" for a tool a subagent ran — shortened to
+ * ↳ {emoji} {tool}: … when the line above is the same subagent's (see ownerPrefix).
  * Four modes: off / all / new (dedupe consecutive same-name) / verbose (append args JSON).
  *
  * Grouping:
@@ -57,7 +58,8 @@ const DEFAULT_MAX_RETRY_MS = 30_000;
 const DEFAULT_MAX_RETRY_AFTER_MS = 300_000;
 /**
  * Longest subagent name a bubble line carries. Sixteen CJK characters already fill half a phone's
- * width, and the name repeats on every line that subagent produces.
+ * width — on the first line of each run of that subagent's tools, which is the only line that
+ * carries it (see ownerPrefix).
  */
 const AGENT_LABEL_LIMIT = 16;
 
@@ -124,7 +126,15 @@ interface ToolLine {
   /** Sequence number linking start/finish; undefined → located by appearance order. */
   index?: number;
   name: string;
-  /** Rendered "in progress" body (emoji + name + preview). */
+  /**
+   * The subagent that ran this tool (ToolEvent.agent); undefined for the main agent's own.
+   *
+   * Kept apart from `body` because how much of it a line shows depends on the line above it, and
+   * which line is above changes after the fact: a seal carries unfinished lines into a new
+   * bubble, and fitBlock drops the oldest. So the prefix is decided in renderBlock, every time.
+   */
+  agent?: string;
+  /** Rendered "in progress" body (emoji + name + preview), without the owner prefix. */
   body: string;
   /** verbose JSON code block under the line (once); undefined otherwise. */
   json?: string;
@@ -224,15 +234,16 @@ export class ToolRenderer {
 
     const emoji = this.opts.emojiMap[evt.name] ?? this.opts.defaultEmoji;
     const preview = this.truncate(evt.inputPreview, this.opts.previewLimit);
-    const body = `${this.ownerPrefix(evt.agent)}${emoji} ${evt.name}: "${preview}"`;
+    const body = `${emoji} ${evt.name}: "${preview}"`;
     const json =
       this.opts.mode === 'verbose' && evt.input !== undefined
         ? '```json\n' + safeJson(evt.input) + '\n```'
         : undefined;
 
     if (!this.accumulateActive) {
-      // separate (incl. degraded accumulate): one new bubble per tool, no line set.
-      let text = body;
+      // separate (incl. degraded accumulate): one new bubble per tool, no line set — and so no
+      // line above to share a name with: every bubble names its owner in full.
+      let text = this.ownerPrefix(evt.agent, undefined) + body;
       if (json) text += '\n' + json;
       // No line set to seal here, so an oversized bubble (verbose JSON) can only be clamped.
       if (this.overflows(text)) text = this.clamp(text, this.opts.maxMessageLength!);
@@ -241,7 +252,7 @@ export class ToolRenderer {
     }
 
     // accumulate: add the tool to the line set and re-render the whole bubble.
-    this.lines.push({ index: evt.index, name: evt.name, body, json });
+    this.lines.push({ index: evt.index, name: evt.name, agent: evt.agent, body, json });
     this.touch();
   }
 
@@ -614,8 +625,10 @@ export class ToolRenderer {
   /** Render the line set into one block (lines joined by \n; verbose JSON under its line). */
   private renderBlock(): string {
     const parts: string[] = [];
+    let above: ToolLine | undefined;
     for (const l of this.lines) {
-      let row = l.body;
+      let row = this.ownerPrefix(l.agent, above?.agent) + l.body;
+      above = l;
       if (l.finish) {
         const mark = l.finish.ok ? '✓' : '✗';
         row += ` ${mark} ${formatDuration(l.finish.durationMs)}`;
@@ -632,15 +645,26 @@ export class ToolRenderer {
   }
 
   /**
-   * `↳ {subagent} · ` before a subagent's tool, nothing before the main agent's.
+   * `↳ {subagent} · ` before a subagent's tool, nothing before the main agent's — and only `↳ `
+   * when the line above (`above`, that line's owner) is the same subagent's.
    *
    * Text rather than indentation or styling because it has to survive every renderer: leading
    * whitespace is collapsed by most chat markdown, and only the web UI could style a line. The
    * name is what tells two parallel subagents apart; it is the model's own short label for the
    * job, cut to AGENT_LABEL_LIMIT so the preview after it — the part that changes — stays visible.
+   *
+   * Once per run rather than on every line: a subagent's tools usually come in a long unbroken
+   * run, and repeating its name on each of them spent the width the commands needed. On
+   * 2026-10-10 a phone showed fifteen lines of one subagent's work as `↳ 接手修复 quantlab 存… ·
+   * 💻 Bash: "cd /h…`, half of every row the same sixteen characters. The bare `↳` still marks
+   * each line as not the main agent's, and a switch of owner — the main agent, or a parallel
+   * subagent — puts the name back on the next line, as does the top of every bubble, so
+   * attribution survives interleaving and sealing at the cost of the old width there.
    */
-  private ownerPrefix(agent: string | undefined): string {
-    return agent === undefined ? '' : `↳ ${this.truncate(agent, AGENT_LABEL_LIMIT)} · `;
+  private ownerPrefix(agent: string | undefined, above: string | undefined): string {
+    if (agent === undefined) return '';
+    if (agent === above) return '↳ ';
+    return `↳ ${this.truncate(agent, AGENT_LABEL_LIMIT)} · `;
   }
 }
 
