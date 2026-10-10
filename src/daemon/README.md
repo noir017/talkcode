@@ -871,10 +871,23 @@ Protocol mapping (verified empirically against agy 1.1.22):
 | `step_update.text_delta` | `onText` (deltas, not cumulative) |
 | `step_type:"tool"` ACTIVE / DONE | `onToolStart` / `onToolFinish` |
 | text↔tool boundary | `onSegmentBreak` |
-| `event:"result"` | turn end (`SUCCESS`, else an error upstream) |
+| `event:"result"` | turn end (`SUCCESS`; `ERROR` fails the turn only if it did not end in a reply — below) |
 | `init.conversation_id` | stored under `(conversation, agy)`, replayed via `--conversation` |
 | `init.model` | `onModel` — stored at spawn, replayed at the top of every turn |
 | SIGINT | abort (agy has no in-band cancel) |
+
+**`result.status` is about the conversation, not the turn** (agy 1.3.2, measured 2026-10-10).
+`num_turns`, `duration_seconds` and `usage` in it are running totals, and once the conversation has
+had an API error — even one retried past seconds later — every later `result` says `ERROR` with that
+error, including after a respawn with `--conversation`. So `translateAgyEvent` does not take the
+status on its own: an `ERROR` fails the turn only when the turn's last output was not the agent's
+reply (an `error_message` step, a tool, or nothing). Otherwise the turn completes; if this turn saw
+an `error_message` step, `onNotice` says it recovered, and if it saw none — agy repeating an old
+error — it is only logged. The `error_message` frame itself carries no reason; the text exists on
+the wire only inside `result.error`. A plain HTTP 5xx is retried inside agy's HTTP layer and never
+reaches the stream at all. `project-scripts/talkcode-agy-stale-error/` reproduces this in an
+isolated `HOME`: error frames through a local proxy that fails chosen model calls, and the stale
+`ERROR` by resuming a copy of an affected conversation.
 
 Launched WITHOUT `--disable-slash-commands`, which it used to carry. Re-probed on agy
 1.2.0 (2026-09-17): a skill slash expands and answers normally, an unrecognized slash

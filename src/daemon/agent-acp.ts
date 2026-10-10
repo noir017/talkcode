@@ -49,6 +49,7 @@ import {
   killChildProcess,
   resolveConversationCwd,
   stripCode,
+  trimReason,
   truncateToolName,
 } from './agent-common.js';
 import { selfInvocation } from './reverse-cli-shim.js';
@@ -354,22 +355,6 @@ export function autonomousResultOrigin(update: SessionUpdate): string | undefine
  * with a probe start the timer at all, and each tick is one bounded tail read.
  */
 const HARNESS_LOG_POLL_MS = 60_000;
-
-/**
- * How much of a harness's logged reason reaches the chat.
- *
- * turn-runner caps the whole failure message at 300 characters, and the timeout sentence already
- * spends ~85 of them; a long reason (opencode's connection errors run past 200) would push the cap
- * over and truncate the message from the RIGHT, cutting the reason's own tail off anyway. Trimming
- * here instead keeps the sentence intact and loses only the far end of a long reason.
- */
-const REASON_MAX_CHARS = 150;
-
-/** A harness's logged reason, flattened to one line and trimmed to fit (see REASON_MAX_CHARS). */
-function trimReason(reason: string): string {
-  const flat = reason.replace(/\s+/g, ' ').trim();
-  return flat.length > REASON_MAX_CHARS ? `${flat.slice(0, REASON_MAX_CHARS - 1)}…` : flat;
-}
 
 /**
  * Grace period after the harness reports a completed result before a burst of out-of-turn output

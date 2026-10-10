@@ -189,6 +189,22 @@ export function buildInputPreview(input: unknown): string {
   return typeof input === 'string' ? input : '';
 }
 
+/**
+ * How much of a harness's reason reaches the chat.
+ *
+ * turn-runner caps the whole failure message at 300 characters, and the timeout sentence already
+ * spends ~85 of them; a long reason (opencode's connection errors run past 200) would push the cap
+ * over and truncate the message from the RIGHT, cutting the reason's own tail off anyway. Trimming
+ * here instead keeps the sentence intact and loses only the far end of a long reason.
+ */
+const REASON_MAX_CHARS = 150;
+
+/** A harness's reason, flattened to one line and trimmed to fit (see REASON_MAX_CHARS). */
+export function trimReason(reason: string): string {
+  const flat = reason.replace(/\s+/g, ' ').trim();
+  return flat.length > REASON_MAX_CHARS ? `${flat.slice(0, REASON_MAX_CHARS - 1)}…` : flat;
+}
+
 /** Non-empty-object check (whether raw input already carries params). */
 export function isNonEmptyObject(v: unknown): boolean {
   return !!v && typeof v === 'object' && Object.keys(v as object).length > 0;

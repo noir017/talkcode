@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agy turn that replied is no longer reported as failed because of an error it already got
+  past.** agy's end-of-turn `result` describes the whole conversation, not the turn — its turn
+  count, duration and token usage are running totals, and its status follows suit: once a
+  conversation has had one API error, even one agy retried successfully four seconds later, every
+  later turn in it ends `status: ERROR` with that same error, restarted process or not. The
+  gateway believed it, so on 2026-10-10 a scheduled run delivered its full report and was then
+  marked ❌ (its schedule recorded as failed), and every turn in that topic afterwards got the
+  same ❌ under a normal reply. The gateway now reads the stream instead: an ERROR result fails the
+  turn only when the turn did not end in the agent's own reply — when its last output was an
+  error step, a tool, or nothing. A turn that hit an error and then replied gets one ⚠️ line
+  saying so; a turn where agy is only repeating an older error gets a line in the log and nothing
+  in the chat. Real failures — retries exhausted, a run cut off mid-tool, nothing written — still
+  end in ❌ with agy's reason.
+
 ## [2.2.0] - 2026-10-10
 
 ### Added
