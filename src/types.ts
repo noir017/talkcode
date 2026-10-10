@@ -239,6 +239,21 @@ export interface SlashCommandSpec {
 export type ConversationId = string;
 
 /**
+ * What happened to a message offered to a turn that was already running (see AgentSession.steer and
+ * InboundMerger), shared because the merger in core/ decides on it and the runtimes in daemon/ produce it.
+ *
+ * - `joined`   — the harness took it into the running turn and will see it at its next natural point
+ *                (between tool calls, before its next request to the model). The turn's reply now
+ *                answers it too, and the turn ends only once it has.
+ * - `detached` — the harness took it, but answers it outside the turn: the turn had finished inside
+ *                the harness a moment before the message got there, and the harness started a turn of
+ *                its own for it (codex-acp does this). The reply arrives as background output.
+ * - `refused`  — the harness has it NOT. Nothing to join, a harness that cannot, or a message that
+ *                must not (a slash command). The caller still holds it and sends it after the turn.
+ */
+export type SteerOutcome = 'joined' | 'detached' | 'refused';
+
+/**
  * Tool-bubble render mode (domain concept shared by the core renderer and config schema).
  * off: no render / all: render every tool / new: dedupe consecutive same-name / verbose: include full args.
  */

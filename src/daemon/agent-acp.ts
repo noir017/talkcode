@@ -19,7 +19,7 @@ import type {
   SessionConfigOption,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentElicitation, ElicitOption, ElicitQuestion } from '../types.js';
+import type { AgentElicitation, ElicitOption, ElicitQuestion, SteerOutcome } from '../types.js';
 import type { AgentDef, Config } from '../config/schema.js';
 import { findAgent } from '../config/schema.js';
 import type {
@@ -33,6 +33,7 @@ import type {
   RunTurnInput,
 } from './agent.js';
 import { harnessLogProbe, readHarnessErrors } from './harness-log.js';
+import { readSteerOutcome, STEER_METHOD, steeringModeOf, steerParams, type SteeringMode } from './acp-steering.js';
 import {
   describeSessionFailure,
   failureNoticeKey,
@@ -84,7 +85,7 @@ const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
  * — no preamble, no reminder — so that what the agent reads is what it was asked (see
  * ipc/commands.ts HELP_TOPICS for what replaced the `<system-reminder>` that used to go first).
  */
-export function promptBlocks(turn: RunTurnInput): ContentBlock[] {
+export function promptBlocks(turn: Pick<RunTurnInput, 'prompt'>): ContentBlock[] {
   return [{ type: 'text', text: turn.prompt }];
 }
 
@@ -286,9 +287,10 @@ export const TOOL_SILENCE_FACTOR = 2;
  * releases it: the next prompt, or a cancel.
  *
  * Seen live 2026-09-29 (web topic, quantlab): the answer streamed in full, then nothing, and the
- * silence watchdog failed the turn ten minutes later as "hung". Most occurrences never get that
- * far — `inbound.interruptOnNewMessage` cancels the stuck turn as soon as the user says anything —
- * which is why thirty-odd folds in a week surfaced as one failure.
+ * silence watchdog failed the turn ten minutes later as "hung". Most occurrences never got that
+ * far — `inbound.interruptOnNewMessage` (removed after 2.0.0) cancelled the stuck turn as soon as the
+ * user said anything — which is why thirty-odd folds in a week surfaced as one failure. Without it,
+ * this grace is what ends such a turn.
  *
  * ── What the gateway can see, and why this waits instead of acting at once ────────────────────
  * The adapter still reports the cycle's end: the result-tied `usage_update` carries the result's
@@ -839,8 +841,8 @@ function createAcpSession(
    *
    * A cancelled tool call still emits its `tool_call_update`, and it arrives AFTER the prompt has
    * settled — so it would either open a "background update" bubble for the tool the user just
-   * stopped, or (on the `interruptOnNewMessage` path, where the continuing batch starts a turn
-   * within milliseconds) be rendered into the NEXT turn's reply. The deleted pre-prompt drain
+   * stopped, or (when a message right after `/stop` starts a turn within milliseconds) be rendered
+   * into the NEXT turn's reply. The deleted pre-prompt drain
    * described exactly this and cleared the queue to prevent it.
    *
    * Answered by identity rather than by a time window, which is what makes it exact: no wreckage
@@ -909,6 +911,23 @@ function createAcpSession(
   }
 
   /**
+   * Open the stretch during which a message sent mid-turn waits for the turn's prompt instead of
+   * being refused (see promptSent). Returns the close, which is idempotent and only clears the
+   * window it opened — so a turn can never close its successor's.
+   */
+  function openPromptWindow(): () => void {
+    let release: () => void = () => {};
+    const sent = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    promptSent = sent;
+    return () => {
+      release();
+      if (promptSent === sent) promptSent = undefined;
+    };
+  }
+
+  /**
    * Whether the harness said it can reload a stored session (initialize → `agentCapabilities.
    * loadSession`). Read once per child and NOT cleared by resetHandles: it describes the harness
    * binary, not the process, and a rebuilt child re-reports the same answer.
@@ -918,6 +937,43 @@ function createAcpSession(
    * because a harness that cannot reload is exactly the one whose child must stay resident.
    */
   let loadSessionSupported = false;
+  /**
+   * How this harness takes a message into a running turn (see SteeringMode), from its `initialize`.
+   * Like loadSessionSupported, a property of the binary: kept across a rebuilt child.
+   */
+  let steeringMode: SteeringMode = 'none';
+  /**
+   * Hands a message to the running turn, set by runTurn once its prompt is out and cleared when it
+   * ends — so its presence is what "a turn is open to messages" means (see steer).
+   */
+  let joinTurn: ((blocks: ContentBlock[]) => Promise<SteerOutcome>) | undefined;
+  /**
+   * Resolves when the running turn's prompt has been sent (or the turn ended without sending one).
+   * A message sent during a slow start — a child spawning, a long `session/load` — waits for this
+   * rather than being refused, which would hold it back for the whole turn.
+   */
+  let promptSent: Promise<void> | undefined;
+  /**
+   * Whether the running turn has a message joined into it that the harness has not taken up yet —
+   * set by runTurn while one does, cleared when it ends. Read by abort() (see `endChildAfterStop`).
+   */
+  let joinedStillQueued: (() => boolean) | undefined;
+  /**
+   * Set by abort() when a stop lands while a joined message is still queued inside the harness:
+   * the turn then ends by ending the child, because a cancel alone does not reach that message.
+   *
+   * Observed 2026-10-10 against claude-agent-acp 0.81 + Claude Code 2.1.296 (the steer probe's `stop`
+   * scenario): a message joined six seconds into a thirty-second command, then `/stop`. The cancel
+   * killed the command and settled both prompts — and five seconds later Claude Code answered the
+   * joined message anyway, as background output. The adapter says as much: on cancel it settles
+   * queued turns, but "each removed queued turn's user message was already pushed to the SDK, which
+   * processes input FIFO and will still emit a result for it" (dist/acp-agent.js `cancel`). A stop
+   * that lets "also deploy it" run afterwards is not a stop. Ending the child takes the queued input
+   * with it, and the next message resumes the conversation through `session/load` — the same path
+   * `/kill` and an idle reclaim take. codex needs none of this: its steered input died with the
+   * interrupted turn in the same probe.
+   */
+  let endChildAfterStop = false;
   /**
    * Model the harness reports as actually serving this session (from the session/new or session/load
    * config options). Undefined when the agent exposes no model selector; the footer then falls back
@@ -1163,6 +1219,7 @@ function createAcpSession(
         },
       });
       loadSessionSupported = initResult.agentCapabilities?.loadSession === true;
+      steeringMode = steeringModeOf(initResult);
 
       // Resume persisted context first: the harness keeps conversation history on its own disk, so a
       // daemon restart only loses the process — session/load replays the stored ACP session into the
@@ -1408,8 +1465,8 @@ function createAcpSession(
    *
    * A cancelled tool call still emits its `tool_call_update`, and it lands AFTER the prompt has
    * settled — so it would either open a "background update" message containing a bubble for the
-   * very tool the user just stopped, or (on the `interruptOnNewMessage` path, where the continuing
-   * batch starts a turn within milliseconds) be rendered into the NEXT turn's reply. The deleted
+   * very tool the user just stopped, or (when the user's next message follows a `/stop` within
+   * milliseconds and starts a turn) be rendered into the NEXT turn's reply. The deleted
    * pre-prompt drain named exactly this case and cleared the queue to prevent it.
    *
    * Two tests, because the cancel and the next turn race:
@@ -1558,7 +1615,7 @@ function createAcpSession(
       const renderable = isRenderableUpdate(update);
 
       // A cancelled tool's trailing update is wreckage, not output. Checked whether or not a turn
-      // is running: on the `interruptOnNewMessage` path the next turn is already under way by the
+      // is running: a message sent right after `/stop` can have the next turn under way by the
       // time it arrives (see isWreckage).
       if (renderable && isWreckage(update)) {
         console.debug(`[acp] ${conversationId}: dropping a trailing update for a tool the cancel killed`);
@@ -1750,14 +1807,23 @@ function createAcpSession(
 
     async runTurn(input: RunTurnInput, handlers: AgentStreamHandlers): Promise<void> {
       aborting = false;
-      await ensureStarted(input.sessionToken);
+      // From here until the prompt is out, a message sent mid-turn waits for it (see promptSent).
+      // Closed on every way out: the prompt sent, the start failing below, or the turn's `finally`.
+      // What runs between this try and that one is synchronous bookkeeping that cannot throw.
+      const closePromptWindow = openPromptWindow();
+      try {
+        await ensureStarted(input.sessionToken);
 
-      // Whatever background output was still rendering belongs to the previous exchange. AWAITED,
-      // not fired and forgotten: in the default `once` delivery mode the burst's whole body is
-      // sent by this call, and the new turn is about to start sending through a different buffer —
-      // unordered, they would interleave and the background report would appear underneath an
-      // answer it has nothing to do with.
-      await closeFollowUp();
+        // Whatever background output was still rendering belongs to the previous exchange. AWAITED,
+        // not fired and forgotten: in the default `once` delivery mode the burst's whole body is
+        // sent by this call, and the new turn is about to start sending through a different buffer —
+        // unordered, they would interleave and the background report would appear underneath an
+        // answer it has nothing to do with.
+        await closeFollowUp();
+      } catch (err) {
+        closePromptWindow();
+        throw err;
+      }
 
       const state = newTranslationState(handlers);
 
@@ -1827,12 +1893,15 @@ function createAcpSession(
       const logWatch = watchHarnessLog(handlers);
       const fold = watchForFoldedPrompt(state);
       /**
-       * This turn's prompt once sent, and its response once settled — the response being what a
+       * The LAST prompt this turn sent, and its response once settled — the response being what a
        * `stop` has to carry to end THIS turn (see endTurnWait: a prompt an earlier turn gave up on
-       * settles later, into this wait).
+       * settles later, into this wait). Usually the turn's only prompt; on a `prompt`-mode harness a
+       * message sent mid-turn adds another (see joinTurn), and the turn then ends on that one.
        */
       let promptDone: Promise<PromptResponse> | undefined;
       let ownResponse: PromptResponse | undefined;
+      /** Whether that last prompt has settled, either way: past this point the turn is ending. */
+      let lastSettled = false;
       onTurnUpdate = (update) => {
         rearmWatchdog();
         // Only once this prompt is out: a cycle that ended before it was sent cannot have absorbed it.
@@ -1840,7 +1909,7 @@ function createAcpSession(
       };
       const settled = new Promise<void>((resolve) => {
         endTurnWait = (response) => {
-          // A rejected read carries nothing: wake, and let promptDone say what went wrong.
+          // A rejected read carries nothing: wake, and let promptFailed say what went wrong.
           if (response === undefined || response === ownResponse) return resolve();
           const ignore = (): void =>
             console.log(`[acp] ${conversationId}: ignoring a stop that belongs to an earlier prompt`);
@@ -1854,6 +1923,48 @@ function createAcpSession(
       const timedOut = new Promise<never>((_, reject) => {
         hung = reject;
       });
+      // Success is waited on via the QUEUE's `stop`, not via the prompt: the harness emits its last
+      // updates (the final usage snapshot among them) before the prompt settles, and the pump
+      // delivers them in order, so `stop` is the only signal meaning "this turn's output has all been
+      // rendered". The prompt alone would finish the turn with renders still queued.
+      //
+      // FAILURE, though, has to be waited on directly, because a failed prompt produces no `stop` —
+      // and `AsyncQueue.reject` is a no-op once the queue has terminally failed, so on a dead
+      // connection nothing would ever wake this turn. It then hung out the full silence watchdog and
+      // blamed the agent for "sending no update", or with `turnTimeoutMs: 0` hung forever, pinning
+      // the conversation in `running`. So: a promise that rejects with the error of ANY prompt this
+      // turn sent and never resolves (success is `settled`'s job). The no-op handler keeps a rejection
+      // arriving after the race is decided from surfacing as unhandled.
+      let failTurn: (err: unknown) => void = () => {};
+      const promptFailed = new Promise<never>((_, reject) => {
+        failTurn = reject;
+      });
+      void promptFailed.catch(() => {});
+      /** Send a prompt as part of this turn, and make it the one the turn ends on. */
+      let unsettled = 0; // this turn's prompts still open: more than one means one is queued behind
+      const send = (session: ActiveSession, blocks: ContentBlock[]): void => {
+        const p = session.prompt(blocks);
+        promptDone = p;
+        ownResponse = undefined;
+        lastSettled = false;
+        unsettled++;
+        // Attached straight after the SDK's own callback (which enqueues the `stop`), so this runs
+        // before the pump can read that `stop` — see endTurnWait above.
+        void p.then(
+          (r) => {
+            unsettled--;
+            if (promptDone !== p) return;
+            ownResponse = r;
+            lastSettled = true;
+          },
+          (err) => {
+            unsettled--;
+            if (promptDone === p) lastSettled = true;
+            failTurn(err);
+          }
+        );
+      };
+      joinedStillQueued = () => unsettled > 1;
       rearmWatchdog();
 
       try {
@@ -1866,32 +1977,32 @@ function createAcpSession(
         // long conversation is guaranteed to lose).
         if (replayFence) await replayFence;
         promptedYet = true; // from here on, renderable output is this session's own (see promptedYet)
-        promptDone = active!.prompt(promptBlocks(input));
-        // Attached straight after the SDK's own callback (which enqueues the `stop`), so this runs
-        // before the pump can read that `stop` — see endTurnWait above.
-        void promptDone.then(
-          (r) => {
-            ownResponse = r;
-          },
-          () => {}
-        );
-        // Pre-attach a no-op rejection handler: when the watchdog wins the race we rethrow without
-        // awaiting the prompt, and a rejection nobody is listening for would surface as an
-        // unhandled rejection. `await promptDone` below still rethrows — a promise can have more
-        // than one handler.
-        void promptDone.catch(() => {});
-        // Success is waited on via the QUEUE's `stop`, not via promptDone: the harness emits its
-        // last updates (the final usage snapshot among them) before the prompt settles, and the
-        // pump delivers them in order, so `stop` is the only signal meaning "this turn's output
-        // has all been rendered". promptDone alone would finish the turn with renders still queued.
-        //
-        // FAILURE, though, has to be waited on directly, because a failed prompt produces no
-        // `stop` — and `AsyncQueue.reject` is a no-op once the queue has terminally failed, so on
-        // a dead connection nothing would ever wake this turn. It then hung out the full silence
-        // watchdog and blamed the agent for "sending no update", or with `turnTimeoutMs: 0` hung
-        // forever, pinning the conversation in `running`. So: a promise that rejects with the
-        // prompt's error and never resolves on success (that half is `settled`'s job).
-        const promptFailed = promptDone.then(() => new Promise<never>(() => {}));
+        const session = active!;
+        const agentCtx = conn!.agent;
+        send(session, promptBlocks(input));
+        joinTurn = steeringMode === 'none' ? undefined : (blocks) => {
+          // The turn's last prompt has settled, so its `stop` is on the way: a message taken now
+          // would be answered by the harness after this turn stopped listening.
+          if (lastSettled || aborting || active !== session) return Promise.resolve('refused');
+          if (steeringMode === 'prompt') {
+            send(session, blocks);
+            return Promise.resolve('joined');
+          }
+          return agentCtx.request(STEER_METHOD, steerParams(session.sessionId, blocks)).then(
+            (res) => {
+              const outcome = readSteerOutcome(res);
+              if (outcome === 'detached') {
+                console.warn(`[acp] ${conversationId}: the turn had ended inside the harness; it answers the message as background output`);
+              }
+              return outcome;
+            },
+            (err: unknown) => {
+              console.warn(`[acp] ${conversationId}: ${STEER_METHOD} failed (${err instanceof Error ? err.message : err}); the message waits for the turn`);
+              return 'refused' as const;
+            }
+          );
+        };
+        closePromptWindow();
         const outcome = await Promise.race([settled, timedOut, promptFailed, fold.folded]);
         if (outcome === 'folded') {
           // Answered inside an autonomous cycle, and the harness will not say so. End the turn with
@@ -1902,8 +2013,9 @@ function createAcpSession(
           flushPendingTools(state);
           return;
         }
-        // Already resolved at stop; here only settles / rethrows an in-turn error.
-        const response = await promptDone;
+        // Already resolved at stop; here only settles / rethrows an in-turn error. The LAST prompt:
+        // the turn ended on its `stop`, and an earlier one's failure already lost the race above.
+        const response = await promptDone!;
         // A failed turn, as an adapter that negotiated failure records reports one: `end_turn`
         // with the failure in `_meta`, where an older contract rejected the prompt. Thrown before
         // the tools are flushed, exactly as a rejection was, so the two read the same downstream.
@@ -1932,7 +2044,26 @@ function createAcpSession(
         turnState = undefined;
         onTurnUpdate = undefined;
         endTurnWait = undefined;
+        joinTurn = undefined;
+        joinedStillQueued = undefined;
+        closePromptWindow();
+        if (endChildAfterStop) {
+          // Before this turn counts as over, so the next one cannot start on the child about to go.
+          endChildAfterStop = false;
+          console.log(
+            `[acp] ${conversationId}: stopped with a joined message still queued in the harness; ending the child so it cannot run it (the next message resumes the session)`
+          );
+          dispose();
+        }
       }
+    },
+
+    async steer(input: Pick<RunTurnInput, 'prompt'>): Promise<SteerOutcome> {
+      // A turn still starting has not sent its prompt: wait for it rather than refuse, or the message
+      // would sit out the whole turn (see promptSent).
+      if (promptSent) await promptSent;
+      if (!joinTurn || aborting) return 'refused';
+      return joinTurn(promptBlocks(input));
     },
 
     setFollowUpSink(sink: FollowUpSink): void {
@@ -1945,6 +2076,9 @@ function createAcpSession(
 
     abort(): void {
       aborting = true;
+      // A joined message the harness has not taken up yet would outlive the cancel (see
+      // endChildAfterStop); the turn ends the child on its way out.
+      if (joinedStillQueued?.()) endChildAfterStop = true;
       // The tools this turn had open are the ones whose trailing updates are wreckage once a NEW
       // turn has cleared `aborting` (see isWreckage). Read off the live turn's ledger, which is
       // why that is a session-level variable. Empty when the cancel beats the harness's first

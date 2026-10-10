@@ -14,7 +14,7 @@ import type {
 /**
  * Answering the agent's question by TYPING instead of tapping.
  *
- * The bug this file pins down: a typed reply used to reach the inbound merger, whose job is to
+ * The bug this file pins down: a typed reply used to reach the inbound merger, whose job was then to
  * interrupt the running turn — and the running turn is the one blocked on the question. So on a
  * multi-question form, answering question 2 in words (because none of its options fit, which is the
  * only reason anyone types) killed the agent mid-form: questions 1 and 2 were answered for nothing
@@ -241,7 +241,7 @@ describe('a typed reply answers the question instead of interrupting the turn', 
     });
   });
 
-  it('a question with no free-text field keeps the old meaning: the message interrupts', async () => {
+  it('a question with no free-text field is not answered by typing — the words wait, /stop is the way out', async () => {
     const r = rig();
     // An MCP server's own elicitation: enum options, no "Other" box. Sending the typed words as the
     // enum value would hand the server something it never offered (see ElicitOption).
@@ -254,8 +254,14 @@ describe('a typed reply answers the question instead of interrupting the turn', 
     await r.send('帮我搭个后端');
     await r.send('都不合适');
 
+    // An ordinary mid-turn message now: it no longer cancels the turn (which used to be the way out
+    // of a question like this), so the question stays on screen and the words wait behind the turn.
+    expect(r.aborts()).toBe(0);
+    expect(r.prompts).toEqual(['帮我搭个后端']);
+    expect(r.answers).toEqual([]);
+
+    await r.send('/stop');
     expect(r.aborts()).toBe(1);
-    expect(r.prompts).toEqual(['帮我搭个后端', '都不合适']);
     expect(r.answers).toEqual([{ action: 'cancel' }]);
   });
 
@@ -265,12 +271,11 @@ describe('a typed reply answers the question instead of interrupting the turn', 
     await r.send('帮我搭个后端');
     await r.send('照这个来', [{ url: 'https://example.com/a.png', name: 'a.png', type: 'image' }]);
 
-    // Interrupts, exactly as it did before: the message is a new instruction carrying a file, and
-    // the wire field a typed answer travels in takes a string. (What the interrupted turn does with
-    // the image afterwards is the attachment path's business, not this one's — it fetches, which
-    // this rig has no network for.)
-    expect(r.aborts()).toBe(1);
-    expect(r.answers).toEqual([{ action: 'cancel' }]);
+    // A new message carrying a file, not an answer: the wire field a typed answer travels in takes a
+    // string. It goes where any mid-turn message goes — and, like any, it cancels nothing, so the
+    // question is still waiting for its answer.
+    expect(r.aborts()).toBe(0);
+    expect(r.answers).toEqual([]);
     expect(r.buttonEdits.some((e) => e.text.includes('Answered'))).toBe(false);
   });
 });
