@@ -43,7 +43,7 @@ import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import type { AgentStatus, ButtonInteraction, InboundMessage, SlashCommandSpec } from '../../types.js';
 import type { ButtonSpec } from '../adapter.js';
 import type { WebuiPlatformConfig } from '../config-schemas.js';
-import { escapeHtml, renderWebMarkdown } from '../web-markdown.js';
+import { escapeHtml, renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import type { ClickRequest, SendRequest, WebEvent, WebMessage } from './protocol.js';
 import type { TerminalSessions } from './terminal-sessions.js';
 import { MAX_TOPICS, TopicStore, type Topic } from './topics.js';
@@ -717,7 +717,10 @@ export class WebRoom {
     const room = this.roomOf(topicId);
     const rec = this.mustFind(room, id, 'edit');
     rec.text = text;
-    rec.msg = { ...rec.msg, html: renderWebMarkdown(text), ...(buttons ? { buttons } : {}) };
+    // A tool bubble stays one: its kind was given on the send, and every edit after it is the
+    // same bubble with another line or another ✓ (see SendOptions in adapter.ts).
+    const html = rec.msg.kind === 'tools' ? renderWebToolLines(text) : renderWebMarkdown(text);
+    rec.msg = { ...rec.msg, html, ...(buttons ? { buttons } : {}) };
     room.stored.set(id, rec);
     this.enqueue(room, topicId, id);
     if (buttons) this.flush(room, topicId);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import { renderWebMarkdown, escapeHtml } from './web-markdown.js';
+import { renderWebMarkdown, renderWebToolLines, escapeHtml } from './web-markdown.js';
+import { formatDuration } from '../core/tool-renderer.js';
 
 /**
  * The security half of these tests is not about markdown at all.
@@ -210,5 +211,64 @@ describe('web-markdown: inline', () => {
 
   it('handles a longer backtick run around a span containing backticks', () => {
     expect(renderWebMarkdown('``a ` b``')).toContain('<code>a ` b</code>');
+  });
+});
+
+describe('web-markdown: a tool bubble', () => {
+  /** One line's markup: the part that folds, and the finish mark that stays in view when there is one. */
+  const tl = (body: string, mark?: string): string =>
+    `<div class="tl"><span class="tl-c">${body}</span>${mark ? `<span class="tl-s">${mark}</span>` : ''}</div>`;
+
+  it('gives every tool line an element of its own', () => {
+    // One element per line is what the page folds and opens. Through renderWebMarkdown the lines
+    // would merge into a single paragraph, and there would be nothing to click.
+    const html = renderWebToolLines('💻 Bash: "ls" ✓ 5ms\n📖 Read: "a.md"');
+    expect(html).toBe(`<div class="tools">${tl('💻 Bash: &quot;ls&quot;', ' ✓ 5ms')}${tl('📖 Read: &quot;a.md&quot;')}</div>`);
+  });
+
+  it('keeps the finish mark apart from the command, in both of the shapes a duration takes', () => {
+    // Folding cuts the end of a long line, and the end is where ✓ says the tool is done. The
+    // shapes come from the renderer's own formatter, so a change to it fails here, not on screen.
+    for (const ms of [832, 1_240, 61_000]) {
+      for (const mark of ['✓', '✗']) {
+        const suffix = ` ${mark} ${formatDuration(ms)}`;
+        expect(renderWebToolLines(`💻 Bash: "make"${suffix}`)).toBe(`<div class="tools">${tl('💻 Bash: &quot;make&quot;', suffix)}</div>`);
+      }
+    }
+  });
+
+  it('leaves a ✓ that is part of the command where it is', () => {
+    // Only the END of a line is the renderer's mark; a running tool has none.
+    expect(renderWebToolLines('💻 Bash: "echo ✓ 5ms done"')).toBe(`<div class="tools">${tl('💻 Bash: &quot;echo ✓ 5ms done&quot;')}</div>`);
+  });
+
+  it('shows a command exactly as it was run, with no markdown read into it', () => {
+    // Commands and paths are what inline markdown mangles: a glob opens emphasis, a snake_case
+    // name opens another, and a backtick in a shell line opens a code span.
+    const line = '💻 Bash: "grep -rn foo_bar_baz *.ts | sed `s/x/y/` **"';
+    const html = renderWebToolLines(line);
+    expect(html).not.toMatch(/<(em|strong|code)>/);
+    expect(html).toContain('foo_bar_baz *.ts | sed `s/x/y/` **');
+  });
+
+  it('escapes a line as unconditionally as a reply', () => {
+    const html = renderWebToolLines('💻 Bash: "echo <img src=x onerror=alert(1)>"');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('renders verbose mode\'s argument dump as the code block it is, outside the lines', () => {
+    const html = renderWebToolLines('💻 Bash: "ls"\n```json\n{\n  "command": "ls"\n}\n```\n📖 Read: "a.md"');
+    expect(html).toBe(
+      '<div class="tools">' +
+        tl('💻 Bash: &quot;ls&quot;') +
+        '<pre><code class="language-json">{\n  &quot;command&quot;: &quot;ls&quot;\n}</code></pre>' +
+        tl('📖 Read: &quot;a.md&quot;') +
+        '</div>'
+    );
+  });
+
+  it('drops blank lines rather than drawing empty rows', () => {
+    expect(renderWebToolLines('\n💻 Bash: "ls"\n\n')).toBe(`<div class="tools">${tl('💻 Bash: &quot;ls&quot;')}</div>`);
   });
 });

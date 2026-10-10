@@ -37,8 +37,15 @@ export interface PlatformAdapter {
   readonly platformType: string;
   readonly capabilities: PlatformCapabilities;
 
-  /** First send; the returned MessageRef is later used for editMessage. */
-  sendMessage(address: ConversationAddress, text: string): Promise<MessageRef>;
+  /**
+   * First send; the returned MessageRef is later used for editMessage.
+   *
+   * `opts.kind` says what the message IS, for a platform that draws kinds differently; every
+   * other implementation ignores it, and may leave the parameter off its signature entirely.
+   * Given on the SEND only: a message's kind does not change, so an implementation that cares
+   * records it here and applies it to every later edit of the same message.
+   */
+  sendMessage(address: ConversationAddress, text: string, opts?: SendOptions): Promise<MessageRef>;
 
   /** In-place edit. When capabilities.editMessage is false the impl should throw, and the caller degrades to resending the whole segment. */
   editMessage(ref: MessageRef, text: string): Promise<void>;
@@ -215,12 +222,35 @@ export interface PlatformAdapter {
   stop(): Promise<void>;
 }
 
+/**
+ * What a sent message is, beyond its text.
+ *
+ * - `tools` — a tool-progress bubble (core/tool-renderer.ts): one `{emoji} {tool}: "{preview}"`
+ *   line per tool call, edited in place as they finish. The web UI draws each line folded to one
+ *   row and lets the reader open it, which is only possible if it knows the lines are tool lines
+ *   and not prose — by the time it reaches an adapter, a bubble is otherwise just text.
+ */
+export interface SendOptions {
+  kind?: 'tools';
+}
+
 export interface PlatformCapabilities {
   editMessage: boolean;
   reaction: boolean;
   typing: boolean;
   /** Per-message text limit; StreamBuffer chunks by it. */
   maxMessageLength: number;
+  /**
+   * How many characters of a tool call's argument preview a tool-bubble line carries here, when
+   * that is MORE than the operator's `tools.previewLimit`. Omit to use that setting as it is,
+   * which is what every chat app should do: the line arrives as plain text there and stays as
+   * long as it is sent, so a short preview is the only way to keep a run of tools readable.
+   *
+   * Declared by the web UI, which folds a long line itself (see SendOptions `tools`) and so can
+   * afford to receive the whole command — the 40 characters a phone needs cut most commands off
+   * before the part that tells two of them apart.
+   */
+  toolPreviewLimit?: number;
   /**
    * How many in-place edits ONE message accepts over its lifetime. Omit when the platform only
    * rate-limits edits (Telegram/Discord/Slack) — that is the common case and means "unbounded".

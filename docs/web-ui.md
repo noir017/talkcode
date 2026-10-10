@@ -39,6 +39,13 @@ behind the topic, the power button beside its title ends the process (`/kill`) �
 conversation is kept, and the next message picks up where it left off. Both simply
 send the command, so a draft in the composer is left where it is.
 
+**Tool calls, in full.** Each tool the agent runs is one row in its tool bubble, and here
+a row carries the whole command — up to 2000 characters — where a chat app gets the
+first 40 (`tools.previewLimit`). The row is cut at the edge of the bubble, so a wide
+screen shows as much as fits, and the ✓ and duration at its end always stay visible.
+Click a row to read it in full, and again to fold it; **Show all** under the bubble
+opens every row, including the ones the agent adds after you press it.
+
 **Built for a bad connection.** Replies are sent when they settle rather than on
 every keystroke of the stream, everything on the wire is compressed, and a dropped
 connection resumes from where it left off instead of re-downloading the

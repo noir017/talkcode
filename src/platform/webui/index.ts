@@ -27,7 +27,7 @@ import { configDir } from '../../config/load.js';
 import type { ConversationAddress } from '../../core/conversation.js';
 import type { MessageRef, SlashCommandSpec } from '../../types.js';
 import type { PlatformAdapter } from '../adapter.js';
-import { renderWebMarkdown } from '../web-markdown.js';
+import { renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import { WebAuth, fileSessionStore } from './auth.js';
 import { CHANNEL, inlineImageType, TopicStore, WebRoom, type WebuiInstance } from './room.js';
 import { createWebServer, type WebServer } from './server.js';
@@ -91,6 +91,13 @@ const CAPABILITIES: PlatformAdapter['capabilities'] = {
    * node. 20k characters is far past any real answer, so nothing is ever split in practice.
    */
   maxMessageLength: 20_000,
+  /**
+   * The whole command, near enough, where a chat app gets the operator's 40 characters: the page
+   * folds every tool line to one row and opens it on a click, so a long one costs nothing until
+   * someone asks to read it. Bounded rather than unlimited because each line is re-sent on every
+   * edit of its bubble, and a heredoc'd script can run to pages — past this it keeps its `…`.
+   */
+  toolPreviewLimit: 2_000,
   // maxEditsPerMessage is deliberately absent: nothing here refuses an edit after N of them.
 };
 
@@ -189,9 +196,13 @@ function outbound(room: WebRoom, instance: WebuiInstance): Outbound {
   });
 
   return {
-    async sendMessage(address, text) {
+    async sendMessage(address, text, opts) {
       const topic = topicOf(address, 'sendMessage');
-      return ref(topic, room.post(topic, { own: false, html: renderWebMarkdown(text) }, text).id);
+      const part =
+        opts?.kind === 'tools'
+          ? { own: false, html: renderWebToolLines(text), kind: 'tools' as const }
+          : { own: false, html: renderWebMarkdown(text) };
+      return ref(topic, room.post(topic, part, text).id);
     },
     async editMessage(r, text) {
       room.revise(topicOf(r.address, 'editMessage'), r.messageId, text);

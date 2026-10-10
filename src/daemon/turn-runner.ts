@@ -608,7 +608,9 @@ export class TurnRunner {
         mode: this.config.tools.mode,
         // Tool-progress grouping (accumulate = edit one bubble in place; needs editBubble).
         grouping: this.config.tools.grouping,
-        previewLimit: this.config.tools.previewLimit,
+        // A platform that folds long lines itself asks for more of each command than a chat app
+        // can show (PlatformCapabilities.toolPreviewLimit); never less than the operator set.
+        previewLimit: Math.max(this.config.tools.previewLimit, platform.capabilities.toolPreviewLimit ?? 0),
         defaultEmoji: this.config.tools.defaultEmoji,
         emojiMap: this.config.tools.emojiMap,
         // Same edit budget the body stream respects: a long tool run seals its bubble and opens a
@@ -628,8 +630,10 @@ export class TurnRunner {
       {
         // The 'progress' lane: a tool bubble is a running commentary, so under congestion it may
         // be superseded or dropped, where the reply may not. Everything else about this sink is
-        // ordinary — the pacing lives in the adapter (daemon/paced-adapter.ts).
-        sendBubble: (text) => progressLane.sendMessage(address, text),
+        // ordinary — the pacing lives in the adapter (daemon/paced-adapter.ts). Marked as a tool
+        // bubble for the platform that draws one differently (SendOptions); the mark rides on the
+        // send alone, since the edits below restate a message whose kind is already known.
+        sendBubble: (text) => progressLane.sendMessage(address, text, { kind: 'tools' }),
         // accumulate mode flushes whole tool progress/completion into one bubble (address closure).
         // Capability-gated: on platforms with editMessage=false (QQ/LINE/WeCom) editMessage throws, so
         // pass undefined to let ToolRenderer degrade to separate (one new bubble per tool) instead of

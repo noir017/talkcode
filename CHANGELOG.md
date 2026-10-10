@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The web UI shows the whole tool command, folded until you ask for it.** A tool bubble's line
+  carried the first 40 characters of a command on every platform (`tools.previewLimit`), which on
+  a phone keeps a run of tools one line each — and also cut almost every command before the part
+  that told two of them apart: a dozen rows of `cd /home/user/workspace/project-scripts...`. The
+  web UI now receives up to 2000 characters per line and does the cutting itself, at the edge of
+  the bubble, so a wide screen shows as much as fits and the ✓ and duration at the end of a line
+  stay in view. Click a row to read it in full, and again to fold it; **Show all** under the bubble
+  opens every row, including those the agent adds after it is pressed, and stays put while the
+  bubble is still being edited. Commands are also shown verbatim now — a `*.ts` or a `foo_bar`
+  in one was being read as markdown emphasis. Chat apps are unchanged: they show the text as sent,
+  so there the short preview is still the right one.
+
 ## [2.1.0] - 2026-10-10
 
 ### Changed

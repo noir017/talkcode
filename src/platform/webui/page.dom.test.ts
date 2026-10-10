@@ -32,6 +32,7 @@ import { JSDOM, type DOMWindow } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 
 import { renderPage } from './page.js';
+import { renderWebToolLines } from '../web-markdown.js';
 
 /** One `fetch` the page made, in the shape the assertions care about. */
 interface Call {
@@ -2636,5 +2637,105 @@ describe('webui page: the agent status strip', () => {
     expect(html.slice(at)).toContain('#status:not(.open) .st-x{display:none}');
     // …and not on the desktop, where there is room.
     expect(html.slice(0, at)).not.toContain('.st-x{display:none}');
+  });
+});
+
+describe('webui page: tool bubbles fold and open', () => {
+  const T = 'a1b2c3d4';
+  const CMD = 'cd /home/user/workspace/project-scripts/dividend-backtest && python3 fetch_prices.py --since 2018';
+
+  /** A tool bubble in the shape `index.ts` posts one: the server's own line markup, and the kind. */
+  function bubble(id: string, lines: string[]): Record<string, unknown> {
+    return { ...message(id, renderWebToolLines(lines.join('\n'))), kind: 'tools' };
+  }
+
+  const rows = (h: Harness): HTMLElement[] => Array.from(h.doc.querySelectorAll<HTMLElement>('#log .tl'));
+  const openRows = (h: Harness): boolean[] => rows(h).map((r) => r.classList.contains('open'));
+  const toggle = (h: Harness): HTMLElement | null => h.doc.querySelector<HTMLElement>('#log [data-tl-all]');
+
+  it('draws each tool on a row of its own, folded, with a way to open them all', async () => {
+    const h = await open();
+    await h.emit(sync(T, [bubble('m1', [`💻 Bash: "${CMD}" ✓ 1.2s`, '📖 Read: "a.md"']), message('m2', '<p>prose</p>')], [T]));
+
+    expect(rows(h)).toHaveLength(2);
+    expect(openRows(h)).toEqual([false, false]);
+    // The whole command is in the row, folded by the stylesheet — not cut by the server.
+    expect(rows(h)[0]?.textContent).toContain('--since 2018');
+    expect(toggle(h)?.textContent).toBe('Show all');
+    // Only a tool bubble offers it: a reply has nothing folded to open.
+    expect(h.doc.querySelectorAll('#log [data-tl-all]')).toHaveLength(1);
+  });
+
+  it('opens one row on a click, and folds it on the next', async () => {
+    const h = await open();
+    await h.emit(sync(T, [bubble('m1', [`💻 Bash: "${CMD}"`, '📖 Read: "a.md"'])], [T]));
+
+    rows(h)[1]!.click();
+    await tick();
+    expect(openRows(h)).toEqual([false, true]);
+    // Answered in the page: opening a line is not a click on the message for the daemon.
+    expect(h.calls.filter((c) => c.path === 'api/click')).toEqual([]);
+
+    rows(h)[1]!.click();
+    await tick();
+    expect(openRows(h)).toEqual([false, false]);
+  });
+
+  it('"Show all" opens every row, and the rows the agent adds after it', async () => {
+    const h = await open();
+    await h.emit(sync(T, [bubble('m1', [`💻 Bash: "${CMD}"`])], [T]));
+
+    await h.click('#log [data-tl-all]');
+    expect(openRows(h)).toEqual([true]);
+    expect(toggle(h)?.textContent).toBe('Collapse');
+
+    // The bubble is still live: the next tool arrives as an edit of the same message.
+    await h.emit({ t: 'msg', msg: bubble('m1', [`💻 Bash: "${CMD}" ✓ 1.2s`, '📖 Read: "a.md"']) });
+    expect(openRows(h)).toEqual([true, true]);
+
+    await h.click('#log [data-tl-all]');
+    expect(openRows(h)).toEqual([false, false]);
+    expect(toggle(h)?.textContent).toBe('Show all');
+  });
+
+  it('keeps an opened row open while the bubble goes on being edited', async () => {
+    // The reason the state lives in the script and not on the element: every edit rewrites the
+    // bubble's markup, and a class set on the old row would snap shut under the reader at the ✓.
+    const h = await open();
+    await h.emit(sync(T, [bubble('m1', [`💻 Bash: "${CMD}"`])], [T]));
+    rows(h)[0]!.click();
+    await tick();
+
+    await h.emit({ t: 'msg', msg: bubble('m1', [`💻 Bash: "${CMD}" ✓ 1.2s`, '📖 Read: "a.md"']) });
+    expect(openRows(h)).toEqual([true, false]);
+    expect(rows(h)[0]?.textContent).toContain('✓ 1.2s');
+  });
+
+  it('a click that ends a selection leaves the row as it was', async () => {
+    // Selecting part of a command to copy it is the other thing done with these rows. Toggling
+    // on that click would repaint the bubble and throw the selection away.
+    const h = await open();
+    await h.emit(sync(T, [bubble('m1', [`💻 Bash: "${CMD}"`])], [T]));
+    const range = h.doc.createRange();
+    range.selectNodeContents(rows(h)[0]!);
+    // Replacing whatever is there: addRange is a no-op on a selection that already holds a range.
+    const sel = h.window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(String(sel)).toContain('python3');
+
+    rows(h)[0]!.click();
+    await tick();
+    expect(openRows(h)).toEqual([false]);
+  });
+
+  it('folds by the stylesheet: the command cut with an ellipsis, the mark kept, wrapping once opened', () => {
+    // Asserted as served text, not through the CSSOM (see the README): without these rules a
+    // "folded" row is just a long line, and every assertion above would pass on a page that
+    // folds nothing. Whether the mark really stays in view is layout, checked in real Chromium.
+    const html = renderPage('Chat', false, true, false);
+    expect(html).toContain('.tl-c{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}');
+    expect(html).toContain('.tl-s{flex:none;white-space:pre}');
+    expect(html).toContain('.tl.open{display:block;white-space:pre-wrap;overflow-wrap:anywhere}');
   });
 });

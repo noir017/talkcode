@@ -295,6 +295,22 @@ body{background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,
 .b a{color:#8fa6c0}
 .q{margin:0 0 6px;padding-left:10px;border-left:2px solid var(--line);color:var(--dim);font-size:13px;max-height:4.8em;overflow:hidden}
 .t{color:var(--dim);font-size:11.5px;margin-top:4px}
+/* A tool-progress bubble: one row per tool call, cut at the bubble's edge rather than at a
+   character count, so a wide screen shows as much of each command as fits and a phone still
+   reads one row per tool. Only the command (.tl-c) is cut: the ✓/✗ and duration after it (.tl-s)
+   stay in view, since they are what says the tool is done. pre on the mark keeps its leading
+   space, which a flex item would otherwise drop — and which a copied line needs. A click opens
+   the row (toggleLine); open, it wraps anywhere, because to a browser a long command or path is
+   one unbreakable word that would widen the bubble. */
+.tl{display:flex;cursor:pointer}
+.tl-c{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-s{flex:none;white-space:pre}
+.tl.open{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
+.tl.open .tl-c{white-space:inherit}
+/* "Show all" / "Collapse", sitting in the timestamp row: a control on every tool bubble, so it is
+   dressed as dim text rather than as one of the message's buttons, which are things to answer. */
+.t .tl-all{background:none;border:0;padding:0 2px;margin-left:10px;font-size:inherit;color:var(--dim);text-decoration:underline;cursor:pointer}
+.t .tl-all:hover{color:var(--fg)}
 .btns{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
 button{background:var(--field);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
 button:hover{border-color:#3a3a3a}
@@ -429,6 +445,8 @@ const SCRIPT = `
   var data={}, els={}, files=[], commands=[], stream=null, done=false;
   // Last markup written per message, so a sync that re-sends an unchanged message touches no DOM.
   var sig={};
+  // The tool-bubble lines a reader has opened, per message key. See lineOpen.
+  var opened={};
   // Whether #log currently holds placeholders rather than messages, and whether the next sync is
   // the one that opens a topic (which lands at the bottom no matter where the old one was read).
   var skeleton=false, entering=true;
@@ -802,8 +820,9 @@ const SCRIPT = `
       + (m._local && m._state === 'sending' ? ' pending' : '')
       + (m._local && m._state === 'failed' ? ' failed' : '');
     var h='';
+    var tools = m.kind === 'tools';
     if(m.quote && m.quote.html) h += '<div class="q">'+m.quote.html+'</div>';
-    h += '<div class="b">'+m.html+'</div>';
+    h += '<div class="b">'+(tools ? foldLines(key, m.html) : m.html)+'</div>';
     if(m.file){
       // An image is drawn, not just named — a screenshot the agent took is about to be looked
       // at, and a round trip through the downloads folder to do that is the friction this
@@ -825,7 +844,7 @@ const SCRIPT = `
     }
     if(m._local && m._state === 'failed') h += failedActions(m);
     var meta = clock(m.at) + (m.reactions && m.reactions.length ? '  '+m.reactions.join(' ') : '');
-    h += '<div class="t">'+text(meta)+'</div>';
+    h += '<div class="t">'+text(meta)+(tools ? allToggle(key) : '')+'</div>';
     // Write nothing when nothing changed. A sync re-paints every message it carries, and most of
     // them are messages already on screen unchanged — rewriting innerHTML for those would drop
     // the caret out of a selection, restart any <img> decode, and undo the enabled state of a
@@ -834,6 +853,69 @@ const SCRIPT = `
     el.className = cls;
     el.innerHTML = h;
     sig[key] = h;
+  }
+
+  /**
+   * Which lines of each tool bubble the reader has opened, by message key: {all, lines: {i: open}}.
+   * A line with no entry of its own follows all, which is how "Show all" also opens the lines the
+   * agent adds after it was pressed.
+   *
+   * Kept here rather than as a class on the elements, because a tool bubble is edited every time
+   * a tool starts or finishes and every edit rewrites its markup — a line opened on the old
+   * element would snap shut under the reader at the next ✓. In memory only: which line someone is
+   * reading is a reading position, not part of the conversation, and the cache does not keep it.
+   * Like a scroll position, though, it is not reset on the way out of a topic (opened is declared
+   * beside sig, and only drop() forgets an entry): coming back finds the same lines open.
+   */
+  function lineOpen(st, i){
+    if(!st) return false;
+    return st.lines[i] !== undefined ? st.lines[i] : st.all;
+  }
+
+  /**
+   * A tool bubble's markup with each line's index stamped on it and the opened ones marked.
+   *
+   * A string rewrite, not a DOM walk, so the result can be compared with what is on screen before
+   * anything is written (see sig in paint). The pattern is exact because the markup is:
+   * renderWebToolLines writes this tag and nothing else, and escapes every < inside a line.
+   */
+  function foldLines(key, html){
+    var st = opened[key], i = 0;
+    return html.replace(/<div class="tl">/g, function(){
+      var n = i++;
+      return '<div class="tl'+(lineOpen(st, n) ? ' open' : '')+'" data-i="'+n+'">';
+    });
+  }
+
+  function allToggle(key){
+    var st = opened[key];
+    return '<button type="button" class="tl-all" data-tl-all="'+text(key)+'">'
+      + (st && st.all ? 'Collapse' : 'Show all') + '</button>';
+  }
+
+  /** Open every line of a tool bubble, or fold them all back. Either way, per-line choices go. */
+  function toggleAll(key){
+    if(!data[key]) return;
+    var st = opened[key];
+    opened[key] = { all: !(st && st.all), lines: {} };
+    paint(key);
+  }
+
+  /**
+   * Open or fold one line. Not when the click ended a drag-select: copying part of a command is
+   * the other thing a reader does with these lines, and repainting the bubble under the selection
+   * would throw it away and fold the line they were copying from.
+   */
+  function toggleLine(line){
+    var sel = window.getSelection ? window.getSelection() : null;
+    if(sel && String(sel)) return;
+    var host = line.closest('[data-k]');
+    var key = host ? host.getAttribute('data-k') : null;
+    if(!key || !data[key]) return;
+    var i = line.getAttribute('data-i');
+    var st = opened[key] || (opened[key] = { all: false, lines: {} });
+    st.lines[i] = !lineOpen(st, i);
+    paint(key);
   }
 
   /**
@@ -862,6 +944,7 @@ const SCRIPT = `
     if(els[key]) { els[key].remove(); delete els[key]; }
     delete data[key];
     delete sig[key];
+    delete opened[key];
     syncEmptyNote();
   }
 
@@ -1816,6 +1899,12 @@ const SCRIPT = `
       if(discard) return discardLocal(discard);
       return;
     }
+    // A tool bubble's lines, opened and folded. Also answered here and never posted: which line
+    // someone is reading is nothing the daemon has a view on.
+    var all = e.target.closest ? e.target.closest('[data-tl-all]') : null;
+    if(all) return toggleAll(all.getAttribute('data-tl-all'));
+    var line = e.target.closest ? e.target.closest('.tl') : null;
+    if(line) return toggleLine(line);
     var b = e.target.closest ? e.target.closest('button[data-btn]') : null;
     if(!b) return;
     b.disabled = true;

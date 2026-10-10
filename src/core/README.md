@@ -329,6 +329,12 @@ and is the one place a `RateLimitedError` becomes a lane pause.
 
 Renders tool progress as bubbles *separate from the body*: `{emoji} {tool}: "{preview}"`.
 
+The line format is read back by one consumer: the web UI's `renderWebToolLines`
+(`platform/web-markdown.ts`) splits a finished line's ` ✓ 1.2s` off its end, so a folded row
+cuts the command and not the mark. A change to the suffix or to `formatDuration` fails
+`web-markdown.test.ts` rather than the page; the preview length itself is the larger of
+`tools.previewLimit` and the platform's `toolPreviewLimit` (the web UI asks for 2000).
+
 A tool a **subagent** ran (`ToolEvent.agent` set) is drawn `↳ {subagent} · {emoji} {tool}:
 "{preview}"`. The marker is text, not indentation or styling, because it has to survive every
 renderer — chat markdown collapses leading whitespace, and only the web UI could style a line. The
