@@ -694,6 +694,81 @@ describe('subagent tools', () => {
 
     expect(sends).toEqual(['↳ 回测按分红选股的收益与回撤，并… · 💻 Bash: "python3 fetch_prices.py"']);
   });
+
+  it('name the subagent once per run: the lines under it keep only the ↳', async () => {
+    // The 2026-10-10 phone screenshot: fifteen of one subagent's lines, each repeating its name.
+    const { sink, edits, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'accumulate' }), sink);
+    const agent = '接手修复 quantlab 存量数据';
+
+    r.onToolStart(start('Task', agent, 0));
+    r.onToolStart({ ...start('Bash', 'cd /home/user/workspace/quantlab', 1), agent });
+    r.onToolStart({ ...start('Read', '/home/user/workspace/quantlab/a.py', 2), agent });
+    r.onToolFinish(finish('Bash', true, 97, 1));
+    r.onToolStart({ ...start('Bash', 'ls /tmp', 3), agent });
+    await flush();
+
+    expect(edits[edits.length - 1]!.text).toBe(
+      [
+        '⚙️ Task: "接手修复 quantlab 存量数据"',
+        '↳ 接手修复 quantlab 存… · 💻 Bash: "cd /home/user/workspace/quantlab" ✓ 97ms',
+        '↳ 📖 Read: "/home/user/workspace/quantlab/a.py"',
+        '↳ 💻 Bash: "ls /tmp"',
+      ].join('\n')
+    );
+  });
+
+  it('put the name back whenever the owner changes, so interleaved runs stay attributed', async () => {
+    const { sink, edits, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'accumulate' }), sink);
+
+    r.onToolStart({ ...start('Bash', 'a1', 0), agent: 'alpha' });
+    r.onToolStart({ ...start('Bash', 'a2', 1), agent: 'alpha' });
+    r.onToolStart({ ...start('Bash', 'b1', 2), agent: 'beta' });
+    r.onToolStart({ ...start('Bash', 'a3', 3), agent: 'alpha' });
+    r.onToolStart(start('Bash', 'main', 4));
+    r.onToolStart({ ...start('Bash', 'a4', 5), agent: 'alpha' });
+    r.onToolStart({ ...start('Bash', 'a5', 6), agent: 'alpha' });
+    await flush();
+
+    expect(edits[edits.length - 1]!.text).toBe(
+      [
+        '↳ alpha · 💻 Bash: "a1"',
+        '↳ 💻 Bash: "a2"',
+        '↳ beta · 💻 Bash: "b1"',
+        '↳ alpha · 💻 Bash: "a3"',
+        '💻 Bash: "main"',
+        '↳ alpha · 💻 Bash: "a4"',
+        '↳ 💻 Bash: "a5"',
+      ].join('\n')
+    );
+  });
+
+  it('name the owner again at the top of a new bubble, even mid-run', async () => {
+    // The line above it is in the sealed bubble now, out of sight once the chat scrolls.
+    const { sink, sends, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'accumulate', maxEdits: 1 }), sink);
+
+    r.onToolStart({ ...start('Bash', 'one', 0), agent: 'probe' }); // bubble 1
+    await flush();
+    r.onToolFinish(finish('Bash', true, 500, 0)); // its one edit, ✓ delivered
+    await flush();
+    r.onToolStart({ ...start('Bash', 'two', 1), agent: 'probe' }); // budget spent → bubble 2
+    await flush();
+
+    expect(sends).toEqual(['↳ probe · 💻 Bash: "one"', '↳ probe · 💻 Bash: "two"']);
+  });
+
+  it('in separate grouping, name the owner on every bubble: there is no line above to share it', async () => {
+    const { sink, sends, flush } = makeSink({ withEdit: true });
+    const r = new ToolRenderer(makeOpts({ grouping: 'separate' }), sink);
+
+    r.onToolStart({ ...start('Bash', 'one'), agent: 'probe' });
+    r.onToolStart({ ...start('Read', 'two'), agent: 'probe' });
+    await flush();
+
+    expect(sends).toEqual(['↳ probe · 💻 Bash: "one"', '↳ probe · 📖 Read: "two"']);
+  });
 });
 
 /**

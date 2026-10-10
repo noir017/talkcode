@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **A subagent's tool lines name it once, not on every line.** Since 2.0.1 each line a subagent
+  produced led with `↳` and its name, cut to sixteen characters — and the name was repeated on all
+  of them. A subagent's tools usually come as one long unbroken run, so on a phone half of every
+  row was the same label and the command it was there to show had shrunk to `Bash: "cd /h…`;
+  fifteen rows of one subagent's work told you its name fifteen times and almost nothing else. Now
+  the first line of a run carries the name and the lines under it keep only the `↳`
+  (`↳ 💻 Bash: "cd /home/user/…"`), so the width goes to the command. The name comes back wherever
+  it is needed to tell lines apart: when the owner changes — the main agent, or another subagent
+  running in parallel — and at the top of every new tool message, since the line it would refer
+  to may have scrolled away. Every platform gets this, not only the web UI: in the chat apps, where a
+  long line wraps instead of being cut, the label alone was enough to push a line onto a second row.
+
 ## [2.2.1] - 2026-10-10
 
 ### Fixed
