@@ -98,7 +98,7 @@ export class ScheduleService {
     const now = this.clock.now();
     if (id !== undefined) {
       const task = this.scheduler.get(id);
-      if (!task) throw new Error(`no scheduled task #${id}; \`agent-anywhere schedule list\` shows them all`);
+      if (!task) throw new Error(`no scheduled task #${id}; \`talkcode schedule list\` shows them all`);
       return { tasks: [taskView(task, now, { detail: true, here: caller })] };
     }
     return { tasks: this.scheduler.list().map((t) => taskView(t, now, { here: caller })) };

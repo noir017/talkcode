@@ -497,7 +497,7 @@ export function taskCardText(task: ScheduleTask, verb: string, now: number): str
 /** One line per task, for `/setting schedule` where there are no buttons. */
 export function taskListText(tasks: readonly ScheduleTask[], now: number): string {
   if (tasks.length === 0) {
-    return 'No scheduled tasks. An agent registers one with `agent-anywhere schedule add` — ask for "every morning at 8, …" in any conversation.';
+    return 'No scheduled tasks. An agent registers one with `talkcode schedule add` — ask for "every morning at 8, …" in any conversation.';
   }
   return ['**Scheduled tasks**', ...tasks.map((t) => taskLine(t, now))].join('\n');
 }

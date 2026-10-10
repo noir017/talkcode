@@ -28,7 +28,7 @@ describe('NATIVE_TOOLS', () => {
   });
 
   it('describes what a tool does, never where the agent is running', () => {
-    for (const t of NATIVE_TOOLS) expect(t.description).not.toMatch(/gateway|agent-anywhere|chat bot/i);
+    for (const t of NATIVE_TOOLS) expect(t.description).not.toMatch(/gateway|talkcode|chat bot/i);
   });
 });
 

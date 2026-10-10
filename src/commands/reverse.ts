@@ -62,7 +62,7 @@ export function normalizeActionPaths(action: IpcAction, base = process.cwd()): I
 
 /**
  * Unified execution for reverse commands: connect back to the daemon. Reused by the
- * cli.ts subcommands. Reached when the agent runs `agent-anywhere send-file ./out.png` in a shell.
+ * cli.ts subcommands. Reached when the agent runs `talkcode send-file ./out.png` in a shell.
  *
  * This function is the AXI output boundary: the daemon speaks plain JSON over IPC, and we
  * convert it to token-efficient TOON on stdout here (errors included, so the agent can read them).
@@ -337,7 +337,7 @@ export function friendlyError(error: string, socket: string): { error: string; h
   if (error.includes('ENOENT') || error.includes('ECONNREFUSED')) {
     return {
       error: `cannot reach the daemon (socket: ${socket}): ${error}`,
-      help: 'Make sure `agent-anywhere start` is running, then retry.',
+      help: 'Make sure `talkcode start` is running, then retry.',
     };
   }
   return { error };

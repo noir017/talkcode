@@ -19,7 +19,15 @@ bot; the agent runs on the operator's machine; its answer streams back into a si
 live-edited message.
 
 Node ≥ 20, TypeScript ESM (`"type": "module"`, `module: NodeNext`), strict mode with
-`noUncheckedIndexedAccess`. Published to npm as `agent-anywhere-cli`.
+`noUncheckedIndexedAccess`. Not published to npm: a release is a GitHub Release carrying
+`talkcode-X.Y.Z.tgz` and its `SHA256SUMS`, which is what the deployment image installs.
+
+The project was called `agent-anywhere` — a fork of
+[l0ng-ai/agent-anywhere](https://github.com/l0ng-ai/agent-anywhere), whose maintainer asked
+for a distinct name — until 2.0.0 (2026-10-10), when the repository, package, command,
+config directory and `TALKCODE_*` variables were renamed in one step, with no compatibility
+shims. CHANGELOG entries before 2.0.0 and the history of `noir017/agent-anywhere` use the
+old names; read them as this project.
 
 ## Module map
 
@@ -86,7 +94,7 @@ get an explicit Hyrum's Law warning and a contract test.
 
 **Single sources of truth.** Several lists are deliberately defined once and consumed
 in many places. Extend the source, never a copy:
-- `ipc/commands.ts` `REVERSE_COMMANDS` → CLI registration, the `agent-anywhere help` pages
+- `ipc/commands.ts` `REVERSE_COMMANDS` → CLI registration, the `talkcode help` pages
   (`HELP_TOPICS`), the native tools' parameters and validation (`ipc/tools.ts`), docs.
 - `core/command-translate.ts` `GENERIC_COMMANDS` → the registered slash menu + translation.
 - `core/settings.ts` — the `/setting` table → the menu rows, the text list, value validation,
@@ -187,7 +195,7 @@ Do not weaken these without saying so explicitly in the PR:
   `AgentFactory` if it does not (as `agent-agy.ts` does).
   See [src/daemon/README.md](src/daemon/README.md).
 - **A reverse command** → an arm in the `IpcAction` union + an entry in
-  `REVERSE_COMMANDS`, whose required `topic` puts it on an `agent-anywhere help` page; CLI
+  `REVERSE_COMMANDS`, whose required `topic` puts it on an `talkcode help` page; CLI
   registration and the help page follow automatically, and a missing `handleReverse` arm fails
   to compile. Do not make it a native tool (`NATIVE_TOOLS` in `ipc/tools.ts`) by default: every
   tool's schema rides along in every request on every harness, so a tool has to be something an
@@ -226,7 +234,7 @@ Deployment spans two repositories and three steps. **Do steps 1 and 2. Never do 
 | # | step | who |
 |---|---|---|
 | 1 | `npm run release -- X.Y.Z --push` → pushes `main` + the tag → `release.yml` publishes a GitHub Release (tarball + `SHA256SUMS`) | **you** |
-| 2 | in the `uniagent` repo: `gh workflow run bump-agent-anywhere.yml -f version=X.Y.Z` → multi-arch image to GHCR | **you** |
+| 2 | in the `uniagent` repo: `gh workflow run bump-talkcode.yml -f version=X.Y.Z` → multi-arch image to GHCR | **you** |
 | 3 | on the oracle host: `uniagent update` | **the operator, by hand** |
 
 **Step 3 is not yours, and not because of caution.** The daemon running in that container is
@@ -260,7 +268,7 @@ invocation from memory. If this line ever stops being true, fix it here rather t
 guessing at the call site.
 
 > **Running the test suite touches this machine's live daemon.** `ensureReverseCliShim()`
-> writes `~/.config/agent-anywhere/bin/agent-anywhere`, a path shared with whatever daemon
+> writes `~/.config/talkcode/bin/talkcode`, a path shared with whatever daemon
 > is actually running here, and that directory leads its agents' `PATH`. It now refuses to
 > write unless `argv[1]` really is this CLI (`isCliEntry`) — before that guard, a test run
 > repointed the shim at vitest's worker entry and every live `send-message` / `ask` /

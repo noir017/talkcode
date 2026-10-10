@@ -18,7 +18,7 @@ import {
 /** A workspace of the shape this feature was built for: a root plus one directory per project. */
 const OPTIONS: WorkdirOption[] = [
   { path: '/home/u/workspace', name: 'workspace', root: true },
-  { path: '/home/u/workspace/agent-anywhere', name: 'agent-anywhere' },
+  { path: '/home/u/workspace/talkcode', name: 'talkcode' },
   { path: '/home/u/workspace/quantlab', name: 'quantlab' },
   { path: '/home/u/workspace/quantlab-agents', name: 'quantlab-agents' },
   { path: '/home/u/workspace/tools', name: 'tools' },

@@ -28,18 +28,18 @@ const version = (createRequire(import.meta.url)('../package.json') as { version:
 
 const program = new Command();
 program
-  .name('agent-anywhere')
+  .name('talkcode')
   .description('Gateway that connects IM platforms to coding agents: messaging via Koishi, handled over ACP')
   .version(version)
-  // Global: pick a specific config file (e.g. one per platform). Default is ~/.config/agent-anywhere/config.yaml.
+  // Global: pick a specific config file (e.g. one per platform). Default is ~/.config/talkcode/config.yaml.
   // We stash it on process.env so it's inherited by the spawned agent — its reverse commands then resolve
   // the same config/socket. Only one daemon runs at a time, so the socket sits next to the chosen file.
-  .option('-c, --config <path>', 'path to the config YAML to use (default: ~/.config/agent-anywhere/config.yaml)');
+  .option('-c, --config <path>', 'path to the config YAML to use (default: ~/.config/talkcode/config.yaml)');
 
 // Set the override before any subcommand action runs (setup/start/doctor/reverse all read it via configPath()).
 program.hook('preAction', (thisCommand) => {
   const file = thisCommand.opts().config as string | undefined;
-  if (file) process.env.AGENT_ANYWHERE_CONFIG_FILE = file;
+  if (file) process.env.TALKCODE_CONFIG_FILE = file;
 });
 
 // AXI §6: agents read stdout, not stderr. Commander writes usage/validation errors to stderr by
@@ -48,7 +48,7 @@ program.configureOutput({ writeErr: (str) => process.stdout.write(str) });
 
 // --- Management commands ---
 program.command('setup').description('Interactive configuration wizard').action(runSetup);
-// doctor is the default: running `agent-anywhere` with no args shows live state (AXI §8), and being
+// doctor is the default: running `talkcode` with no args shows live state (AXI §8), and being
 // read-only it's safe to trigger accidentally — unlike starting a daemon.
 program
   .command('doctor', { isDefault: true })
@@ -57,7 +57,7 @@ program
   .action((opts: { migrateConfig?: boolean }) => runDoctor({ migrateConfig: opts.migrateConfig }));
 program.command('start').description('Start the daemon').action(runStart);
 
-// --- Reverse commands (run by the agent in a shell; located by AGENT_ANYWHERE_TURN_TOKEN) ---
+// --- Reverse commands (run by the agent in a shell; located by TALKCODE_TURN_TOKEN) ---
 // All derived from the single REVERSE_COMMANDS source, keeping cli, help pages, tools and IPC protocol consistent.
 for (const spec of REVERSE_COMMANDS) {
   const cmd = program.command(spec.usage).description(spec.description);
@@ -88,7 +88,7 @@ program
 program.helpCommand(false);
 program
   .command('help [topic]')
-  .description('agent-anywhere commands by topic (schedule, channels, …); `help <command>` for one command')
+  .description('talkcode commands by topic (schedule, channels, …); `help <command>` for one command')
   .action((topic?: string) => {
     if (!topic) {
       console.log(renderHelpIndex());
@@ -104,7 +104,7 @@ program
       console.log(cmd.helpInformation());
       return;
     }
-    console.log(encode({ error: `no help topic or command "${topic}"`, help: 'Run `agent-anywhere help` for the topic list.' }));
+    console.log(encode({ error: `no help topic or command "${topic}"`, help: 'Run `talkcode help` for the topic list.' }));
     process.exitCode = 1;
   });
 

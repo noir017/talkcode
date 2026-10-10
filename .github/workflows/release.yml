@@ -7,9 +7,8 @@ name: Release
 # This workflow runs the same gates on a tag and attaches the tarball to a
 # permanent Release, so `npm i -g <release-url>` is a URL anyone can paste.
 #
-# npm publishing is a separate concern and lives in `publish.yml` — which is
-# fenced to the upstream repository, since this fork does not own the package
-# name on the registry.
+# That Release is the only distribution: talkcode is not on npm, and the
+# deployment image installs this tarball by URL, pinned by its SHA256SUMS line.
 
 on:
   push:

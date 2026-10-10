@@ -1,11 +1,10 @@
 <div align="center">
 
-# Agent Anywhere
+# talkcode
 
 **Your coding agent, in every chat app.**
 
-[![CI](https://github.com/noir017/agent-anywhere/actions/workflows/ci.yml/badge.svg)](https://github.com/noir017/agent-anywhere/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/agent-anywhere-cli)](https://www.npmjs.com/package/agent-anywhere-cli)
+[![CI](https://github.com/noir017/talkcode/actions/workflows/ci.yml/badge.svg)](https://github.com/noir017/talkcode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 English | [简体中文](README.zh-CN.md)
@@ -17,6 +16,9 @@ Codex, OpenCode (via the [Agent Client Protocol](https://agentclientprotocol.com
 or Google's Antigravity CLI. Message the bot; the agent runs on your machine and
 streams its answer into a single, live-edited message.
 
+Forked from [l0ng-ai/agent-anywhere](https://github.com/l0ng-ai/agent-anywhere); this project
+was called `agent-anywhere` until 2.0.0.
+
 ```text
  Discord ───┐
  Telegram ──┤     ┌──────────────────────┐
@@ -25,7 +27,7 @@ streams its answer into a single, live-edited message.
  QQ ────────┼────►│  streaming · access  │       ├─► opencode
  LINE ──────┤     └──────────▲───────────┘       ├─► agy
  WeCom ─────┤                │ unix socket       └─► custom
- DingTalk ──┤                └─ agent-anywhere CLI (send-file / ask / react …)
+ DingTalk ──┤                └─ talkcode CLI (send-file / ask / react …)
  Web UI ────┘  (a browser page the daemon serves itself — no bot, no account)
 ```
 
@@ -45,12 +47,15 @@ streams its answer into a single, live-edited message.
 
 ## Quick start
 
-```bash
-npm install -g agent-anywhere-cli
+talkcode is not on npm. Install the tarball attached to the
+[latest release](https://github.com/noir017/talkcode/releases/latest), with `X.Y.Z` its version:
 
-agent-anywhere setup    # wizard: platform, credentials, agent
-agent-anywhere doctor   # self-check
-agent-anywhere start    # message your bot
+```bash
+npm install -g https://github.com/noir017/talkcode/releases/download/vX.Y.Z/talkcode-X.Y.Z.tgz
+
+talkcode setup    # wizard: platform, credentials, agent
+talkcode doctor   # self-check
+talkcode start    # message your bot
 ```
 
 `harness: claude` reuses this machine's `claude /login` session — no API key
@@ -62,9 +67,10 @@ needed for personal use.
 Paste into Claude Code (or any coding agent):
 
 ```text
-Set up https://github.com/noir017/agent-anywhere for me: install the CLI
-(npm i -g agent-anywhere-cli), then follow the skill bundled in the installed
-package (skill/SKILL.md, under `npm root -g`/agent-anywhere-cli) to configure
+Set up https://github.com/noir017/talkcode for me: install the CLI
+from the latest GitHub release's talkcode-X.Y.Z.tgz (npm i -g <its URL>;
+it is not on npm), then follow the skill bundled in the installed
+package (skill/SKILL.md, under `npm root -g`/talkcode) to configure
 and start it.
 ```
 
@@ -72,7 +78,7 @@ and start it.
 
 ## Configuration
 
-`~/.config/agent-anywhere/config.yaml`, or `--config <path>`:
+`~/.config/talkcode/config.yaml`, or `--config <path>`:
 
 ```yaml
 version: 1
@@ -155,7 +161,7 @@ other than its session:
   the name of agy's default model, which nothing else reports — straight back to
   the daemon over a pipe for the footer, and still draws a status line for your
   terminal. Set
-  `AGENT_ANYWHERE_NO_AGY_STATUSLINE=1` to leave the setting alone and go without
+  `TALKCODE_NO_AGY_STATUSLINE=1` to leave the setting alone and go without
   the numbers.
 - **Skills** are read from `<cwd>/.agents/skills`, `~/.agents/skills`,
   `~/.gemini/antigravity-cli/skills`, `~/.gemini/skills` and
@@ -216,7 +222,7 @@ every other platform gets: streaming replies, tool bubbles, the `/model`, `/effo
 the same way a Telegram forum topic or a Feishu 话题 does: each has its own agent
 session and its own context, and each gets named automatically from what it turned
 out to be about. `+` opens one; the agent can open one itself with
-`agent-anywhere create-thread`, and write into one with `--channel main/<topic id>`.
+`talkcode create-thread`, and write into one with `--channel main/<topic id>`.
 
 **Stopping it.** While a reply is streaming, **Stop** beside Send ends the turn
 (`/stop`) — and the same goes for an agent reporting back on background work after
@@ -249,7 +255,7 @@ platforms:
     token: ${AA_WEB_TOKEN}
     terminal:
       enabled: true
-      socket: ~/.config/agent-anywhere/webui-term-web.sock   # where your ttyd listens
+      socket: ~/.config/talkcode/webui-term-web.sock   # where your ttyd listens
       # Optional: how to END a session. Without it the window has no close button,
       # only minimize — because what holds a session open on the far side is your
       # arrangement, not this daemon's. argv, never a shell string.
@@ -261,7 +267,7 @@ platforms:
 # session in tmux — otherwise closing the tab kills whatever was running in it.
 printf '#!/bin/sh\nexec tmux -L aa-web new -A -s "aa-$1"\n' > /usr/local/bin/aa-terminal.sh
 chmod +x /usr/local/bin/aa-terminal.sh
-ttyd -i ~/.config/agent-anywhere/webui-term-web.sock -b /term -W -a -O \
+ttyd -i ~/.config/talkcode/webui-term-web.sock -b /term -W -a -O \
      -T xterm-256color /usr/local/bin/aa-terminal.sh
 ```
 
@@ -307,7 +313,7 @@ platforms:
 `from` is required, and is the reason a forged header is not interesting even if
 something above it is misconfigured: the signature makes forgery useless, and
 `from` makes a mistake in the four fields above it survivable. A refusal logs the
-address it came from, which is how you find what to put there. `agent-anywhere
+address it came from, which is how you find what to put there. `talkcode
 doctor` fetches the JWKS and reports how many keys it found — do that before
 setting `password: false`, because with the password door shut a provider outage
 means nobody opens the page at all.
@@ -525,9 +531,9 @@ voice:
   instruction about a file, so the file goes to the agent as before.
 - Ogg, WebM, MP4/M4A, MP3, WAV, AAC and FLAC are transcribed. QQ's and WeCom's
   voice codecs (SILK, AMR) are not — you are told so.
-- Every transcription is logged to `~/.config/agent-anywhere/voice-log.jsonl`
+- Every transcription is logged to `~/.config/talkcode/voice-log.jsonl`
   with its saved audio file, and the agent can look its conversation's
-  transcripts up with `agent-anywhere voice-log` when a message reads like a
+  transcripts up with `talkcode voice-log` when a message reads like a
   mishearing.
 - Platforms that cannot show buttons (QQ, LINE, WeCom, DingTalk) send on
   automatically, and the card says why.
@@ -616,7 +622,7 @@ which the harnesses' own schedulers do not.
 | prompt, **new session** | a fresh session each run, by any agent | a new topic per run where the platform can open one (web UI, Telegram forums, Discord), else this chat; no time limit |
 | **bash** | a command, run by the gateway itself — no agent | exit code, duration and the end of the output, long output attached |
 
-Output can go to any chat the gateway has answered in, on any platform (`agent-anywhere
+Output can go to any chat the gateway has answered in, on any platform (`talkcode
 channels` lists them). A run the gateway missed by less than an hour — it was restarting — is
 made when it comes back; older is recorded as missed. Every change posts a card with the task's
 details, written by the gateway rather than the agent, so what you read is what will run.
@@ -639,7 +645,7 @@ it can do beyond answering reaches it the way any capability does, through its o
   reads skills — `~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex and OpenCode,
   `~/.gemini/config/skills` for Antigravity — once that harness has been run on the machine. Until it is
   needed, it costs the one line of description every skill costs. Its body points at
-  `agent-anywhere help <topic>` — `files`, `schedule`, `channels`, `history`, `messages`,
+  `talkcode help <topic>` — `files`, `schedule`, `channels`, `history`, `messages`,
   `threads`, `ask`, `voice` — which prints that topic's commands and rules.
 
 Antigravity (`agy`) gets the skill only: it has no per-session way to add tools, and the gateway

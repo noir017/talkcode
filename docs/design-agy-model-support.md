@@ -238,12 +238,12 @@ export function createAgyAgentFactory(
 
 | File | What changes | Why |
 |---|---|---|
-| [`agent-agy.ts`](file:///home/user/workspace/agent-anywhere/src/daemon/agent-agy.ts) | Add `fetchModels()`, `cachedModels`, implement `modelSelector()` and `setModel()` on the session | The session is the single place the daemon reads a model selector |
-| [`command-translate.ts`](file:///home/user/workspace/agent-anywhere/src/core/command-translate.ts) | Add `'agy'` to `GENERIC_COMMANDS.model.local` | Without this, `/model` on an agy conversation returns "unsupported" instead of reaching the local handler |
-| [`agent-agy.test.ts`](file:///home/user/workspace/agent-anywhere/src/daemon/agent-agy.test.ts) | Add tests for `modelSelector()`, `setModel()` (verifies teardown, def.model mutation, respawn with new model) | The existing suite covers protocol translation; model switching is a new path |
-| [`daemon/README.md`](file:///home/user/workspace/agent-anywhere/src/daemon/README.md) | Update the "Models" paragraph in the `agent-agy.ts` section | The README currently says "no selector and no in-process switch"; after this, there IS a selector |
-| [`core/README.md`](file:///home/user/workspace/agent-anywhere/src/core/README.md) | Update the `local` table to include agy for `/model` | The table currently lists only opencode and claude |
-| [`CHANGELOG.md`](file:///home/user/workspace/agent-anywhere/CHANGELOG.md) | Entry under `## [Unreleased]` | User-visible change |
+| [`agent-agy.ts`](../src/daemon/agent-agy.ts) | Add `fetchModels()`, `cachedModels`, implement `modelSelector()` and `setModel()` on the session | The session is the single place the daemon reads a model selector |
+| [`command-translate.ts`](../src/core/command-translate.ts) | Add `'agy'` to `GENERIC_COMMANDS.model.local` | Without this, `/model` on an agy conversation returns "unsupported" instead of reaching the local handler |
+| [`agent-agy.test.ts`](../src/daemon/agent-agy.test.ts) | Add tests for `modelSelector()`, `setModel()` (verifies teardown, def.model mutation, respawn with new model) | The existing suite covers protocol translation; model switching is a new path |
+| [`daemon/README.md`](../src/daemon/README.md) | Update the "Models" paragraph in the `agent-agy.ts` section | The README currently says "no selector and no in-process switch"; after this, there IS a selector |
+| [`core/README.md`](../src/core/README.md) | Update the `local` table to include agy for `/model` | The table currently lists only opencode and claude |
+| [`CHANGELOG.md`](../CHANGELOG.md) | Entry under `## [Unreleased]` | User-visible change |
 
 ## What this does NOT add
 

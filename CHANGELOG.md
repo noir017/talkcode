@@ -5,6 +5,42 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **The project is now talkcode, and every name it answers to changed with it.** It began as a fork
+  of [l0ng-ai/agent-anywhere](https://github.com/l0ng-ai/agent-anywhere) and kept that project's
+  npm package name, `agent-anywhere-cli`, which belongs to the upstream maintainer: the npm badge
+  and the `npm install -g agent-anywhere-cli` line in this README installed his 0.3.x, not this.
+  He asked for a distinct name, and a new package name under the old project name would only have
+  moved the confusion, so everything was renamed in one step:
+  - the command, `agent-anywhere` → `talkcode` — and with it every reverse command an agent runs
+    (`talkcode send-file`, `talkcode help`, …);
+  - the config directory, `~/.config/agent-anywhere` → `~/.config/talkcode`, and the auto-created
+    agent workspaces, `~/.agent-anywhere/agents/<id>` → `~/.talkcode/agents/<id>`;
+  - the environment variables, `AGENT_ANYWHERE_*` → `TALKCODE_*`;
+  - the package, `agent-anywhere-cli` → `talkcode`, so the release asset is `talkcode-X.Y.Z.tgz`
+    and a global install lives at `$(npm root -g)/talkcode`;
+  - the bundled skill and the MCP server, both now `talkcode`, which is also the name of the
+    skill's link in each harness's skill directory;
+  - the repository, now [noir017/talkcode](https://github.com/noir017/talkcode). Releases up to
+    1.40.0 stay attached to `noir017/agent-anywhere`, which also still carries the branches of
+    the pull requests open against upstream.
+
+  **Nothing reads the old names** — no fallback to the old config directory, no alias for the old
+  command, no `AGENT_ANYWHERE_*` honoured. There was one deployment, and its image's start script
+  moves it across once; anything else has to move by hand: `mv ~/.config/agent-anywhere
+  ~/.config/talkcode`, fix any absolute path inside `config.yaml` that names the old directory
+  (the web UI terminal's `socket:` is the usual one), delete the stale `agent-anywhere` links in
+  `~/.claude/skills` and `~/.agents/skills`, and `npm uninstall -g agent-anywhere-cli`. The two
+  packages no longer share a command name, so installing talkcode does not displace the old one.
+- **Installation is from the GitHub Release tarball.** talkcode is not on npm; the README now says
+  so and installs `talkcode-X.Y.Z.tgz` by URL.
+
+### Removed
+
+- **The npm publish workflow.** It was fenced to the upstream repository and never ran here, and
+  there is no npm package to publish to.
+
 ## [1.40.0] - 2026-10-09
 
 ### Changed

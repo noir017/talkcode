@@ -16,7 +16,7 @@ import { PlatformConfigSchema, type PlatformInstance } from '../platform/config-
  *
  * Written by the setup wizard (slim), validated by doctor, read by the daemon (full).
  * v0 files (single `platform:` object) are auto-migrated in memory at load
- * (config/migrate.ts); `agent-anywhere doctor --migrate-config` rewrites the file.
+ * (config/migrate.ts); `talkcode doctor --migrate-config` rewrites the file.
  */
 
 // Authoritative type lives in types.ts; here we only build the validation enum from it.
@@ -48,7 +48,7 @@ export const AgentDefSchema = z
     command: z.string().optional(),
     /** Extra args appended to the harness command (harness-specific switches go here). */
     args: z.array(z.string()).default([]),
-    /** Working dir (passed as ACP session/new cwd); empty = an auto-created per-agent workspace at ~/.agent-anywhere/agents/<id>. */
+    /** Working dir (passed as ACP session/new cwd); empty = an auto-created per-agent workspace at ~/.talkcode/agents/<id>. */
     cwd: z.string().optional(),
     /** Model (best-effort via newSession; whether it takes effect depends on the harness). */
     model: z.string().optional(),
@@ -273,7 +273,7 @@ const ExperienceSchema = z.object({
   attachments: z
     .object({
       enabled: z.boolean().default(true),
-      /** Cache dir for downloads; default decided by the daemon (~/.config/agent-anywhere/attachments). */
+      /** Cache dir for downloads; default decided by the daemon (~/.config/talkcode/attachments). */
       cacheDir: z.string().optional(),
       /** Inline readable text into the prompt only if <= this many bytes (else write to disk, pass path). 100KB. */
       maxInjectBytes: z.number().int().positive().default(100_000),
@@ -282,7 +282,7 @@ const ExperienceSchema = z.object({
     })
     .default({}),
 
-  /** IPC socket. socketPath default ~/.config/agent-anywhere/daemon.sock (resolveSocketPath). */
+  /** IPC socket. socketPath default ~/.config/talkcode/daemon.sock (resolveSocketPath). */
   ipc: z
     .object({
       socketPath: z.string().optional(),
@@ -535,7 +535,7 @@ export const ConfigSchema = z
      * is transcribed, the transcript is shown in the chat labelled as one, and — once confirmed — it
      * goes to the agent as if the user had typed it. The agent is not told the words were spoken;
      * every transcription is logged to `<configDir>/voice-log.jsonl` with its audio file, and the
-     * agent can read its conversation's entries with `agent-anywhere voice-log`. See core/voice.ts.
+     * agent can read its conversation's entries with `talkcode voice-log`. See core/voice.ts.
      */
     voice: z
       .object({

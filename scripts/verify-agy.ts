@@ -6,7 +6,7 @@
  * machine whose daemon runs a different version, isolate both first — the daemon's own shim is the
  * one being replaced otherwise:
  *   HOME=<scratch home holding a copy of antigravity-oauth-token> \
- *   AGENT_ANYWHERE_CONFIG_DIR=$(mktemp -d) npx tsx scripts/verify-agy.ts
+ *   TALKCODE_CONFIG_DIR=$(mktemp -d) npx tsx scripts/verify-agy.ts
  */
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -21,7 +21,7 @@ const home = homedir();
 
 console.log('1. statusline install:', installStatusLine(home));
 
-const dirs = skillDirsFor(def, { home, cwd: '/home/user/workspace/agent-anywhere' });
+const dirs = skillDirsFor(def, { home, cwd: process.cwd() });
 const skills = await scanSkillDirs(dirs);
 console.log('2. skill dirs:', dirs);
 console.log('   found', skills.length, 'skills, first five:', skills.slice(0, 5).map((s) => s.name));

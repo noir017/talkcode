@@ -55,7 +55,7 @@ import { selfInvocation } from './reverse-cli-shim.js';
 /**
  * AgentFactory's ACP (Agent Client Protocol) implementation on the official @agentclientprotocol/sdk.
  *
- * agent-anywhere daemon = ACP "client/host". Each (conversationId, agentId) spawns a resident ACP agent child
+ * talkcode daemon = ACP "client/host". Each (conversationId, agentId) spawns a resident ACP agent child
  * (claude-agent-acp / gemini --experimental-acp / any custom), translating ACP session/update stream
  * notifications back to the existing AgentStreamHandlers, reusing all outbound rendering (StreamBuffer / ToolRenderer).
  *
@@ -70,7 +70,7 @@ import { selfInvocation } from './reverse-cli-shim.js';
  *   session/request_permission ↔ permission policy (bypass/deny implemented; ask/acceptEdits see seam)
  *
  * TOKEN model (per-session): ACP is a resident process, env fixed at spawn. So the daemon gives each
- * session a stable token (RunTurnInput.sessionToken, same every turn), injected as AGENT_ANYWHERE_TURN_TOKEN.
+ * session a stable token (RunTurnInput.sessionToken, same every turn), injected as TALKCODE_TURN_TOKEN.
  * Reverse commands use it to connect back; the daemon resolves "token → session → current turn channel" (see session.ts).
  */
 
@@ -96,7 +96,7 @@ export function promptBlocks(turn: RunTurnInput): ContentBlock[] {
 export const NATIVE_TOOLS_SERVER = 'chat';
 
 /**
- * MCP servers handed to the agent in `session/new` and `session/load`: `agent-anywhere mcp`, which
+ * MCP servers handed to the agent in `session/new` and `session/load`: `talkcode mcp`, which
  * serves `send_file` and `schedule` as native tools (commands/mcp.ts, ipc/tools.ts).
  *
  * Stdio, because it is the one transport every ACP agent MUST support — probed 2026-10-09, the
@@ -127,9 +127,9 @@ export function acpMcpServers(
       command: self.command,
       args: [...self.args, 'mcp'],
       env: [
-        { name: 'AGENT_ANYWHERE_TURN_TOKEN', value: sessionToken },
-        { name: 'AGENT_ANYWHERE_SOCKET', value: socketPath },
-        { name: 'AGENT_ANYWHERE_CWD', value: cwd },
+        { name: 'TALKCODE_TURN_TOKEN', value: sessionToken },
+        { name: 'TALKCODE_SOCKET', value: socketPath },
+        { name: 'TALKCODE_CWD', value: cwd },
       ],
     },
   ];
@@ -168,7 +168,7 @@ export function resolveHarness(def: AgentDef): { command: string; args: string[]
       // A PATH command, NOT a bundled dependency, which is the opposite of the claude arm above
       // and deliberate: the adapter declares `@openai/codex` as a regular dependency, whose
       // platform binary is ~284 MB unpacked. Bundling that taxes every `npm i -g
-      // agent-anywhere-cli` for a harness most operators never configure, and the operator who
+      // talkcode` for a harness most operators never configure, and the operator who
       // does configure it already had to install and log into the codex CLI by hand. So codex
       // follows the same contract as gemini/opencode/dsh — the image (or the operator) installs
       // `@agentclientprotocol/codex-acp` globally, and doctor reports a missing one.
@@ -606,7 +606,7 @@ const MODEL_CONFIG_ID = 'model';
  * DSH's model selector value: JSON.stringify([provider, model]) — see `modelValue` in
  * @deepseek-ai/dsh-acp (lib/types/model-control.js), where the option's `currentValue` and every
  * choice value carry that exact string and `set` looks the incoming value up in a map keyed by it.
- * agent-anywhere spells models "provider/model" (the opencode convention), so the pair must be
+ * talkcode spells models "provider/model" (the opencode convention), so the pair must be
  * JSON-encoded to cross the wire — a bare "provider/model" is rejected as "unknown model option" —
  * and decoded again to present a readable /model menu (see dshModelDisplayValue).
  */
@@ -1135,7 +1135,7 @@ function createAcpSession(
     const startup = (async () => {
       const initResult = await ctx.request('initialize', {
         protocolVersion: ACP_PROTOCOL_VERSION,
-        // Don't advertise fs/terminal: let the agent use its own tools (Bash → agent-anywhere); the client only receives the stream + answers permission.
+        // Don't advertise fs/terminal: let the agent use its own tools (Bash → talkcode); the client only receives the stream + answers permission.
         //
         // `elicitation.form` IS advertised, and it is load-bearing rather than decorative: the
         // claude adapter gates the model's own AskUserQuestion tool on it

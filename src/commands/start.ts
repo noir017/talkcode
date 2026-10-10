@@ -10,7 +10,7 @@ import { ensureReverseCliShim } from '../daemon/reverse-cli-shim.js';
 import { conversationKey } from '../core/conversation.js';
 
 /**
- * `agent-anywhere start` — default command. Read config -> build platform adapter + agent factory -> start the daemon.
+ * `talkcode start` — default command. Read config -> build platform adapter + agent factory -> start the daemon.
  */
 export async function runStart(): Promise<void> {
   // Long-running daemon backstop: an occasional network blip (e.g. a transient
@@ -27,7 +27,7 @@ export async function runStart(): Promise<void> {
   const socket = resolveSocketPath(cfg);
 
   // Provision the reverse-CLI shim up front (agent-acp refreshes it per spawn): fail loudly at
-  // startup rather than on the agent's first `agent-anywhere` call.
+  // startup rather than on the agent's first `talkcode` call.
   ensureReverseCliShim();
 
   // One adapter per configured platform instance; the daemon drives them all.
@@ -52,7 +52,7 @@ export async function runStart(): Promise<void> {
   const daemon = new Daemon(cfg, platforms, agents, socket, store, workdirUsage, schedules);
 
   await daemon.run();
-  console.log(`🚀 Agent Anywhere daemon is running (socket: ${socket})`);
+  console.log(`🚀 talkcode daemon is running (socket: ${socket})`);
 
   // Don't register SIGINT/SIGTERM here: installSignalHandlers inside daemon.run()
   // already handles graceful shutdown (exit codes 130/143, cleanup, re-entrancy guard).

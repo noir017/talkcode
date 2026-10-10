@@ -6,7 +6,7 @@ import { selfInvocation } from './reverse-cli-shim.js';
 
 /**
  * Puts the bundled skill (`skill/` at the package root) where each harness looks for skills, as a
- * symlink named `agent-anywhere`.
+ * symlink named `talkcode`.
  *
  * ── Why the daemon does this ──────────────────────────────────────────────────────────────────
  * The skill is how an agent learns what the gateway can do beyond its two native tools — posting to
@@ -14,7 +14,7 @@ import { selfInvocation } from './reverse-cli-shim.js';
  * by the harness's own skill mechanism rather than by text the gateway writes into the conversation.
  * Shipping it inside the package and linking it from here means:
  *  - it appears only on machines that run this daemon (a shared skill repo would put it in front of
- *    agents on every machine that syncs the repo, where the `agent-anywhere` command does not exist);
+ *    agents on every machine that syncs the repo, where the `talkcode` command does not exist);
  *  - its content is always the running daemon's own — the link points into the installed package,
  *    so an upgrade updates the skill with nothing to re-copy.
  *
@@ -48,12 +48,12 @@ import { selfInvocation } from './reverse-cli-shim.js';
  * install, or a test daemon run from a checkout. A real directory or file by that name is the
  * operator's, and is left alone with a warning: they may be maintaining their own copy on purpose.
  * Like the reverse-CLI shim it writes to a SHARED path, so it carries the same guard: nothing happens
- * unless this process really is the CLI (a vitest worker is not), and AGENT_ANYWHERE_NO_SKILL_LINK=1
+ * unless this process really is the CLI (a vitest worker is not), and TALKCODE_NO_SKILL_LINK=1
  * turns it off for a test daemon that must not repoint the live one's link.
  */
 
 /** The link's name, which is also the name harnesses list the skill under. */
-export const SKILL_LINK_NAME = 'agent-anywhere';
+export const SKILL_LINK_NAME = 'talkcode';
 
 /** `skill/` at the package root: two levels above this file both in `dist/daemon/` and `src/daemon/`. */
 export function bundledSkillDir(): string {
@@ -98,7 +98,7 @@ export interface SkillLinkResult {
   detail?: string;
 }
 
-/** Make `<home.dir>/agent-anywhere` a symlink to `source`. No guard — the tests drive this directly. */
+/** Make `<home.dir>/talkcode` a symlink to `source`. No guard — the tests drive this directly. */
 export function linkSkill(source: string, home: SkillHome): SkillLinkResult {
   const link = path.join(home.dir, SKILL_LINK_NAME);
   try {
@@ -129,7 +129,7 @@ const warned = new Set<string>();
  * or silent, never thrown — an agent without the skill still has its tools and its shell.
  */
 export function ensureSkillLink(harness: AgentDef['harness'], home: string): SkillLinkResult[] {
-  if (process.env.AGENT_ANYWHERE_NO_SKILL_LINK) return [];
+  if (process.env.TALKCODE_NO_SKILL_LINK) return [];
   if (!selfInvocation()) return [];
   const source = bundledSkillDir();
   if (!fs.existsSync(path.join(source, 'SKILL.md'))) {

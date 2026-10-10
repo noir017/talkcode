@@ -205,7 +205,7 @@ type _AssertActionAligned = [
 const _assertActionAligned: _AssertActionAligned = [true, true];
 
 export interface IpcRequest {
-  /** From AGENT_ANYWHERE_TURN_TOKEN; used to authenticate and locate the current session/channel. */
+  /** From TALKCODE_TURN_TOKEN; used to authenticate and locate the current session/channel. */
   token: string;
   action: IpcAction;
 }

@@ -15,21 +15,21 @@ import { isLegacyConfig, migrateLegacyConfig } from './migrate.js';
 /**
  * Directory that holds the config file, socket, and other per-instance state.
  * Precedence (highest first):
- *   1. AGENT_ANYWHERE_CONFIG_FILE — an explicit config file path; its parent dir is used here.
- *   2. AGENT_ANYWHERE_CONFIG_DIR  — a config directory (config.yaml lives inside).
- *   3. default ~/.config/agent-anywhere/
- * The `--config <path>` CLI flag is plumbed through by setting AGENT_ANYWHERE_CONFIG_FILE on
+ *   1. TALKCODE_CONFIG_FILE — an explicit config file path; its parent dir is used here.
+ *   2. TALKCODE_CONFIG_DIR  — a config directory (config.yaml lives inside).
+ *   3. default ~/.config/talkcode/
+ * The `--config <path>` CLI flag is plumbed through by setting TALKCODE_CONFIG_FILE on
  * process.env, so it is inherited by the agent subprocess (and thus by reverse commands).
  */
 export function configDir(): string {
-  const file = process.env.AGENT_ANYWHERE_CONFIG_FILE;
+  const file = process.env.TALKCODE_CONFIG_FILE;
   if (file) return path.dirname(path.resolve(expandHome(file)));
-  return process.env.AGENT_ANYWHERE_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'agent-anywhere');
+  return process.env.TALKCODE_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'talkcode');
 }
 
-/** Absolute path of the active config file. AGENT_ANYWHERE_CONFIG_FILE overrides the default config.yaml. */
+/** Absolute path of the active config file. TALKCODE_CONFIG_FILE overrides the default config.yaml. */
 export function configPath(): string {
-  const file = process.env.AGENT_ANYWHERE_CONFIG_FILE;
+  const file = process.env.TALKCODE_CONFIG_FILE;
   if (file) return path.resolve(expandHome(file));
   return path.join(configDir(), 'config.yaml');
 }
@@ -53,7 +53,7 @@ export function expandHome(p: string): string {
 export function loadConfig(): Config {
   const p = configPath();
   if (!fs.existsSync(p)) {
-    throw new Error(`config not found at ${p}; run \`agent-anywhere setup\` first`);
+    throw new Error(`config not found at ${p}; run \`talkcode setup\` first`);
   }
   let raw: unknown;
   try {
@@ -63,7 +63,7 @@ export function loadConfig(): Config {
     throw new Error(`failed to parse config file (YAML) ${p}: ${msg}`);
   }
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(`config file is empty or malformed ${p}; run \`agent-anywhere setup\` to regenerate it`);
+    throw new Error(`config file is empty or malformed ${p}; run \`talkcode setup\` to regenerate it`);
   }
 
   // v0 (single `platform:` object) → v1 in memory; the file itself is left untouched.
@@ -71,7 +71,7 @@ export function loadConfig(): Config {
     raw = migrateLegacyConfig(raw as Record<string, unknown>).config;
     console.warn(
       `[config] ⚠️  ${p} uses the old single-platform format; it was migrated in memory. ` +
-        'Run `agent-anywhere doctor --migrate-config` to rewrite the file to the v1 `platforms:` map.'
+        'Run `talkcode doctor --migrate-config` to rewrite the file to the v1 `platforms:` map.'
     );
   }
 
@@ -89,7 +89,7 @@ export function loadConfig(): Config {
       const where = i.path.join('.') || '(root)';
       return `  - ${where}: ${i.message}`;
     });
-    throw new Error(`config validation failed ${p}:\n${lines.join('\n')}\nrun \`agent-anywhere setup\``);
+    throw new Error(`config validation failed ${p}:\n${lines.join('\n')}\nrun \`talkcode setup\``);
   }
   // The file only carries the slim user surface; merge in the frozen experience defaults.
   const cfg = withExperienceDefaults(result.data);

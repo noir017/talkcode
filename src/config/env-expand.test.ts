@@ -53,7 +53,7 @@ describe('expandEnvVars', () => {
 
 describe('loadDotEnv', () => {
   it('fills gaps but never overrides existing process env; parses quotes/comments/export', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-anywhere-dotenv-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talkcode-dotenv-'));
     fs.writeFileSync(
       path.join(dir, '.env'),
       [
@@ -79,7 +79,7 @@ describe('loadDotEnv', () => {
 
   it('is a no-op when no .env exists', () => {
     const env: NodeJS.ProcessEnv = {};
-    loadDotEnv(path.join(os.tmpdir(), 'agent-anywhere-definitely-missing'), env);
+    loadDotEnv(path.join(os.tmpdir(), 'talkcode-definitely-missing'), env);
     expect(env).toEqual({});
   });
 });

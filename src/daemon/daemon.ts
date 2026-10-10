@@ -114,7 +114,7 @@ import {
   type ScheduleMenuClick,
 } from '../core/schedule-menu.js';
 
-/** Transcripts `agent-anywhere voice-log` lists when no `--limit` is given. */
+/** Transcripts `talkcode voice-log` lists when no `--limit` is given. */
 const DEFAULT_VOICE_LOG_LIMIT = 10;
 
 /** Valid slash name: lowercase/digit/_/-, 1-32 chars (Discord constraint). Non-matching names are skipped on registration. */
@@ -600,7 +600,7 @@ interface PendingWorkdirMenu {
   ref?: MessageRef;
 }
 
-/** Main daemon: wires platform, session registry, and IPC server together. `agent-anywhere start` constructs and run()s it. */
+/** Main daemon: wires platform, session registry, and IPC server together. `talkcode start` constructs and run()s it. */
 export class Daemon {
   private registry: ConversationRegistry;
   private ipc: IpcServer;
@@ -922,7 +922,7 @@ export class Daemon {
    *
    * An unqualified override still goes to the conversation's own instance, as it always has — an
    * address alone can't identify a platform. The qualified form (`tg:5865716608/8068`, what
-   * `agent-anywhere channels` prints) is how an agent answering on the web UI posts to Telegram.
+   * `talkcode channels` prints) is how an agent answering on the web UI posts to Telegram.
    * The instance was already checked against config when IPC parsed the value, so a miss here means
    * the conversation expired, not that the agent named a platform that does not exist.
    */

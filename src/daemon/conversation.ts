@@ -294,7 +294,7 @@ interface ConversationState {
    * Bumped by an accepted inbound message, by the end of a turn (the merger's onIdle), and by a
    * reverse command arriving over IPC. That third source is the one that is easy to miss and the
    * reason the field is not simply "time of last message": an agent that finished its turn and left
-   * a background job reporting through `agent-anywhere send` is still working here, and reclaiming
+   * a background job reporting through `talkcode send` is still working here, and reclaiming
    * its child would cut the job off from the chat it is talking to.
    *
    * Ignored while the merger is busy — a turn in flight is not idle no matter what this says.
@@ -326,7 +326,7 @@ interface ConversationState {
    *  - background output the harness produces once the turn has settled (TurnRunner.followUpSink);
    *  - a harness title, which claude-agent-acp generates in a background task and reports from its
    *    turn-end idle handler;
-   *  - a reverse command from a job the agent left running (`agent-anywhere send-message`), which
+   *  - a reverse command from a job the agent left running (`talkcode send-message`), which
    *    was refused outright with "this conversation has no active turn right now".
    *
    * So it is no longer cleared: a conversation does not stop being in a place just because nothing
@@ -625,7 +625,7 @@ export class ConversationRegistry {
             state.lane = address;
             state.lanePlatform = platformId;
           }
-          // Persisted too, once per turn: it is what `agent-anywhere channels` lists (see
+          // Persisted too, once per turn: it is what `talkcode channels` lists (see
           // ConversationRecord.lane), and the in-memory copy dies with the process.
           this.store?.recordLane?.(id, this.agentIdOf(id), platformId, address, this.clock.now());
         },
@@ -2046,7 +2046,7 @@ export class ConversationRegistry {
         def?.harness === 'opencode'
           ? ' On opencode that means a model from a custom provider: give it a `limit` block in opencode.json (e.g. `"limit": { "context": 128000 }`) and the numbers appear.'
           : def?.harness === 'agy'
-            ? ' On agy the numbers come from its status line, which the daemon points at its own shim on startup: check that `statusLine` in `~/.gemini/antigravity-cli/settings.json` still names `agy-statusline`, and that AGENT_ANYWHERE_NO_AGY_STATUSLINE is not set.'
+            ? ' On agy the numbers come from its status line, which the daemon points at its own shim on startup: check that `statusLine` in `~/.gemini/antigravity-cli/settings.json` still names `agy-statusline`, and that TALKCODE_NO_AGY_STATUSLINE is not set.'
             : '';
       return (
         `Context: not reported. ${name} finished a turn without sending any usage numbers, and ` +
@@ -2610,7 +2610,7 @@ ${formatTokens(left)} left before compaction — ${name}`;
    *
    * Resolved through the LANE (see laneOf), not the running turn's address, and that difference is
    * load-bearing: an agent that finished its turn and left a background job reporting through
-   * `agent-anywhere send-message` is the normal case, not an error. It used to be refused with
+   * `talkcode send-message` is the normal case, not an error. It used to be refused with
    * "this conversation has no active turn right now", which meant the job's whole report went
    * nowhere — the same class of bug as background output being dropped by the update reader.
    *
@@ -2657,7 +2657,7 @@ ${formatTokens(left)} left before compaction — ${name}`;
   }
 
   /**
-   * `agent-anywhere channels`: every place this deployment has answered in, as `--channel` ids.
+   * `talkcode channels`: every place this deployment has answered in, as `--channel` ids.
    *
    * Read from the store, not from `conversations`: the map holds only what THIS process has seen,
    * and a list that forgot every topic on each restart would be no list at all. The shaping is

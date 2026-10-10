@@ -9,8 +9,8 @@ and executes on the right adapter.
 
 ```
 agent (Bash)                                  agent (native tool, via MCP)
-  └─ agent-anywhere send-file ./report.pdf      └─ send_file {path: "./report.pdf"}
-        │  commands/reverse.ts                        │  commands/mcp.ts (agent-anywhere mcp)
+  └─ talkcode send-file ./report.pdf      └─ send_file {path: "./report.pdf"}
+        │  commands/reverse.ts                        │  commands/mcp.ts (talkcode mcp)
         │    → builds an IpcAction                    │    → ipc/tools.ts → the same spec's build
         └──────────────┬──────────────────────────────┘
                        │  ipc/client.ts → connects, sends {token, action} as one JSON line
@@ -41,7 +41,7 @@ This module imports nothing from the project except `types.ts`.
 One spec array drives four places, so they cannot drift:
 
 - `cli.ts` registers commander subcommands from it (usage string, options, `build`).
-- `agent-anywhere help <topic>` renders each spec's usage and options onto the page its
+- `talkcode help <topic>` renders each spec's usage and options onto the page its
   `topic` names (see below).
 - `tools.ts` builds the native tools from the specs they name: a tool's parameters are the
   command's positionals and options, its parameter descriptions are the option descriptions, and
@@ -66,14 +66,14 @@ The gateway puts no text of its own into the agent's prompt — no preamble, no 
 "Nothing of the gateway's in the agent's prompt" in [AGENTS.md](../../AGENTS.md)). What an
 agent can do here reaches it through its harness's own mechanisms, in three layers:
 
-1. **Two native tools**, `send_file` and `schedule` (`tools.ts`). `agent-anywhere mcp`
+1. **Two native tools**, `send_file` and `schedule` (`tools.ts`). `talkcode mcp`
    (`commands/mcp.ts`) serves them over MCP on stdio, and the daemon lists that server in every
    ACP session's `session/new` (`daemon/agent-acp.ts` `acpMcpServers`), so the harness starts one
    per session. Same socket, same session token, same TOON answer as the shell command.
 2. **The bundled skill** (`skill/SKILL.md`), whose one-line description is the only thing in
-   context until an agent needs it. Its body sends the agent to `agent-anywhere help`. The daemon
+   context until an agent needs it. Its body sends the agent to `talkcode help`. The daemon
    links it into the skill directories the harnesses read (`daemon/skill-link.ts`).
-3. **`agent-anywhere help <topic>`**, the reference: each topic's commands rendered from the
+3. **`talkcode help <topic>`**, the reference: each topic's commands rendered from the
    specs, plus its `notes` — the rules, the traps, the defaults.
 
 ### Why exactly two tools
@@ -94,7 +94,7 @@ agent can neither do without nor guess exists:
 The skill documents these two as CLI commands as well, and an agent that does not see the tools up
 front takes that route: in the 2026-10-09 end-to-end run, Claude Code called `mcp__chat__send_file`
 and `mcp__chat__schedule`, OpenCode called `tools.chat.send_file`, and Codex — whose tool list
-starts without them — read the skill and ran `agent-anywhere send-file`. Same command, same result.
+starts without them — read the skill and ran `talkcode send-file`. Same command, same result.
 
 The rest stay CLI commands behind the skill:
 
@@ -112,7 +112,7 @@ The rest stay CLI commands behind the skill:
 Until 1.40 a `<system-reminder>` went in front of the first turn of every session. It started as
 all nine commands with full usage — about 350 tokens of chat-bot operating manual ahead of what
 the user asked — was cut to `send-file`, `ask` where needed, and one line pointing at
-`agent-anywhere help` (2026-09-11 and 2026-09-30), and was removed on 2026-10-09. The pointer had
+`talkcode help` (2026-09-11 and 2026-09-30), and was removed on 2026-10-09. The pointer had
 worked — asked in plain Chinese to "run this command in two minutes", claude ran `help`, `help
 schedule` and a correct `schedule add` — but three lines opening with "your replies reach the user
 automatically" still told the model what kind of job this was before it read the job. Any text
@@ -134,7 +134,7 @@ cannot say which platform it is on, so before this every override went to the ca
 conversation's own instance, and an agent answering on the web UI had no way to post to
 Telegram. The prefix is recognised only when it is a **configured** instance id (the server
 is constructed with the set), because channel ids may themselves contain `:`; an unqualified
-value means exactly what it always did. `agent-anywhere channels` prints ids in the
+value means exactly what it always did. `talkcode channels` prints ids in the
 qualified form: every place a turn has run, from `conversations.json` (most platforms cannot
 enumerate a bot's chats — the Telegram Bot API has no such call), channel roots first, then
 the most recent topics. See `core/channel-list.ts`.
@@ -172,13 +172,13 @@ token validation and channel resolution to the handler.
 
 ## Client timeouts
 
-`client.ts` reads the token from `AGENT_ANYWHERE_TURN_TOKEN`, injected by the daemon when
+`client.ts` reads the token from `TALKCODE_TURN_TOKEN`, injected by the daemon when
 it spawned the agent. A missing token returns a clear structured error rather than
 hanging: reverse commands are only meaningful inside a daemon-driven turn.
 
 Timeout precedence is deliberate:
 
-- `AGENT_ANYWHERE_IPC_TIMEOUT_MS` accepts only finite positive numbers. A bad value
+- `TALKCODE_IPC_TIMEOUT_MS` accepts only finite positive numbers. A bad value
   (`NaN`, negative, non-numeric) is **warned about and ignored**, not silently swallowed
   into `undefined` — otherwise a valid `0` and a garbage `NaN` are indistinguishable and
   an operator's misconfiguration gets no feedback.

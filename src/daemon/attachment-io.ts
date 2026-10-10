@@ -12,7 +12,7 @@ import type { AttachmentIngestDeps } from '../core/attachment-ingest.js';
  *  - download: the platform's own fetcher when it claims the URL, else Node global fetch with an
  *    AbortController timeout and a content-length early-exit over maxDownloadBytes; returns bytes
  *    plus whatever was learned about them (content-type header, filename).
- *  - save: write to the cache dir (config.cacheDir defaults to ~/.config/agent-anywhere/attachments); filename
+ *  - save: write to the cache dir (config.cacheDir defaults to ~/.config/talkcode/attachments); filename
  *    sanitized against traversal, short hash prefix to avoid overwrite; mkdir recursive + writeFile.
  *
  * `fetchPlatform` is the adapter's `fetchAttachment` (absent for platforms whose media URLs are
@@ -26,7 +26,7 @@ export function createAttachmentIngestDeps(
 ): AttachmentIngestDeps {
   const maxDownloadBytes = config.attachments.maxDownloadBytes;
   const cacheDir =
-    config.attachments.cacheDir ?? path.join(homedir(), '.config/agent-anywhere/attachments');
+    config.attachments.cacheDir ?? path.join(homedir(), '.config/talkcode/attachments');
 
   return {
     download: async (url) => {

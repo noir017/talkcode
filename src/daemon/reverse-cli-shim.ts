@@ -3,9 +3,9 @@ import path from 'node:path';
 import { configDir } from '../config/load.js';
 
 /**
- * Self-provisioned `agent-anywhere` shim for agent subprocesses.
+ * Self-provisioned `talkcode` shim for agent subprocesses.
  *
- * The bundled skill tells the agent that `agent-anywhere` is on PATH, but whether that
+ * The bundled skill tells the agent that `talkcode` is on PATH, but whether that
  * is true depends on how the daemon was launched: a global npm install puts it on PATH, while
  * `node dist/cli.js start` or a tsx dev run does not (and a service manager like launchd may strip
  * PATH entirely). Instead of gambling, the daemon writes a two-line shim that re-executes exactly
@@ -20,7 +20,7 @@ export function ensureReverseCliShim(): string | null {
   const self = selfInvocation();
   if (!self) return null;
   const dir = path.join(configDir(), 'bin');
-  const shim = path.join(dir, 'agent-anywhere');
+  const shim = path.join(dir, 'talkcode');
   const script = [
     '#!/bin/sh',
     `exec ${[self.command, ...self.args].map(shellQuote).join(' ')} "$@"`,
@@ -62,13 +62,13 @@ export function selfInvocation(): { command: string; args: string[] } | null {
 /**
  * Whether `entry` looks like this CLI's own entry point.
  *
- * The three real launch shapes: a global install (`/usr/bin/agent-anywhere`, a symlink node is
+ * The three real launch shapes: a global install (`/usr/bin/talkcode`, a symlink node is
  * handed by name), `node dist/cli.js`, and `tsx src/cli.ts`. Anything else — a test runner, a
  * REPL, an embedding host — means this process is not the CLI and must not claim to be one.
  */
 export function isCliEntry(entry: string): boolean {
   const base = path.basename(entry);
-  return base === 'agent-anywhere' || /^cli\.(js|mjs|cjs|ts)$/.test(base);
+  return base === 'talkcode' || /^cli\.(js|mjs|cjs|ts)$/.test(base);
 }
 
 function shellQuote(s: string): string {

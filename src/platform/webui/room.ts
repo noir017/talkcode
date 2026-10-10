@@ -913,7 +913,7 @@ export class WebRoom {
     return true;
   }
 
-  /** Replay for `agent-anywhere fetch-messages`, oldest first, in the shape history has. */
+  /** Replay for `talkcode fetch-messages`, oldest first, in the shape history has. */
   history(topicId: string, opts: { limit?: number; before?: string }): InboundMessage[] {
     const all = [...this.roomOf(topicId).stored.values()];
     const cut = opts.before ? all.findIndex((s) => s.msg.id === opts.before) : -1;
