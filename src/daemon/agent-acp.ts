@@ -933,6 +933,11 @@ function createAcpSession(
    */
   let liveConfigOptions: SessionConfigOption[] | undefined;
   /**
+   * Names of the subagents this session has spawned (see TurnState.subagents). Held by the session
+   * rather than by a turn because a background subagent outlives the turn that launched it.
+   */
+  const subagentNames = new Map<string, string>();
+  /**
    * Model chosen at runtime for THIS conversation (`/model`), outranking `agents[].model`.
    *
    * Held here rather than in config so it survives what it must and no more: a child that crashes
@@ -1299,6 +1304,7 @@ function createAcpSession(
       onSessionFailure: (failure) => announceSessionFailure(failure, handlers, announced),
       // Local override for a harness that under-reports the window (e.g. claude-opus-5 → 200k fallback).
       contextWindow: def.contextWindow,
+      subagents: subagentNames,
     };
   }
 
@@ -2220,6 +2226,19 @@ export interface TurnState {
    * under-reports the window (see AgentDef.contextWindow). Absent = trust the harness's number.
    */
   contextWindow?: number;
+  /**
+   * The subagents this session has spawned: the id of the Agent/Task call that started each one →
+   * the name to show on its tools' bubbles (see claudeAttribution).
+   *
+   * Session-scoped, and the same Map in every TurnState the session builds, because a background
+   * subagent outlives the turn that launched it: the spawning call completes the moment the
+   * subagent starts, the turn's toolLedger is cleared when the turn ends, and the subagent's tools
+   * keep arriving in later turns and follow-up bursts. Probed 2026-10-10: the call reported
+   * `completed` at 9.3s, its subagent's first tool arrived at 20.1s.
+   *
+   * Optional so the pure translation tests can omit it; without it every subagent is unnamed.
+   */
+  subagents?: Map<string, string>;
 }
 
 /**
@@ -2237,6 +2256,10 @@ interface ToolRec {
   started: boolean;
   /** Whether onToolFinish was already sent. */
   finished: boolean;
+  /** Id of the Agent/Task call whose subagent ran this tool; undefined for the main agent's own. */
+  parent?: string;
+  /** This call is an Agent/Task call: it starts a subagent, whose tools will name it as `parent`. */
+  spawns?: boolean;
 }
 
 /**
@@ -2257,24 +2280,19 @@ function reportConfigOptions(u: Extract<SessionUpdate, { sessionUpdate: 'config_
 
 export function translateUpdate(u: SessionUpdate, st: TurnState): void {
   switch (u.sessionUpdate) {
-    case 'agent_message_chunk': {
-      const text = u.content.type === 'text' ? u.content.text : undefined;
-      if (typeof text !== 'string' || text.length === 0) break;
-      if (st.lastSegment === 'tool') st.handlers.onSegmentBreak(); // tool → text boundary
-      st.lastSegment = 'text';
-      st.handlers.onText(text);
+    case 'agent_message_chunk':
+      ingestText(u, st);
       break;
-    }
 
     // tool_call and tool_call_update are handled identically: merge this tool's latest fields into the
     // ledger, then render based on status / rawInput readiness. Generic across all ACP agents.
     case 'tool_call':
       if (u.toolCallId)
-        ingestTool(st, u.toolCallId, { title: u.title, kind: u.kind, rawInput: u.rawInput, status: u.status });
+        ingestTool(st, u.toolCallId, { title: u.title, kind: u.kind, rawInput: u.rawInput, status: u.status }, u._meta);
       break;
     case 'tool_call_update':
       if (u.toolCallId)
-        ingestTool(st, u.toolCallId, { title: u.title, kind: u.kind, rawInput: u.rawInput, status: u.status });
+        ingestTool(st, u.toolCallId, { title: u.title, kind: u.kind, rawInput: u.rawInput, status: u.status }, u._meta);
       break;
 
     // Agent reports its available-commands list: normalize to AgentCommand[] for the upper layer,
@@ -2329,6 +2347,25 @@ export function translateUpdate(u: SessionUpdate, st: TurnState): void {
 }
 
 /**
+ * Forward a text chunk into the reply body. Extracted from translateUpdate to keep that switch's
+ * complexity within the lint budget.
+ */
+function ingestText(u: Extract<SessionUpdate, { sessionUpdate: 'agent_message_chunk' }>, st: TurnState): void {
+  const text = u.content.type === 'text' ? u.content.text : undefined;
+  if (typeof text !== 'string' || text.length === 0) return;
+  // The body is the main agent's words. A subagent's text does not reach a client like this one
+  // (see claudeAttribution), but the adapter's streaming path stamps it rather than filtering it, so
+  // should it ever arrive it is kept out of the reply instead of being read as the answer.
+  if (claudeAttribution(u._meta).parent) {
+    console.debug(`[acp] not rendering ${text.length} chars of subagent text into the reply`);
+    return;
+  }
+  if (st.lastSegment === 'tool') st.handlers.onSegmentBreak(); // tool → text boundary
+  st.lastSegment = 'text';
+  st.handlers.onText(text);
+}
+
+/**
  * Forward a context snapshot, ignoring unusable ones. A zero/absent window would render as a
  * divide-by-zero percentage, so the snapshot is dropped and the footer degrades to "no context
  * segment" rather than a bogus "0%". Extracted from translateUpdate to keep that switch's
@@ -2355,7 +2392,8 @@ function ingestUsage(st: TurnState, used: unknown, size: unknown, cost: unknown)
 function ingestTool(
   st: TurnState,
   id: string,
-  f: { title?: string | null; kind?: string | null; rawInput?: unknown; status?: string | null }
+  f: { title?: string | null; kind?: string | null; rawInput?: unknown; status?: string | null },
+  meta?: unknown
 ): void {
   let rec = st.toolLedger.get(id);
   if (!rec) {
@@ -2367,10 +2405,84 @@ function ingestTool(
   if (typeof f.kind === 'string') rec.kind = f.kind;
   if (f.rawInput !== undefined) rec.rawInput = f.rawInput;
 
+  // Read before maybeStartTool below, which is where the bubble is drawn: it has to know whose it is.
+  const { parent, spawnsSubagent } = claudeAttribution(meta);
+  if (parent) rec.parent = parent;
+  // Sticky: only the call's early updates carry the flag (the adapter drops it from the result's).
+  if (spawnsSubagent) rec.spawns = true;
+  if (rec.spawns) nameSubagent(st, id, rec);
+
   const terminal = f.status === 'completed' || f.status === 'failed';
   // Readiness signal: status reaches in_progress/terminal, or rawInput is non-empty (params streamed).
   maybeStartTool(st, id, f.status === 'in_progress' || terminal);
   if (terminal) finishTool(st, id, f.status === 'completed');
+}
+
+/**
+ * Who made a session/update, as the `claude` adapter records it in `_meta.claudeCode`:
+ *
+ * - `parentToolUseId` — on everything a SUBAGENT produces: the id of the Agent/Task call that
+ *   spawned it. Without reading it, a subagent's tool calls render exactly like the main agent's,
+ *   and a half-hour background run reads as the main agent doing eighty things it never did.
+ * - `subagent: true` — on that Agent/Task call itself.
+ *
+ * Only tools are affected in practice. The adapter keeps a subagent's own text internal unless the
+ * client declares ACP `subagents` or `_meta["subagent-transcript"]` (claude-agent-acp 0.81.2
+ * dist/acp-agent.js:4549, the `forwardSubagentText` filter), and this client declares neither — so
+ * the main agent's relay of what the subagent found is what the user reads, which is the point.
+ * Probed 2026-10-10 with a foreground and a background subagent: tools arrived attributed, no
+ * subagent text arrived at all. `project-scripts/subagent-output/probe.mjs` reruns it.
+ *
+ * ⚠️ HYRUM'S LAW: neither field is in the ACP schema. claude-agent-acp 0.81.2 stamps
+ * `parentToolUseId` from the SDK's `parent_tool_use_id` in toAcpNotifications (dist/acp-agent.js
+ * :7641 for text, :7981 for tools) and sets `subagent` on Agent/Task calls. The contract test in
+ * agent-acp.test.ts replays those shapes, so a rename fails there. A regression degrades to bubbles
+ * that name no owner — unattributed, never lost. Other harnesses send neither, and are unaffected.
+ *
+ * Wire data, so every field is checked rather than cast.
+ */
+function claudeAttribution(meta: unknown): { parent?: string; spawnsSubagent: boolean } {
+  const cc = isRecord(meta) && isRecord(meta.claudeCode) ? meta.claudeCode : undefined;
+  if (!cc) return { spawnsSubagent: false };
+  const parent = typeof cc.parentToolUseId === 'string' && cc.parentToolUseId ? cc.parentToolUseId : undefined;
+  return { parent, spawnsSubagent: cc.subagent === true };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Bound on the names a session remembers. One per Agent/Task call, and an id is never reused, so
+ * the oldest are the ones whose subagents finished longest ago; a session that spawns more than
+ * this many and still hears from the first gets that one's tools marked as an unnamed subagent.
+ */
+const MAX_SUBAGENT_NAMES = 64;
+
+/** What a subagent's bubbles say when the call that spawned it was never seen (or forgotten). */
+const UNNAMED_SUBAGENT = 'subagent';
+
+/**
+ * Remember the name of the subagent an Agent/Task call starts: its `description`, else the call's
+ * title (the adapter mirrors the description there once it has streamed in). Re-run on every
+ * update of the call, because the first one arrives before its input has streamed and carries only
+ * the placeholder title `Task`.
+ */
+function nameSubagent(st: TurnState, id: string, rec: ToolRec): void {
+  if (!st.subagents) return;
+  const name = subagentDescription(rec) || stripCode(rec.title);
+  if (!name) return;
+  if (!st.subagents.has(id) && st.subagents.size >= MAX_SUBAGENT_NAMES) {
+    const oldest = st.subagents.keys().next().value;
+    if (oldest !== undefined) st.subagents.delete(oldest);
+  }
+  st.subagents.set(id, name);
+}
+
+/** The `description` an Agent/Task call was given: the model's own short label for the job. */
+function subagentDescription(rec: ToolRec): string {
+  const input = isRecord(rec.rawInput) ? rec.rawInput : undefined;
+  return typeof input?.description === 'string' ? input.description.trim() : '';
 }
 
 /** Render the bubble once the tool is ready (only once). force = status advanced, render even if rawInput is still empty. */
@@ -2378,14 +2490,21 @@ function maybeStartTool(st: TurnState, id: string, force: boolean): void {
   const rec = st.toolLedger.get(id);
   if (!rec || rec.started) return;
   if (!force && !isNonEmptyObject(rec.rawInput)) return; // params not streamed yet, keep waiting for update
+  // An Agent/Task call also waits for its description, the name its subagent's bubbles will carry.
+  // Drawn on the first streamed field instead, it read `{"subagent_type":"general-purpose"}`, and
+  // nothing on screen said which subagent the `↳` lines below it belonged to.
+  if (!force && rec.spawns && !subagentDescription(rec)) return;
   rec.started = true;
   if (st.lastSegment === 'text') st.handlers.onSegmentBreak(); // text → tool boundary
   st.handlers.onToolStart({
     // name uses the short ACP kind (aligns with emojiMap); command/path detail only in the truncated preview.
     name: toolLabel(rec.kind, rec.title),
-    inputPreview: buildInputPreview(rec.rawInput) || stripCode(rec.title),
+    inputPreview:
+      (rec.spawns && subagentDescription(rec)) || buildInputPreview(rec.rawInput) || stripCode(rec.title),
     input: rec.rawInput,
     index: rec.index,
+    // The spawning call always precedes its subagent's first tool, so its name is known by now.
+    agent: rec.parent ? (st.subagents?.get(rec.parent) ?? UNNAMED_SUBAGENT) : undefined,
   });
   st.lastSegment = 'tool';
 }
