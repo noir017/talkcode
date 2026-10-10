@@ -10,8 +10,9 @@ import type { InboundMessage } from '../types.js';
  *
  * The bug, seen live on 2026-09-30: a cc turn was running typecheck + the full test suite when the
  * user sent `/usage`. The command was forwarded like any other message, so interruptOnNewMessage
- * cancelled the turn mid-Bash; Claude Code then answered `/usage` locally in under 50ms, and the
- * work stayed stopped until the user noticed and typed "继续".
+ * (since removed: a mid-turn message no longer cancels anything) cancelled the turn mid-Bash; Claude
+ * Code then answered `/usage` locally in under 50ms, and the work stayed stopped until the user
+ * noticed and typed "继续". Forwarded today it would instead wait for the whole turn to end.
  *
  * So a busy conversation gets the gateway's own snapshot and the turn is left alone. What these
  * tests pin is the ROUTING decision — never forwarded, never interrupting — plus the two things the
@@ -28,8 +29,7 @@ function config(defaultAgent: string, window: { mergeWindowMs: number; maxMergeW
     ],
     routing: { default: defaultAgent },
   });
-  // `inbound` is part of the frozen EXPERIENCE block, so it is set post-parse. interruptOnNewMessage
-  // stays at its default (true): that default is what made the forwarded command destructive.
+  // `inbound` is part of the frozen EXPERIENCE block, so it is set post-parse.
   return { ...parsed, inbound: { ...parsed.inbound, ...window } };
 }
 

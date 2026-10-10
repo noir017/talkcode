@@ -42,8 +42,10 @@ other than its session:
 - **Skills** are read from `<cwd>/.agents/skills`, `~/.agents/skills`,
   `~/.gemini/antigravity-cli/skills`, `~/.gemini/skills` and
   `~/.gemini/config/skills`, so `/skills` lists them and `/<name> <request>` runs one.
-- **`/new` starts a new conversation**, as with every harness. Interrupting a
-  turn restarts the child and resumes the same conversation, so context survives.
+- **`/new` starts a new conversation**, as with every harness. Stopping a
+  turn (`/stop`) restarts the child and resumes the same conversation, so context survives.
+- **A message sent mid-turn waits for the turn to end**: agy's stream-json input runs
+  each message as a turn of its own, with no way to join one already running.
 
 Any of the daemon's default flags can be overridden through `args` (they are
 appended after the defaults, and agy's flag parsing is last-wins).

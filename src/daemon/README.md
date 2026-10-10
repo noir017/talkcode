@@ -22,6 +22,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `agent-factory.ts` | Dispatch: which runtime serves which agent |
 | `agent-acp.ts` | ACP runtime (claude, codex, opencode, gemini, custom) |
 | `session-failure.ts` | claude-agent-acp's typed failure records: the capability that asks for them, and reading one off the wire |
+| `acp-steering.ts` | How an ACP harness takes a message into a running turn (a second prompt, `_session/steering`, or not at all), read off `initialize` |
 | `agent-agy.ts` | Antigravity CLI runtime — its own stream-json protocol |
 | `agy-statusline.ts` | The only channel agy reports context usage — and its default model and quota pools — on: a shim installed into its `statusLine` setting, reporting back over fd 3 |
 | `status-board.ts` | Each conversation's live agent status, pushed (deduped, throttled) to a platform that can show one — the web UI's strip |
@@ -70,7 +71,7 @@ ConversationRegistry.route
    ├─ header bubble      once per conversation, on receipt
    ├─ supersede          a typed message drops any transcript still waiting here
    ▼
-InboundMerger.ingest ── merge window / queue / interrupt
+InboundMerger.ingest ── merge window; mid-turn: TurnRunner.steer, else queue
    ▼
 TurnRunner.runTurn
 ```
@@ -114,8 +115,9 @@ route() ──take()──► download (attachment-io: SSRF guard, platform fetc
 
 Why it is shaped this way, one line each:
 
-- **Taken before the merger.** The merger interrupts the running turn; a recording nobody has
-  approved must not. The interruption happens when the transcript is sent, like any typed message.
+- **Taken before the merger.** The merger hands a mid-turn message straight to the running turn;
+  a recording nobody has approved must not reach the agent. It does when the transcript is sent,
+  like any typed message.
 - **Re-enters through `route()`**, not `dispatchTo`, so a transcript is answered exactly as typed
   text: it can answer a question the agent is waiting on, and `/stop` said aloud is a `/stop`.
   `{ transcript: true }` stops it being offered for transcription again and stops it superseding
@@ -373,9 +375,9 @@ What each piece is shaped by, one line each:
 - **One timer, capped at a minute.** Re-armed after every look for the earliest thing due, so a host
   clock that jumps costs at most a minute and no timeout comes near Node's 2^31 ms ceiling.
 - **A fixed-session run is a SOLO turn** (`InboundMerger.enqueueSolo`): it waits behind the turn
-  running there instead of interrupting it, is never merged into what the user is typing, goes behind
-  the user's own queued messages, and gets no reactions (there is no platform message). The reverse
-  still holds — a message typed during it interrupts it, recorded `interrupted`.
+  running there, is never handed into it or merged into what the user is typing, goes behind the
+  user's own queued messages, and gets no reactions (there is no platform message). The reverse does
+  not hold — a message typed during it is handed into it like into any turn.
 - **A fixed-session task lives 24 h** (`FIXED_SESSION_WINDOW_MS`, the operator's rule): a topic a
   schedule talks into forever grows a context nobody reads. `--at` beyond the window, or a cron with
   no run inside it, is refused at registration; at the end it is marked `expired` and kept (visible,
@@ -468,11 +470,10 @@ bubble for the life of the process.
 Turn outcomes:
 
 - **Normal**: final flush with the footer.
-- **Interrupted** (`signal.aborted`): finalize the partial reply cleanly — drop the
-  no footer, no ✅, skip the command fallback. The continuing batch produces its
-  own reply.
+- **Stopped** (`signal.aborted`, from `/stop`): finalize the partial reply cleanly — drop the
+  no footer, no ✅, skip the command fallback.
 - **Failed**: log the stack, deliver what the turn had produced (the same no-footer
-  finalize as an interrupt), then send a capped (300 char) `❌ This turn failed: <reason>`
+  finalize as a stop), then send a capped (300 char) `❌ This turn failed: <reason>`
   in-channel and rethrow for the merger to mark ❌. The flush is not optional: text is sent
   when its segment completes, so everything after the last tool — usually the conclusion —
   exists only in the buffer until finalize, and skipping it threw the answer away
@@ -738,7 +739,7 @@ that posts a new one.
   `tool_call_update`, after the prompt has settled. Two tests catch it: while `aborting` stands
   (between the cancel and the next turn) anything tool-shaped is the cancelled turn's tail, and
   once a new turn has cleared that flag, the tool ids the cancel snapshotted still identify it —
-  which matters because `interruptOnNewMessage` (the default) starts the next turn within
+  which matters because a message sent right after `/stop` starts the next turn within
   milliseconds, so the wreckage would otherwise be rendered into *its* reply. That is the case the
   deleted drain described verbatim.
 - **A rendering burst reads as running.** Opening the message takes a typing hold
@@ -784,6 +785,48 @@ unactionable right after `/cd` invites you to pick a project and then a model.
 that there are two of them: `active` is assigned only at the *end* of startup, so an unguarded
 second entrant would spawn its own child, overwrite `proc`, and leave the first as an orphan that
 no `dispose` can reach while it still holds the harness's session.
+
+#### A message sent while a turn runs (`steer`)
+
+A message the user sends mid-turn is handed to the running turn — the way Claude Code's own CLI
+queues what you type while it works and shows it to the model at the next tool boundary — and
+nothing is cancelled: the tool that is running finishes. `InboundMerger` offers it
+(`deps.steer`), `TurnRunner.steer` builds its prompt exactly as a turn's and passes it to
+`AgentSession.steer`, and the runtime answers `joined`, `detached` or `refused` (`SteerOutcome` in
+`types.ts`). Refused messages wait behind the turn and run as the next one, which is all the
+gateway did for any harness before. `TurnRunner` refuses two kinds itself: a slash command (it only
+runs as one at the start of a prompt), and a message from a lane the turn is not answering in.
+
+How a harness takes one is read off its `initialize` (`acp-steering.ts`, where the evidence lives),
+probed 2026-10-10 with a message sent six seconds into a thirty-second foreground command:
+
+| mode | harness | what is sent | what happened |
+|---|---|---|---|
+| `prompt` | claude (claude-agent-acp 0.81, Claude Code 2.1.296) | another `session/prompt` | queued at priority `next`, absorbed at the tool boundary (`absorbed_mid_turn`); the command ran its 30 s; one reply answered both |
+| `steer` | codex (codex-acp 2.2.1, codex 0.160.1) | `_session/steering` → app-server `turn/steer` | read before the next model request; same result; one `end_turn` |
+| `none` | opencode 2.0.26 | nothing | a second `session/prompt` is rejected (-32603) and the message lost — so it is never sent |
+
+agy is not ACP and offers nothing comparable over stream-json (a second message runs as the next
+turn), so `agent-agy.ts` has no `steer` and everything queues.
+
+Two things in `runTurn` exist for `prompt` mode:
+
+- **The turn ends on the LAST prompt it sent**, not its own. When Claude Code absorbs a queued
+  message, the adapter settles the first prompt as soon as the absorbed one starts being answered,
+  and the reply streams under the second. Ending on the first `stop` would close the turn and push
+  the very answer the user asked for into a background-update message. `send()` re-points
+  `promptDone`/`ownResponse` at each prompt, and any of them rejecting fails the turn.
+- **A message sent while the turn is still starting waits** (`promptSent`) instead of being
+  refused: a cold start — spawn, `session/load` — can take seconds, and refusing would hold the
+  message back for the whole turn.
+
+claude-agent-acp also implements `_session/steering`, deliberately unused: it delivers at priority
+`now`, which pre-empts — probed, Claude Code moved the running foreground command to the
+background, answered at once, and the command's result came back later as a background
+notification. A different feature from a queue. `steer` mode sends `idleBehavior:
+"promptRequired"` so a harness that finds no turn hands the message back; codex-acp ignores that
+and starts a detached turn, which is what `detached` reports — its reply then arrives through the
+follow-up sink.
 
 > **The daemon auto-approves every tool permission request.** Agents run with full tool
 > access. There is no per-call policy in the config schema by design — tightening tool
@@ -962,13 +1005,15 @@ of acting on a choice nobody made.
 field beside every question (its "Other" box) and prefers it over the enum, so a message typed while
 a question is on screen is recorded there — `ElicitQuestion.customKey` carries the key. The
 interception lives in `ConversationRegistry.route()`, deliberately placed past the gate and past the
-daemon commands but **before the merger**: reaching the merger is the bug. The merger interrupts the
-running turn, and the running turn is the one blocked on the question, so typing an answer to
-question 2 of 3 used to kill the form — the first two answers thrown away, the third never asked,
-and the reply re-run as a fresh instruction. Not consumed: a message carrying attachments (the field
-takes a string), and any question whose form declared no free-text field (sending the words as the
-enum value would hand the agent something it never offered). Both keep the old meaning, which is
-also the way out of a question you cannot answer.
+daemon commands but **before the merger**: reaching the merger is the bug. The merger hands a
+mid-turn message to the running turn as a new message, and the running turn is the one blocked on
+the question; before this interception (when the merger still cancelled the turn instead) typing an
+answer to question 2 of 3 killed the form — the first two answers thrown away, the third never
+asked, and the reply re-run as a fresh instruction. Not consumed: a message carrying attachments
+(the field takes a string), and any question whose form declared no free-text field (sending the
+words as the enum value would hand the agent something it never offered). Both go to the merger as
+ordinary messages, which no longer cancels the turn — so the way out of a question you cannot
+answer is `/stop`.
 
 **A question that takes more than one answer** (`multiSelect`, `type: 'array'` on the wire) is a
 stateful bubble rather than a one-tap one: each option carries a checkbox in its own label, a tap
@@ -981,8 +1026,8 @@ true; elsewhere the round degrades to one tap and the body says so, pointing at 
 genuinely works, since a typed answer travels under the free-text field the harness prefers anyway.
 
 Questions are retired — buttons cleared, outcome written onto the bubble — on every exit: a tap, a
-typed answer, a timeout, `/stop`, `/new`, and any interruption of the turn (`abortTurn`, the one
-choke point both cancellations pass through). Leaving one behind is not cosmetic: its buttons stay
+typed answer, a timeout, `/stop`, `/new`, and any cancel of the turn (`abortTurn`, the one
+choke point every cancellation passes through). Leaving one behind is not cosmetic: its buttons stay
 live against a request that no longer exists, `hasPendingWork` pins the child until the ask times
 out, and the next message would be read as its answer. The clearing goes through `editButtons(ref,
 text, [])` rather than a text-only `editMessage` for the reason given at `editModelMenu` — only

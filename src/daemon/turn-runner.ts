@@ -9,9 +9,10 @@ import type {
   ElicitAnswer,
   InboundMessage,
   QuotaPool,
+  SteerOutcome,
 } from '../types.js';
 import type { PlatformAdapter } from '../platform/adapter.js';
-import type { AgentFactory, AgentStreamHandlers, AgentUsage, FollowUpSink } from './agent.js';
+import type { AgentFactory, AgentSession, AgentStreamHandlers, AgentUsage, FollowUpSink } from './agent.js';
 import { StreamBuffer } from '../core/stream-buffer.js';
 import { ToolRenderer } from '../core/tool-renderer.js';
 import { describeOutboundError, MessageNotEditableError } from '../core/outbound-errors.js';
@@ -206,6 +207,18 @@ interface TurnRef {
  */
 type BurstFacts = Pick<TurnRef, 'model' | 'effort'>;
 
+/** A running turn, as far as a message handed into it needs to know (see TurnRunner.steer). */
+interface RunningTurn {
+  agent: AgentSession;
+  platformId: string;
+  /**
+   * Where messages that belong to this turn come from: the lane the batch was sent in, and the lane
+   * the reply is going to. The two differ under autoThread, which opens a thread for the reply and
+   * makes the user's next message there arrive from it.
+   */
+  lanes: ConversationAddress[];
+}
+
 /**
  * Single-turn orchestrator: all timing logic for running one turn — register the TurnContext
  * (channel/token), wire StreamBuffer / ToolRenderer, drive the agent turn, and preserve observable
@@ -235,6 +248,12 @@ export class TurnRunner {
    * needs a group channel, and every web UI topic is a direct lane).
    */
   private readonly typingHolds = new Map<ConversationId, number>();
+  /**
+   * The turn running in each conversation, with what a message needs to be handed into it (see steer):
+   * the session it runs on — captured, not looked up again, so a message cannot reach a different
+   * agent than the one doing the work — and the lane it answers in.
+   */
+  private readonly running = new Map<ConversationId, RunningTurn>();
 
   constructor(
     private readonly config: Config,
@@ -272,10 +291,9 @@ export class TurnRunner {
   /**
    * One turn: register TurnContext → wire core classes → drive the agent.
    *
-   * `signal` (from the merger) trips when a newer message interrupts this turn (interruptOnNewMessage):
-   * the agent is cancelled in parallel, and here it switches the final flush to a clean finalize —
-   * finalize with no footer and no command fallback, since the continuing batch
-   * produces its own reply (and its own ✅). Absent = never interrupted (treat as a normal turn).
+   * `signal` (from the merger) trips when `/stop` cuts this turn short: the agent is cancelled in
+   * parallel, and here it switches the final flush to a clean finalize — finalize with no footer and
+   * no command fallback, since the turn did not finish. Absent = never stopped (treat as a normal turn).
    */
   async runTurn(conversationId: ConversationId, batch: InboundMessage[], signal?: AbortSignal): Promise<void> {
     // The turn's platform is the batch's platform instance (all messages of one batch come from
@@ -335,6 +353,10 @@ export class TurnRunner {
     agent.setFollowUpSink?.(this.followUpSink(conversationId));
     const prompt = await this.buildPrompt(batch, platform);
     console.log(`[turn] ${conversationId} starting turn (${batch.length} message(s))`);
+    // Open to messages sent while it runs (see steer) from here until it ends. Keyed by conversation,
+    // and removed only if it is still THIS turn, so a turn can never unregister its successor.
+    const turn: RunningTurn = { agent, platformId, lanes: [addressOf(last.conversation), address] };
+    this.running.set(conversationId, turn);
 
     try {
       await agent.runTurn(
@@ -342,15 +364,14 @@ export class TurnRunner {
         render.handlers
       );
       if (signal?.aborted) {
-        // Interrupted by a newer message: finalize the partial reply cleanly — drop the streaming
-        // reply with no footer (it didn't finish), and skip the command fallback. The continuing
-        // batch starts a fresh turn and produces its own reply + ✅.
+        // Stopped (`/stop`): finalize the partial reply cleanly — drop the streaming reply with no
+        // footer (it didn't finish), and skip the command fallback.
         //
         // The tool painter is stopped first: an armed retry belongs to a turn that is over, and
         // firing it would repaint an abandoned bubble underneath the next turn's output.
         render.abort();
         await render.finalize('');
-        console.log(`[turn] ${conversationId} turn interrupted (continuing with newer input)`);
+        console.log(`[turn] ${conversationId} turn stopped`);
       } else {
         // Final flush: footer only on the last stream (intermediate segments carry none).
         await render.finalize(this.buildFooter(conversationId, ref));
@@ -360,7 +381,7 @@ export class TurnRunner {
           await this.sendCommandFallback(platform, address, lastContent);
         }
         // Normal end: whatever usage this harness was going to report, it has reported. Recorded
-        // only here (not in `finally`) so an interrupted or failed turn doesn't claim the harness
+        // only here (not in `finally`) so a stopped or failed turn doesn't claim the harness
         // stayed silent — see recordTurnComplete.
         this.deps.recordTurnComplete?.(conversationId);
         console.log(`[turn] ${conversationId} turn complete`);
@@ -368,8 +389,8 @@ export class TurnRunner {
     } catch (err) {
       // Log error detail (InboundMerger only adds a ❌ reaction, keeping no reason).
       console.error(`[turn] ${conversationId} turn failed:`, err instanceof Error ? err.stack ?? err.message : err);
-      // Deliver what the turn DID produce before saying it failed — the same clean finalize an
-      // interrupted turn gets, with no footer because it did not finish.
+      // Deliver what the turn DID produce before saying it failed — the same clean finalize a
+      // stopped turn gets, with no footer because it did not finish.
       //
       // Not a nicety: text is only sent when its segment completes (at the next tool boundary, or
       // here at the end), so a failed turn used to throw away everything after its last tool —
@@ -394,8 +415,42 @@ export class TurnRunner {
         .catch((e) => console.error('[turn] failed to send error notice:', e instanceof Error ? e.message : e));
       throw err;
     } finally {
+      if (this.running.get(conversationId) === turn) this.running.delete(conversationId);
       await releaseTyping();
     }
+  }
+
+  /**
+   * Hand messages that arrived mid-turn to the turn running in this conversation (see
+   * AgentSession.steer), or say why not — the merger queues whatever this refuses.
+   *
+   * Refused here, before the harness is asked:
+   *  - A slash command. The SDK runs one only when it is the FIRST thing in a prompt (see mergePrompt),
+   *    and a harness taking input mid-turn delivers it as part of the turn's own continuing work,
+   *    where `/compact` would be text in the middle of a task. So it waits for the turn to end, and
+   *    then runs as what it is.
+   *  - A message from a lane this turn is not answering in (a `shared`-scope conversation that hopped
+   *    channels). Joining would answer it in the other one.
+   *
+   * The prompt is built exactly as a turn's is (quote line, attachments), because to the harness it
+   * is the same thing: a message from the user. Built before the turn is checked again, since
+   * fetching attachments takes time a short turn may not have.
+   */
+  async steer(conversationId: ConversationId, batch: InboundMessage[]): Promise<SteerOutcome> {
+    const turn = this.running.get(conversationId);
+    if (!turn?.agent.steer) return 'refused';
+    if (batch.some((m) => looksLikeCommand(m.content.trim()))) return 'refused';
+    const fromThisLane = batch.every(
+      (m) =>
+        m.conversation.platform === turn.platformId &&
+        turn.lanes.some((lane) => sameAddress(lane, addressOf(m.conversation)))
+    );
+    if (!fromThisLane) return 'refused';
+    const prompt = await this.buildPrompt(batch, this.adapterFor(turn.platformId));
+    if (this.running.get(conversationId) !== turn) return 'refused';
+    const outcome = await turn.agent.steer({ prompt });
+    console.log(`[turn] ${conversationId} ${batch.length} message(s) sent mid-turn: ${outcome}`);
+    return outcome;
   }
 
   /**

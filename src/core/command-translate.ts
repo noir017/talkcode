@@ -46,8 +46,9 @@ export type Harness = AgentDef['harness'];
  * `/stop` and `/new` are two commands rather than one because they answer two different asks. Both
  * end the running turn; only `/new` also destroys the context. Before `/stop` existed, "make it
  * stop" cost the user their whole conversation, since the only other interrupt was
- * `inbound.interruptOnNewMessage` — which fires as a side effect of sending another message, not
- * because anybody asked for it.
+ * `inbound.interruptOnNewMessage` — which fired as a side effect of sending another message, not
+ * because anybody asked for it. That side effect is gone too (a message sent mid-turn now joins the
+ * turn or waits behind it), which leaves `/stop` as the one way to cut a turn short.
  *
  * `/kill` is the third rung, between those two: it ends the agent's PROCESS and keeps the
  * conversation, the manual form of what the idle sweeper does on its own. `/stop` cannot be that
@@ -127,11 +128,14 @@ interface GenericCommand {
    * conversation is busy, instead of forwarding it (see isSessionQuery).
    *
    * Forwarding is what the translation table does, and a forwarded command is just another inbound
-   * message: under `inbound.interruptOnNewMessage` (on by default) it cancels the running turn. For
-   * `/usage` that trade is absurd. Seen live on 2026-09-30: a cc turn running typecheck + the full
-   * suite was cancelled mid-Bash by a `/usage` that Claude Code then answered in under 50ms without
-   * calling the model (a `local_command` in the transcript) — and the work stayed stopped until the
-   * user typed "继续" six minutes later and the tests were run again.
+   * message. Through 2.0.0 that meant it cancelled the running turn (`inbound.interruptOnNewMessage`),
+   * and for `/usage` the trade was absurd. Seen live on 2026-09-30: a cc turn running typecheck + the
+   * full suite was cancelled mid-Bash by a `/usage` that Claude Code then answered in under 50ms
+   * without calling the model (a `local_command` in the transcript) — and the work stayed stopped
+   * until the user typed "继续" six minutes later and the tests were run again. A message sent
+   * mid-turn no longer cancels anything, but a COMMAND still cannot join a running turn (it must be
+   * the first thing in a prompt to run as one — see TurnRunner.steer), so forwarded it would wait
+   * for the whole turn to end. An answer now beats a fuller one in ten minutes.
    *
    * Only while busy. An idle conversation still gets the harness's own answer, which knows more
    * than the gateway does (per-model tokens, cache, API time on claude); the gateway's copy is the

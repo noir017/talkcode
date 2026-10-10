@@ -43,7 +43,7 @@ conversation, not part of its name — see [`daemon/README.md`](../daemon/README
 | `schedule.ts` | Scheduled tasks as data: building one from `schedule add`, when it runs next, catch-up and expiry, every sentence about one |
 | `schedule-menu.ts` | `/setting` → ⏰ Scheduled tasks: the list, one task, the delete confirmation, their button ids |
 | `inbound-gate.ts` | "Should we respond to this message?" — a pure decision tree |
-| `inbound-merger.ts` | Per-conversation state machine: coalesce bursts, queue while busy, interrupt |
+| `inbound-merger.ts` | Per-conversation state machine: coalesce bursts, hand mid-turn messages to the turn or queue them, `/stop` |
 | `stream-buffer.ts` | Outbound text: throttled in-place editing, chunking, backoff, degradation |
 | `tool-renderer.ts` | Tool-call bubbles: 4 modes × 2 grouping strategies |
 | `outbound-pacer.ts` | One write budget per chat: token buckets, one FIFO, in-place edit coalescing |
@@ -102,20 +102,28 @@ One instance per session. A three-phase state machine:
 
 ```
 idle ──ingest──► collecting ──window elapsed──► running ──turn ends──► idle
-                      ▲                            │
-                      └──── queued batch ◄─────────┘  (messages arriving mid-turn)
+                      ▲                            │  ▲
+                      └──── queued batch ◄─────────┘  └── joined (steer)   (messages arriving mid-turn)
 ```
 
 - **Collecting**: a sliding merge window (`mergeWindowMs`, default 1.5 s) coalesces
   rapid consecutive messages into one turn, capped by `maxMergeWindowMs` (5 s) so a
   steady typist cannot starve the turn forever.
-- **Running**: new messages go to a single-slot queue holding the **latest batch** —
-  never dropped, never unbounded.
-- **Interrupt** (`interruptOnNewMessage`, default true): a new message trips the turn's
-  `AbortSignal`. `TurnRunner` reads it to finalize the partial reply cleanly — no footer,
-  no ✅ — and the continuing batch starts a fresh turn that
-  produces its own reply and its own reaction. The skip-✅-on-interrupt behavior matters:
-  without it a user sees a ✅ on a turn that never finished.
+- **Running**: a new message **never cancels the turn**. It is offered to the running turn
+  (`deps.steer` → `SteerOutcome`): `joined` means the agent took it and will see it at its next
+  natural point (between tool calls), so it is not run again and gets the turn's ✅/❌; `refused`
+  sends it to the queue, which holds the **latest batch** — never dropped, never unbounded — and
+  starts it as a fresh turn once this one ends. Offers are decided on a chain, strictly in arrival
+  order, and once a message is queued everything after it queues too, so nothing overtakes it. An
+  offer still undecided when its turn ends starts the next turn itself; until it is decided
+  `isIdle()` stays false and `onIdle` is held back, so the registry never reclaims the child that
+  next turn needs. Which harnesses can take a message mid-turn, and how, is the runtime's business
+  (see [`daemon/acp-steering.ts`](../daemon/acp-steering.ts)).
+- **Interrupt** is `/stop` (`interrupt()`) alone — through 2.0.0 every new message did it
+  (`interruptOnNewMessage`). It trips the turn's `AbortSignal`; `TurnRunner` reads it to finalize
+  the partial reply cleanly — no footer, no ✅ (a user must not see a ✅ on a turn that never
+  finished, including on a message that had joined it). The queued backlog, and any message still
+  being offered, is dropped.
 - **Lifecycle reactions**: 👀 received, ✅ done, ❌ error, gated by `reactionsEnabled`
   (`display.reactions.enabled`) independently of the emoji themselves, which stay
   frozen.
@@ -123,10 +131,10 @@ idle ──ingest──► collecting ──window elapsed──► running ─�
   *or* collecting, since a batch in its merge window is busy but has not started. Read only by a
   busy `/usage`, to say how long the turn has been going.
 - **Solo turns** (`enqueueSolo`): input nobody typed — a scheduled task firing. It runs as a
-  batch of one, never trips the interrupt, waits behind the running turn and behind the user's
+  batch of one, is never offered to a running turn, waits behind it and behind the user's
   own queued messages (a person waiting outranks a clock), gets no reactions, and resolves with
-  how its turn ended. A message typed while it runs still interrupts it: the person is there,
-  the schedule is not. `/stop` stops a running solo turn but keeps queued ones, since the
+  how its turn ended. A message typed while it runs is offered to it like to any turn: the person
+  is there, the schedule is not. `/stop` stops a running solo turn but keeps queued ones, since the
   backlog it drops is what the user typed.
 
 ## `schedule.ts` and `schedule-menu.ts`
@@ -519,10 +527,12 @@ Two rules keep this honest:
 
 `/usage` and `/context` are marked `query` in `GENERIC_COMMANDS` (`isSessionQuery`): they ask
 *about* the session and do no work *for* it. Forwarding one is still what the table does, and a
-forwarded command is just another inbound message — so under `interruptOnNewMessage` it cancels the
-running turn. Seen live on 2026-09-30: a cc turn running typecheck + the full suite was cancelled
-mid-Bash by a `/usage` that Claude Code answered in under 50 ms without calling the model, and the
-work stayed stopped until the user typed "继续".
+forwarded command is just another inbound message — which through 2.0.0 meant it cancelled the
+running turn (`interruptOnNewMessage`). Seen live on 2026-09-30: a cc turn running typecheck + the
+full suite was cancelled mid-Bash by a `/usage` that Claude Code answered in under 50 ms without
+calling the model, and the work stayed stopped until the user typed "继续". A mid-turn message no
+longer cancels anything, but a command never joins a running turn (it has to start a prompt to run
+as one), so a forwarded `/usage` would now wait out the whole turn instead.
 
 So while the conversation's merger is not idle, `ConversationRegistry.answersWhileBusy` keeps a
 forwarded query (translated, or passed through to `custom`) out of the session, and the gateway

@@ -35,8 +35,10 @@
 - **skills** 从 `<cwd>/.agents/skills`、`~/.agents/skills`、
   `~/.gemini/antigravity-cli/skills`、`~/.gemini/skills`、`~/.gemini/config/skills`
   读取，所以 `/skills` 能列出它们，`/<名字> <请求>` 能直接调用。
-- **`/new` 开启新对话**，与其他 harness 一致。打断当轮会重启子进程并续接同一
+- **`/new` 开启新对话**，与其他 harness 一致。停下当轮（`/stop`）会重启子进程并续接同一
   对话，因此上下文不会丢失。
+- **一轮中途发的消息要等这一轮结束**：agy 的 stream-json 输入把每条消息当成单独的一轮，
+  没有办法并入正在跑的那一轮。
 
 守护进程的所有默认参数都可通过 `args` 覆盖（它们追加在默认值之后，而 agy 的
 参数解析是后者生效）。
