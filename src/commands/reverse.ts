@@ -244,6 +244,7 @@ function renderVoiceLog(data: unknown): string {
     at: e.at,
     status: e.status,
     text: e.text,
+    cleaned: e.cleaned ?? '',
     model: e.model,
     latencyMs: e.latencyMs ?? '',
     messageId: e.messageId,
@@ -254,7 +255,8 @@ function renderVoiceLog(data: unknown): string {
     count: rows.length,
     transcripts: rows,
     help: [
-      'status: sent/auto = the text reached you as the user message; cancelled/superseded/expired/called-off = it did not; failed/no-speech = there was no transcript.',
+      'text is the words as heard; cleaned is the same message with fillers and self-corrections removed, when there was one.',
+      'status: sent/auto = cleaned (or text, when cleaned is empty) reached you as the user message; sent-as-spoken = text did; cancelled/superseded/expired/called-off = nothing did; failed/no-speech = there was no transcript.',
       'audio is the saved recording; you can re-listen or re-transcribe it if a transcript looks misheard.',
     ],
   });

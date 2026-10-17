@@ -39,6 +39,13 @@ const flush = async (): Promise<void> => {
 
 interface RigOpts {
   confirm?: boolean;
+  /**
+   * `voice.cleanup`. Off unless a test asks: most of this file is about the card's lifecycle, which
+   * is the same either way, and reads most plainly against the one-text card. The default being ON
+   * is asserted on its own below.
+   */
+  cleanup?: boolean;
+  vocabulary?: string[];
   buttons?: boolean;
   responses?: Array<Response | Error | Promise<Response>>;
   timeoutMs?: number;
@@ -57,6 +64,8 @@ function rig(opts: RigOpts = {}) {
     access: { allowFrom: ['tg:u1'] },
     voice: {
       confirm: opts.confirm ?? true,
+      cleanup: opts.cleanup ?? false,
+      ...(opts.vocabulary ? { vocabulary: opts.vocabulary } : {}),
       transcriber: {
         baseUrl: 'http://gw:3000/v1beta/',
         apiKey: 'sk-test',
@@ -346,6 +355,113 @@ describe('overtaken by the user', () => {
   });
 });
 
+describe('cleanup (voice.cleanup)', () => {
+  const spoken = '然后 把那个 把把它部署到 Unraid 上';
+  const cleaned = '把它部署到 Unraid 上。';
+
+  it('is on by default', () => {
+    const config = parseConfig({
+      platforms: { tg: { type: 'telegram', token: 't' } },
+      agents: [{ id: 'cc', harness: 'claude' }],
+      routing: { default: 'cc' },
+      voice: { transcriber: { baseUrl: 'http://gw/v1beta', apiKey: 'k', model: 'gemini-3-flash' } },
+    });
+    expect(config.voice).toMatchObject({ cleanup: true, vocabulary: [] });
+  });
+
+  it('transcribes first, then rewrites the TRANSCRIPT in a text-only request, both with the vocabulary', async () => {
+    const r = rig({ cleanup: true, vocabulary: ['Unraid'], responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.requests).toHaveLength(2);
+    const system = (i: number) => (r.requests[i]!.body['systemInstruction'] as { parts: Array<{ text: string }> }).parts[0]!.text;
+    expect(system(0)).toMatch(/^You are a speech-to-text engine/);
+    expect(system(1)).toMatch(/^You turn a speech-to-text transcript into the message/);
+    for (const i of [0, 1]) expect(system(i)).toMatch(/Names that often come up: .*, CI, Unraid\./);
+    expect(r.requests[1]!.body['contents']).toEqual([{ role: 'user', parts: [{ text: `<transcript>\n${spoken}\n</transcript>` }] }]);
+  });
+
+  it('a cleanup that fails leaves the transcript standing, and the card says why', async () => {
+    const busy = (): Response => geminiErr(503, 'high demand');
+    const r = rig({ cleanup: true, responses: [geminiOk(spoken), busy(), busy(), busy()] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.cards[0]!.text).toContain(`${spoken}\n\n✍️ Not cleaned up: the transcriber failed 3 times (last: HTTP 503: high demand).`);
+    expect(r.cards[0]!.buttons.map((b) => b.label)).toEqual(['✅ Send', '✖ Cancel']);
+    r.click(r.cards[0]!.buttons[0]!.id);
+    expect(r.delivered.map((m) => m.content)).toEqual([spoken]);
+    expect(r.logLines()[0]).toMatchObject({ event: 'transcribed', text: spoken, cleanupError: expect.stringContaining('HTTP 503') });
+  });
+
+  it('heard no speech: nothing to clean up, and no second request', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk('[no speech]')] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.requests).toHaveLength(1);
+    expect(r.sent).toEqual([VOICE_NO_SPEECH_TEXT]);
+  });
+
+  it('shows both, cleaned-up first, with a third button for the words as heard', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    const card = r.cards[0]!;
+    expect(card.text).toMatch(/✍️ Cleaned up:\n把它部署到 Unraid 上。\n\n🗣️ As spoken:\n然后 把那个/);
+    expect(card.buttons.map((b) => b.label)).toEqual(['✅ Send', '🗣️ Send as spoken', '✖ Cancel']);
+  });
+
+  it('✅ Send sends the cleaned-up version, and the card says so', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    r.click(r.cards[0]!.buttons[0]!.id);
+    expect(r.delivered.map((m) => m.content)).toEqual([cleaned]);
+    expect(r.edits.at(-1)!.text).toMatch(/Sent the cleaned-up version to the agent\.$/);
+    expect(r.logLines().at(-1)).toMatchObject({ event: 'outcome', outcome: 'sent' });
+  });
+
+  it('🗣️ Send as spoken sends the words as heard instead', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    r.click(r.cards[0]!.buttons[1]!.id);
+    expect(r.delivered.map((m) => m.content)).toEqual([spoken]);
+    expect(r.edits.at(-1)!.text).toMatch(/Sent to the agent as spoken\.$/);
+    expect(r.intake.history(KEY, 10)).toMatchObject([{ status: 'sent-as-spoken', text: spoken, cleaned }]);
+  });
+
+  it('confirm: false sends the cleaned-up version, and the card shows both', async () => {
+    const r = rig({ cleanup: true, confirm: false, responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.sent[0]).toMatch(/Cleaned up:[\s\S]*As spoken:[\s\S]*Sent the cleaned-up version to the agent automatically\.$/);
+    expect(r.delivered.map((m) => m.content)).toEqual([cleaned]);
+  });
+
+  it('logs both versions', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk(spoken), geminiOk(cleaned)] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.logLines()[0]).toMatchObject({ event: 'transcribed', text: spoken, cleaned });
+  });
+
+  it('with nothing to clean up, the card is the one-text card it always was', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk('看一下。'), geminiOk('看一下。')] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.cards[0]!.text).not.toMatch(/Cleaned up|As spoken/);
+    expect(r.cards[0]!.buttons.map((b) => b.label)).toEqual(['✅ Send', '✖ Cancel']);
+  });
+
+  it('reads the switch per voice note, so /setting cleanup applies to the next one', async () => {
+    const r = rig({ cleanup: true, responses: [geminiOk('你好')] });
+    r.config.voice!.cleanup = false;
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.requests).toHaveLength(1);
+  });
+});
+
 describe('what is not taken', () => {
   it('a caption makes the audio material, not speech', () => {
     const r = rig();
@@ -388,6 +504,26 @@ describe('failures are said out loud, and nothing is sent', () => {
     expect(r.sent[0]).toMatch(/^🎙️ Couldn't transcribe that voice message: the transcriber failed 3 times \(last: HTTP 503: high demand\)/);
     expect(r.cards).toEqual([]);
     expect(r.delivered).toEqual([]);
+  });
+
+  it('retries an answer that came back empty, or blocked for no stated reason, and succeeds', async () => {
+    const empty = new Response(JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }), { status: 200 });
+    const other = new Response(JSON.stringify({ promptFeedback: { blockReason: 'OTHER' } }), { status: 200 });
+    const r = rig({ responses: [empty, other, geminiOk('third time')] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.requests).toHaveLength(3);
+    expect(r.cards[0]!.text).toContain('third time');
+  });
+
+  it('says an empty answer failed rather than that the recording was silent', async () => {
+    const empty = (): Response =>
+      new Response(JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }), { status: 200 });
+    const r = rig({ responses: [empty(), empty(), empty()] });
+    r.intake.take(KEY, r.voice());
+    await flush();
+    expect(r.sent[0]).toMatch(/failed 3 times \(last: the transcriber returned an empty answer\)/);
+    expect(r.sent).not.toContain(VOICE_NO_SPEECH_TEXT);
   });
 
   it('does not retry a request the upstream rejected', async () => {

@@ -15,6 +15,7 @@ and restarting, which stops every resident agent.
 | conversation scope | `session.scope` | `per_thread`, `per_channel`, `per_user`, `shared` | after a restart |
 | live streaming | `stream.enabled` | `on`, `off` (default `off`) | immediately — the next reply |
 | confirm voice transcripts | `voice.confirm` | `on`, `off` (default `on`; only with a `voice:` block) | immediately — the next voice message |
+| clean up voice transcripts | `voice.cleanup` | `on`, `off` (default `on`; only with a `voice:` block) | immediately — the next voice message |
 
 ```
 /setting                       →  the whole screen, as buttons where they work

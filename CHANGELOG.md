@@ -5,6 +5,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A voice message is also written up as the message you meant, and that is what ✅ Send sends.**
+  A transcript is word for word, and nobody speaks a request the way they would type it: the agent
+  was handed every "then — then, put that, put it on the…" and every correction made mid-sentence
+  along with the request. Now, after transcribing, the gateway asks the same model to rewrite the
+  transcript — fillers, repeats and stutters dropped, "A — no, B" kept as B, misheard names fixed,
+  three or more steps numbered — without summarizing anything away or adding anything that was not
+  said. The card shows the cleaned-up version first and the words as heard beneath it, with a
+  🗣️ Send as spoken button for when the rewrite got it wrong. The rewrite is a second, text-only
+  request that never hears the audio: asking for both in one request with the recording was tried
+  first, and on a three-second clip the transcriber answers with "no speech" it invented an entire
+  request — "act as a code review expert and refactor this in Go" — as both versions. A cleanup
+  that fails leaves the transcript standing and the card says why. On by default
+  (`voice.cleanup`); `/setting cleanup off` goes back to word-for-word, live. It costs a second
+  request per voice message, which matters on a free tier with a daily cap.
+- **`voice.vocabulary`: the names your deployment says out loud.** The transcriber is told a few
+  names to expect (talkcode, Claude Code, Codex…), but a deployment's own — its hosts, its
+  services — were spelled by ear: "Unraid" came back as 安瑞 and 昂立. The list is added to the
+  built-in one, and both the transcription and the cleanup are given it.
+
+### Fixed
+
+- **A transcriber answer that came back empty is retried, not reported as "no speech".** The
+  transcriber is told to answer `[no speech]` for silence precisely so that silence and a missing
+  answer can be told apart, but an empty answer was read as silence all the same, and the user was
+  told their recording had nothing in it. Upstream returns one now and then (2 calls in 18 on
+  2026-10-17) for recordings it transcribes on every other attempt. `blockReason: OTHER` is retried
+  too: one model behind the `gemini-3-flash` alias returned it for an ordinary voice note on 6 calls
+  of 7 in one minute and on none of the next 5.
+
 ## [2.2.2] - 2026-10-10
 
 ### Changed

@@ -554,6 +554,31 @@ export const ConfigSchema = z
          */
         confirm: z.boolean().default(true),
         /**
+         * Also write each voice message up as the message the speaker meant — fillers, repeats and
+         * stutters dropped, self-corrections applied — and show it above the words as heard; ✅ Send
+         * (and `confirm: false`) send that version, 🗣️ Send as spoken the other.
+         *
+         * On by default because speech is not how anyone writes a request, and the verbatim
+         * transcript handed the agent every "um, then — then, no, the other one" along with it. It
+         * costs a second, text-only request to the same model after the transcription (it never
+         * hears the audio; core/voice.ts cleanupInstructions says why), within the same `timeoutMs`;
+         * the words as heard stay on the card and in the log, and a cleanup that fails leaves them
+         * standing. Off = the verbatim transcript alone, as before. Editable from chat
+         * (`/setting cleanup`), live.
+         */
+        cleanup: z.boolean().default(true),
+        /**
+         * Names the transcriber should expect — hosts, services, people, jargon this deployment says
+         * out loud — added to a built-in list of the gateway's own (talkcode, Claude Code, Codex…).
+         * The cleanup is given the same list, to fix what was misheard.
+         *
+         * A name the model has not been told is spelled by ear: on 2026-10-17 "Unraid" came back as
+         * "安瑞" and "昂立", and came back right in each of four runs once it was listed. Speech
+         * recognition cannot know a deployment's vocabulary, and nothing else here can either, so it
+         * is config.
+         */
+        vocabulary: z.array(z.string().min(1)).default([]),
+        /**
          * The model that does the transcribing, spoken to in Gemini's own `generateContent` format.
          *
          * Gemini-native rather than OpenAI-compatible on purpose: audio goes over as `inline_data`

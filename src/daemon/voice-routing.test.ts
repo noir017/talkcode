@@ -52,12 +52,17 @@ afterEach(() => {
 
 function rig(opts: { voice?: boolean } = {}) {
   const transcripts = ['帮我看下 CI 为什么挂了', '第二句'];
-  vi.stubGlobal('fetch', async () =>
-    new Response(
-      JSON.stringify({ candidates: [{ content: { parts: [{ text: transcripts.shift() ?? '…' }] }, finishReason: 'STOP' }] }),
-      { status: 200 }
-    )
-  );
+  const answer = (text: string): Response =>
+    new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] }), { status: 200 });
+  // Cleanup is on by default, so each voice note is two requests: the audio, then its transcript as
+  // text. The second is answered with the transcript itself — "nothing to clean up" — which keeps
+  // this file about routing while still going through the cleanup's request and its parse.
+  vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
+    const frame = /^<transcript>\n([\s\S]*)\n<\/transcript>$/.exec(
+      (JSON.parse(init.body) as { contents: Array<{ parts: Array<{ text?: string }> }> }).contents[0]?.parts[0]?.text ?? ''
+    );
+    return answer(frame ? frame[1]! : (transcripts.shift() ?? '…'));
+  });
   const parsed = parseConfig({
     platforms: { tg: { type: 'telegram', token: 't' } },
     agents: [{ id: 'cc', harness: 'claude' }],
