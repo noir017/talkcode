@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-17
+
 ### Added
 
 - **A voice message is also written up as the message you meant, and that is what ✅ Send sends.**
