@@ -119,9 +119,9 @@ Three writers, in increasing order of how much they claim:
 
 `/setting` is the one that changed the assumption that this file is only ever
 hand-edited: config.yaml is now written **while the daemon is running**, from a chat
-message. Six fields are reachable that way (`routing.default`, `agents[].model`,
-`session.idleTimeoutMs`, `session.scope`, `stream.enabled`, and `voice.confirm` where a `voice:`
-block exists) and the rest are refused by name — see
+message. Seven fields are reachable that way (`routing.default`, `agents[].model`,
+`session.idleTimeoutMs`, `session.scope`, `stream.enabled`, and `voice.confirm` and
+`voice.cleanup` where a `voice:` block exists) and the rest are refused by name — see
 [`core/settings.ts`](../core/README.md#settingsts) for the table and
 [`daemon/settings-store.ts`](../daemon/README.md#settings-storets) for the order the write
 happens in. Two constraints from that path land here:

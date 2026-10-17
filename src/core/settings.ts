@@ -36,7 +36,7 @@ import { pageCount, pageOf, pageSlice, truncateLabel, wrapPage } from './paging.
  */
 
 /** The settings this gateway can write. Everything else is refused by name. */
-export type SettingId = 'agent' | 'model' | 'idle' | 'scope' | 'stream' | 'voice';
+export type SettingId = 'agent' | 'model' | 'idle' | 'scope' | 'stream' | 'voice' | 'cleanup';
 
 /**
  * When a change reaches the running daemon.
@@ -179,10 +179,12 @@ const NOT_EDITABLE: Record<string, string> = {
   inbound: 'the streaming experience',
   attachments: 'the streaming experience',
   ipc: 'the streaming experience',
-  // Reached only when no row matched — i.e. anything under `voice.` other than the confirm switch,
-  // or `voice` itself on a deployment with no `voice:` block.
-  voice: 'voice transcription beyond its confirm switch',
-  transcriber: 'voice transcription beyond its confirm switch',
+  // Reached only when no row matched — i.e. anything under `voice.` other than its two switches,
+  // or a switch itself on a deployment with no `voice:` block.
+  voice: 'voice transcription beyond its two switches',
+  cleanup: 'voice transcription beyond its two switches',
+  transcriber: 'voice transcription beyond its two switches',
+  vocabulary: 'voice transcription beyond its two switches',
 };
 
 /**
@@ -201,8 +203,8 @@ const REFUSAL_REASON: Record<string, string> = {
   'per-platform response gating': 'it is not wired into /setting',
   'the streaming experience':
     'it is not in config.yaml at all — those values are frozen in the code on purpose (see src/config/README.md)',
-  'voice transcription beyond its confirm switch':
-    'the transcriber is an endpoint and a key, and turning the feature on is a `voice:` block to add, not a value to pick (`/setting voice` appears once it exists)',
+  'voice transcription beyond its two switches':
+    'the transcriber is an endpoint and a key, the vocabulary is a list, and turning the feature on is a `voice:` block to add, not a value to pick (`/setting voice` and `/setting cleanup` appear once it exists)',
 };
 
 /** Full config paths accepted as aliases for the short keys, so both spellings work. */
@@ -222,6 +224,10 @@ const KEY_ALIASES: Record<string, SettingId> = {
   voice: 'voice',
   'voice.confirm': 'voice',
   voiceconfirm: 'voice',
+  cleanup: 'cleanup',
+  'voice.cleanup': 'cleanup',
+  voicecleanup: 'cleanup',
+  'voice-cleanup': 'cleanup',
 };
 
 // ─────────────────────────────── reading ───────────────────────────────
@@ -294,12 +300,20 @@ export function settingsRows(cfg: Config): SettingRow[] {
   // Only where transcription is configured: a switch for a feature that is off is a row that can
   // be set and does nothing. Last, so the rows above keep their indices either way.
   if (cfg.voice) {
-    rows.push({
-      id: 'voice',
-      label: 'Confirm voice transcripts',
-      value: cfg.voice.confirm ? 'on' : 'off',
-      effect: 'live',
-    });
+    rows.push(
+      {
+        id: 'voice',
+        label: 'Confirm voice transcripts',
+        value: cfg.voice.confirm ? 'on' : 'off',
+        effect: 'live',
+      },
+      {
+        id: 'cleanup',
+        label: 'Clean up voice transcripts',
+        value: cfg.voice.cleanup ? 'on' : 'off',
+        effect: 'live',
+      }
+    );
   }
   return rows;
 }
@@ -325,6 +339,12 @@ export function settingDescription(row: SettingRow): string {
       return (
         'Whether a voice message’s transcript waits for your ✅ Send (`on`, the default) or goes to the ' +
         'agent at once (`off`). Either way the transcript is shown in the chat, labelled as one.'
+      );
+    case 'cleanup':
+      return (
+        'Whether a voice message is also written up as the message you meant — fillers, repeats and ' +
+        'self-corrections removed — and shown above the words as heard, with ✅ Send sending that ' +
+        'version (`on`, the default); or transcribed word for word only (`off`).'
       );
     default: {
       const _exhaustive: never = row.id;
@@ -451,6 +471,11 @@ export function settingOptions(row: SettingRow, cfg: Config, ctx: SettingsContex
         { raw: 'on', label: 'on — wait for ✅ Send before the agent sees it' },
         { raw: 'off', label: 'off — send each transcript on at once' },
       ];
+    case 'cleanup':
+      return [
+        { raw: 'on', label: 'on — show a cleaned-up version too, and send that' },
+        { raw: 'off', label: 'off — word for word only' },
+      ];
     default: {
       const _exhaustive: never = row.id;
       return _exhaustive;
@@ -502,6 +527,7 @@ export function parseSettingValue(
     }
     case 'stream':
     case 'voice':
+    case 'cleanup':
       return parseBooleanValue(input);
     default: {
       const _exhaustive: never = row.id;
@@ -587,6 +613,8 @@ export function settingLocation(row: SettingRow): SettingLocation {
       return { kind: 'path', path: ['stream', 'enabled'] };
     case 'voice':
       return { kind: 'path', path: ['voice', 'confirm'] };
+    case 'cleanup':
+      return { kind: 'path', path: ['voice', 'cleanup'] };
     default: {
       const _exhaustive: never = row.id;
       return _exhaustive;
@@ -630,6 +658,8 @@ export function readSettingValue(row: SettingRow, cfg: Config): string | number 
       return cfg.stream.enabled;
     case 'voice':
       return cfg.voice?.confirm;
+    case 'cleanup':
+      return cfg.voice?.cleanup;
     default: {
       const _exhaustive: never = row.id;
       return _exhaustive;

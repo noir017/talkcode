@@ -132,7 +132,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     name: 'voice',
     summary: 'What a voice message actually said',
     notes: [
-      'Some user messages were spoken: the user saw the transcript and approved it, so treat it as what they said. This is for the rare message that reads like a mishearing.',
+      'Some user messages were spoken: the user saw the transcript (often tidied up from the words as heard) and approved it, so treat it as what they said. This is for the rare message that reads like a mishearing, or like something was lost in the tidying.',
     ],
   },
 ];

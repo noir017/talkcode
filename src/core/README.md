@@ -642,6 +642,7 @@ The editable set is deliberately narrow (`model` expands to one row per configur
 | `scope` | `session.scope` | the four `SessionScope` values | **on restart** — file only |
 | `stream` | `stream.enabled` | `on` / `off` | **now** — `TurnRunner` resolves the delivery mode per turn |
 | `voice` | `voice.confirm` | `on` / `off` | **now** — read when each transcript is ready. A row only where a `voice:` block exists |
+| `cleanup` | `voice.cleanup` | `on` / `off` | **now** — read when each voice note's transcription starts. A row only where a `voice:` block exists |
 
 `scope` is the one that is written but not applied, and that is the interesting decision.
 The scope decides how `conversationKey` is computed, so changing it live would silently

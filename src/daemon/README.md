@@ -106,11 +106,13 @@ fold) are pure and live in [`core/voice.ts`](../core/README.md); this file does 
 ```
 route() ──take()──► download (attachment-io: SSRF guard, platform fetcher)
                     → sniff the container, save the file
-                    → transcribe: <baseUrl>/models/<model>:generateContent
-                    → card: "🎙️ Voice transcript · <model> · <s>" + [✅ Send] [✖ Cancel]
+                    → transcribe: <baseUrl>/models/<model>:generateContent  (audio → words as heard)
+                    → cleanup (voice.cleanup): the same endpoint again, text only (words → message meant)
+                    → card: "🎙️ Voice transcript · <model> · <s>" + cleaned-up, then as spoken
+                          + [✅ Send] [🗣️ Send as spoken] [✖ Cancel]
                           (confirm: false, or no buttons on this platform → posted as sent, at once)
-          ✅ Send ──► route(msg with the transcript as content, no attachments, same messageId,
-                          { transcript: true })
+          ✅ Send ──► route(msg with the cleaned-up text — or the transcript, when there is none —
+                          as content, no attachments, same messageId, { transcript: true })
 ```
 
 Why it is shaped this way, one line each:
@@ -132,15 +134,23 @@ Why it is shaped this way, one line each:
   when the second transcribes faster.
 - **`confirm` is read when the transcript is ready**, not when the job starts — `/setting voice` is
   live, and applies to a note already being transcribed.
-- **Two deadlines.** `transcriber.timeoutMs` bounds the whole transcription; each attempt has its
-  own shorter one and is retried when it stalls, because the upstream's latency is erratic rather
+- **The cleanup never hears the audio.** It is a second, text-only request given the transcript.
+  Asking for both versions in the one audio request was tried first, and on a three-second
+  recording the verbatim prompt answers with `[no speech]` it invented a whole request as both
+  versions (see `cleanupInstructions` in core/voice.ts). A cleanup that fails leaves the transcript
+  standing and the card says why; it never fails the voice note.
+- **Two deadlines.** `transcriber.timeoutMs` bounds the whole transcription, cleanup included; each
+  attempt has its own shorter one and is retried when it stalls, because the upstream's latency is erratic rather
   than slow (the same six-second note took 1.3 s and 65 s on 2026-09-25). A 400 that refuses the
   thinking config is retried once without it — `gemini-3-flash` behind newapi is an alias for 3.6 on
-  some channels and 3.7 on others, and they accept different thinking levels.
+  some channels and 3.7 on others, and they accept different thinking levels. So is a 200 with an
+  empty answer or `blockReason: OTHER`: both came back from requests that answered properly
+  moments later (2026-10-17), and an empty answer used to be read as "no speech".
 
 Every step is logged: `[voice]` lines in daemon.log, and one JSON event per fact in
-`<configDir>/voice-log.jsonl` (0600, rotated to `.1` past 5 MB) — the transcript with its audio
-path, model, latency and token counts, then its outcome. The agent reads its own conversation's
+`<configDir>/voice-log.jsonl` (0600, rotated to `.1` past 5 MB) — the transcript and its
+cleaned-up version (or why there is none) with the audio path, model, latency and token counts,
+then its outcome. The agent reads its own conversation's
 entries with `talkcode voice-log`; nothing in its prompt says a message was spoken.
 
 ## Routing, binding, and conversation keys

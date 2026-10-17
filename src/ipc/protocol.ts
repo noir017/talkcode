@@ -240,7 +240,10 @@ export interface VoiceLogResult {
     id: string;
     at: string;
     status: string;
+    /** The words as heard. */
     text: string;
+    /** The cleaned-up message, when there was one. */
+    cleaned?: string;
     model: string;
     latencyMs?: number;
     messageId: string;

@@ -187,6 +187,10 @@ function applyToConfig(cfg: Config, row: SettingRow, value: string | number | bo
       // The row exists only where `voice` does (settingsRows), so the block is there to write into.
       if (cfg.voice) cfg.voice.confirm = Boolean(value);
       return;
+    case 'cleanup':
+      // Live, for the same reason: read when each voice note's transcription request is built.
+      if (cfg.voice) cfg.voice.cleanup = Boolean(value);
+      return;
     default: {
       const _exhaustive: never = row.id;
       throw new Error(`no config location for setting ${String(_exhaustive)}`);

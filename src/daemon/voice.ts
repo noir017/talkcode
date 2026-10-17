@@ -6,8 +6,10 @@ import type { Config } from '../config/schema.js';
 import type { AttachmentIngestDeps } from '../core/attachment-ingest.js';
 import { addressOf, type ConversationAddress } from '../core/conversation.js';
 import {
+  buildCleanupRequest,
   buildTranscribeRequest,
   foldVoiceLog,
+  parseCleanupResponse,
   parseTranscribeResponse,
   parseVoiceButtonId,
   sniffAudio,
@@ -20,6 +22,7 @@ import {
   voiceCardText,
   voiceFailureText,
   type InboundAttachment,
+  type CleanupParse,
   type TranscribeAudio,
   type TranscribeParse,
   type VoiceHistoryItem,
@@ -62,6 +65,8 @@ interface PendingVoice {
   conversationId: ConversationId;
   msg: InboundMessage;
   text: string;
+  cleaned?: string;
+  cleanupError?: string;
   model: string;
   latencyMs: number;
   adapter: PlatformAdapter;
@@ -145,63 +150,125 @@ function errorDetail(body: string): string {
   return body.slice(0, 200);
 }
 
+/** A 400 refusing the thinking config — "Thinking level MINIMAL is not supported for this model". */
+const refusesThinking = (status: number, detail: string): boolean => status === 400 && /thinking/i.test(detail);
+
+/** What transcribe() takes from outside. Tests only, every one: production uses the real thing. */
+interface TranscribeDeps {
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  /** Per-attempt base deadline. The real one is ATTEMPT_BASE_MS. */
+  attemptBaseMs?: number;
+}
+
+/** A failed exchange; `retry` when the same request may well succeed on the next attempt. */
+type Failure = { ok: false; reason: string; retry?: boolean };
+
+/** One `generateContent` request, as generate() needs it described. */
+interface Exchange<S> {
+  /** Shared by every request one voice note makes: what the user waits at most. */
+  overall: AbortSignal;
+  /** One attempt's own deadline. */
+  attemptMs: number;
+  /** The body, with or without the thinking config. */
+  body: (thinking: boolean) => Record<string, unknown>;
+  parse: (json: unknown) => S | Failure;
+}
+
 /**
- * Transcribe audio parts in one `generateContent` call, retrying transient failures.
+ * One `generateContent` exchange, retrying transient failures — the loop both of a voice note's
+ * requests (the transcription, then the cleanup) go through.
  *
- * Two deadlines. The configured `timeoutMs` covers everything — every attempt and the backoff
- * between them — so it is what the user waits at most; each attempt also has its own, shorter one
- * (see ATTEMPT_BASE_MS), so a stuck request is retried instead of waited out.
+ * Two deadlines. The configured `timeoutMs` covers everything — every attempt of both requests and
+ * the backoff between them — so it is what the user waits at most; each attempt also has its own,
+ * shorter one (see ATTEMPT_BASE_MS), so a stuck request is retried instead of waited out.
  *
  * One 400 is retried too: a model that refuses the thinking config (the request asks for a thinking
  * level, and not every model behind an alias accepts every level) is asked again without it, rather
- * than failing a voice note over a latency optimisation.
+ * than failing a voice note over a latency optimisation. So is a 200 whose body the parser marks
+ * `retry` — an empty answer, `blockReason: OTHER` — since a status code is not the only way an
+ * upstream says "not this time".
  *
  * Never throws: every failure is a reason sentence, because the only caller has a user to tell.
  */
-export async function transcribe(
+async function generate<S extends { ok: true }>(
   cfg: TranscriberConfig,
-  audio: TranscribeAudio[],
-  deps: {
-    fetch?: typeof fetch;
-    sleep?: (ms: number) => Promise<void>;
-    /** Per-attempt base deadline. Tests only: the real one is half a minute. */
-    attemptBaseMs?: number;
-  } = {}
-): Promise<TranscribeParse> {
+  deps: TranscribeDeps,
+  call: Exchange<S>
+): Promise<S | Failure> {
   const fetchImpl = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/models/${encodeURIComponent(cfg.model)}:generateContent`;
-  const overall = AbortSignal.timeout(cfg.timeoutMs);
-  const mib = audio.reduce((n, a) => n + (a.base64.length * 3) / 4, 0) / (1024 * 1024);
-  const attemptMs = Math.round((deps.attemptBaseMs ?? ATTEMPT_BASE_MS) + ATTEMPT_PER_MIB_MS * mib);
   let thinking = true;
   let last = 'no attempt was made';
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const signal = AbortSignal.any([overall, AbortSignal.timeout(attemptMs)]);
+    const signal = AbortSignal.any([call.overall, AbortSignal.timeout(call.attemptMs)]);
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': cfg.apiKey },
-        body: JSON.stringify(buildTranscribeRequest(cfg.model, audio, { thinking })),
+        body: JSON.stringify(call.body(thinking)),
         signal,
       });
-      if (res.ok) return parseTranscribeResponse(await res.json());
-      const detail = errorDetail(await res.text().catch(() => ''));
-      last = `HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
-      if (res.status === 400 && thinking && /thinking/i.test(detail)) {
-        thinking = false;
-        continue; // the same request without the knob, at once — nothing here is transient
+      if (res.ok) {
+        const parsed = call.parse(await res.json());
+        if (parsed.ok || !parsed.retry) return parsed;
+        last = parsed.reason;
+      } else {
+        const detail = errorDetail(await res.text().catch(() => ''));
+        last = `HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+        if (thinking && refusesThinking(res.status, detail)) {
+          thinking = false;
+          continue; // the same request without the knob, at once — nothing here is transient
+        }
+        if (!RETRYABLE.has(res.status)) return { ok: false, reason: `the transcriber answered ${last}` };
       }
-      if (!RETRYABLE.has(res.status)) return { ok: false, reason: `the transcriber answered ${last}` };
     } catch (e) {
-      if (overall.aborted) {
+      if (call.overall.aborted) {
         return { ok: false, reason: `the transcriber did not answer within ${Math.ceil(cfg.timeoutMs / 1000)}s` };
       }
-      last = signal.aborted ? `no answer within ${Math.round(attemptMs / 1000)}s` : errText(e);
+      last = signal.aborted ? `no answer within ${Math.round(call.attemptMs / 1000)}s` : errText(e);
     }
     if (attempt < MAX_ATTEMPTS) await sleep(RETRY_DELAY_MS * attempt);
   }
   return { ok: false, reason: `the transcriber failed ${MAX_ATTEMPTS} times (last: ${last})` };
+}
+
+type Heard = Extract<TranscribeParse, { ok: true }>;
+type Tidied = Extract<CleanupParse, { ok: true }>;
+
+/**
+ * Transcribe a voice message's audio parts and, with `cleanup`, rewrite the transcript as the
+ * message the speaker meant — two requests, one deadline (`timeoutMs`) across both.
+ *
+ * The cleanup is best-effort on top of a transcript that already stands: when it fails, the voice
+ * note is not failed with it — the transcript comes back alone, with `cleanupError` saying why, and
+ * the card shows the words as heard and that reason.
+ */
+export async function transcribe(
+  cfg: TranscriberConfig,
+  audio: TranscribeAudio[],
+  deps: TranscribeDeps = {},
+  opts: { cleanup?: boolean; vocabulary?: readonly string[] } = {}
+): Promise<TranscribeParse> {
+  const overall = AbortSignal.timeout(cfg.timeoutMs);
+  const base = deps.attemptBaseMs ?? ATTEMPT_BASE_MS;
+  const mib = audio.reduce((n, a) => n + (a.base64.length * 3) / 4, 0) / (1024 * 1024);
+  const heard = await generate<Heard>(cfg, deps, {
+    overall,
+    attemptMs: Math.round(base + ATTEMPT_PER_MIB_MS * mib),
+    body: (thinking) => buildTranscribeRequest(cfg.model, audio, { thinking, vocabulary: opts.vocabulary }),
+    parse: parseTranscribeResponse,
+  });
+  if (!heard.ok || !heard.text || !opts.cleanup) return heard;
+  const tidied = await generate<Tidied>(cfg, deps, {
+    overall,
+    attemptMs: base,
+    body: (thinking) => buildCleanupRequest(cfg.model, heard.text, { thinking, vocabulary: opts.vocabulary }),
+    parse: (json) => parseCleanupResponse(json, heard.text),
+  });
+  if (!tidied.ok) return { ...heard, cleanupError: tidied.reason };
+  return tidied.cleaned === undefined ? heard : { ...heard, cleaned: tidied.cleaned };
 }
 
 /** Downloaded, identified, saved audio — or the sentence saying why not. */
@@ -343,7 +410,11 @@ export class VoiceIntake {
         return;
       }
       const started = this.deps.clock.now();
-      const result = await transcribe(voice.transcriber, prepared.audio, this.deps);
+      // Read per voice note, like `confirm`: `/setting cleanup` is live.
+      const result = await transcribe(voice.transcriber, prepared.audio, this.deps, {
+        cleanup: voice.cleanup,
+        vocabulary: voice.vocabulary,
+      });
       const latencyMs = this.deps.clock.now() - started;
       if (!result.ok) {
         this.fail(id, job, msg, adapter, address, 'failed', result.reason, prepared.files);
@@ -367,11 +438,26 @@ export class VoiceIntake {
         latencyMs,
         usage: result.usage,
         text: result.text,
+        ...(result.cleaned !== undefined ? { cleaned: result.cleaned } : {}),
+        ...(result.cleanupError !== undefined ? { cleanupError: result.cleanupError } : {}),
       });
+      if (result.cleanupError) console.warn(`[voice] ${job.conversationId}: ${id} not cleaned up: ${result.cleanupError}`);
       console.log(
-        `[voice] ${job.conversationId}: ${id} transcribed by ${model} in ${latencyMs}ms (${result.text.length} chars)`
+        `[voice] ${job.conversationId}: ${id} transcribed by ${model} in ${latencyMs}ms (${result.text.length} chars` +
+          `${result.cleaned !== undefined ? `, cleaned up to ${result.cleaned.length}` : ''})`
       );
-      await this.present({ id, job, msg, adapter, address, text: result.text, model, latencyMs });
+      await this.present({
+        id,
+        job,
+        msg,
+        adapter,
+        address,
+        text: result.text,
+        ...(result.cleaned !== undefined ? { cleaned: result.cleaned } : {}),
+        ...(result.cleanupError !== undefined ? { cleanupError: result.cleanupError } : {}),
+        model,
+        latencyMs,
+      });
     } catch (e) {
       // Every expected failure is a sentence above; this is the unexpected one, and it still owes
       // the user a message — a voice note that vanishes without a word is the worst outcome here.
@@ -412,11 +498,21 @@ export class VoiceIntake {
     adapter: PlatformAdapter;
     address: ConversationAddress;
     text: string;
+    cleaned?: string;
+    cleanupError?: string;
     model: string;
     latencyMs: number;
   }): Promise<void> {
     const card = (status: VoiceStatus, reason?: string): string =>
-      voiceCardText({ text: t.text, model: t.model, latencyMs: t.latencyMs, status, ...(reason ? { reason } : {}) });
+      voiceCardText({
+        text: t.text,
+        ...(t.cleaned !== undefined ? { cleaned: t.cleaned } : {}),
+        ...(t.cleanupError !== undefined ? { cleanupError: t.cleanupError } : {}),
+        model: t.model,
+        latencyMs: t.latencyMs,
+        status,
+        ...(reason ? { reason } : {}),
+      });
     // Overtaken while it was being transcribed: show it, say it was not sent, send nothing.
     const overtaken: CardOutcome | undefined = t.job.calledOff
       ? 'called-off'
@@ -430,10 +526,12 @@ export class VoiceIntake {
     }
     const confirm = this.config.voice?.confirm ?? true;
     if (confirm && t.adapter.capabilities.buttons) {
-      const ref = await t.adapter.sendButtons(t.address, card('pending'), voiceButtons(t.id)).catch((e: unknown) => {
-        console.warn(`[voice] ${t.job.conversationId}: could not post the card:`, e instanceof Error ? e.message : e);
-        return undefined;
-      });
+      const ref = await t.adapter
+        .sendButtons(t.address, card('pending'), voiceButtons(t.id, t.cleaned !== undefined))
+        .catch((e: unknown) => {
+          console.warn(`[voice] ${t.job.conversationId}: could not post the card:`, e instanceof Error ? e.message : e);
+          return undefined;
+        });
       if (!ref) {
         // Nothing on screen to confirm, so nothing may be sent — and the user must hear about it.
         await this.post(t.adapter, t.address, voiceFailureText('the confirmation card could not be posted'));
@@ -449,6 +547,8 @@ export class VoiceIntake {
         conversationId: t.job.conversationId,
         msg: t.msg,
         text: t.text,
+        ...(t.cleaned !== undefined ? { cleaned: t.cleaned } : {}),
+        ...(t.cleanupError !== undefined ? { cleanupError: t.cleanupError } : {}),
         model: t.model,
         latencyMs: t.latencyMs,
         adapter: t.adapter,
@@ -466,11 +566,12 @@ export class VoiceIntake {
       return;
     }
     // Sent on without a tap: the card still goes up FIRST, so the chat shows what the agent was
-    // given before the agent's answer to it appears.
+    // given before the agent's answer to it appears. What it was given is the cleaned-up version
+    // when there is one — `cleanup` is the user's standing choice of which to send, as ✅ Send is.
     const status: CardOutcome = confirm ? 'auto-no-buttons' : 'auto';
     await this.post(t.adapter, t.address, card(status));
     this.logOutcome(t.id, t.job.conversationId, status);
-    this.deliverTranscript(t.id, t.job.conversationId, t.msg, t.text);
+    this.deliverTranscript(t.id, t.job.conversationId, t.msg, t.cleaned ?? t.text);
   }
 
   /** A failure (or silence) before any card: say so in the chat and log it. Nothing is sent on. */
@@ -543,8 +644,12 @@ export class VoiceIntake {
       this.settle(pending, 'cancelled');
       return true;
     }
-    this.settle(pending, 'sent');
-    this.deliverTranscript(pending.id, pending.conversationId, pending.msg, pending.text);
+    // A stale "as spoken" id on a card that never offered it cannot happen from the card itself, but
+    // ids are client-supplied: with no cleaned-up version there is only one thing to send anyway.
+    const asSpoken = parsed.action === 'send-as-spoken' && pending.cleaned !== undefined;
+    this.settle(pending, asSpoken ? 'sent-as-spoken' : 'sent');
+    const text = asSpoken ? pending.text : (pending.cleaned ?? pending.text);
+    this.deliverTranscript(pending.id, pending.conversationId, pending.msg, text);
     return true;
   }
 
@@ -593,6 +698,8 @@ export class VoiceIntake {
     p.cancelTimer();
     const text = voiceCardText({
       text: p.text,
+      ...(p.cleaned !== undefined ? { cleaned: p.cleaned } : {}),
+      ...(p.cleanupError !== undefined ? { cleanupError: p.cleanupError } : {}),
       model: p.model,
       latencyMs: p.latencyMs,
       status,

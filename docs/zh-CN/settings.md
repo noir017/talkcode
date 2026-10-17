@@ -14,6 +14,7 @@
 | 会话粒度 | `session.scope` | `per_thread`、`per_channel`、`per_user`、`shared` | 重启后 |
 | 流式输出 | `stream.enabled` | `on`、`off`（默认 `off`） | 立即 —— 下一条回复生效 |
 | 确认语音识别结果 | `voice.confirm` | `on`、`off`（默认 `on`；仅在配了 `voice:` 时出现） | 立即 —— 下一条语音生效 |
+| 整理语音识别结果 | `voice.cleanup` | `on`、`off`（默认 `on`；仅在配了 `voice:` 时出现） | 立即 —— 下一条语音生效 |
 
 ```
 /setting                       →  整个设置面板，能放按钮的平台就是按钮

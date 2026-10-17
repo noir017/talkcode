@@ -511,9 +511,25 @@ describe('the voice-confirmation switch', () => {
 
   it('is a row only where transcription is configured — a switch for a feature that is off does nothing', () => {
     expect(settingsRows(cfg).some((r) => r.id === 'voice')).toBe(false);
+    expect(settingsRows(cfg).some((r) => r.id === 'cleanup')).toBe(false);
     const rows = settingsRows(withVoice);
-    // Last, so every row above it keeps its menu index whether or not the feature is on.
-    expect(rows.at(-1)).toMatchObject({ id: 'voice', value: 'on', effect: 'live' });
+    // Last, so every row above them keeps its menu index whether or not the feature is on.
+    expect(rows.slice(-2)).toMatchObject([
+      { id: 'voice', value: 'on', effect: 'live' },
+      { id: 'cleanup', value: 'on', effect: 'live' },
+    ]);
+  });
+
+  it('resolves `cleanup` and `voice.cleanup`, and writes voice.cleanup', () => {
+    for (const key of ['cleanup', 'voice.cleanup', 'voice-cleanup']) {
+      const r = resolveSettingKey(key, withVoice, voiceCtx);
+      expect(r.kind).toBe('row');
+      if (r.kind === 'row') expect(settingLocation(r.row)).toEqual({ kind: 'path', path: ['voice', 'cleanup'] });
+    }
+    const r = resolveSettingKey('cleanup', withVoice, voiceCtx);
+    if (r.kind !== 'row') throw new Error('expected a row');
+    expect(parseSettingValue(r.row, 'off', withVoice, voiceCtx)).toMatchObject({ value: false, display: 'off' });
+    expect(readSettingValue(r.row, withVoice)).toBe(true);
   });
 
   it('resolves `voice` and `voice.confirm`, and writes voice.confirm', () => {
@@ -536,6 +552,8 @@ describe('the voice-confirmation switch', () => {
     const transcriber = resolveSettingKey('voice.transcriber.model', withVoice, voiceCtx);
     expect(transcriber.kind).toBe('refused');
     if (transcriber.kind === 'refused') expect(transcriber.text).toContain('endpoint and a key');
+    expect(resolveSettingKey('voice.vocabulary', withVoice, voiceCtx).kind).toBe('refused');
     expect(resolveSettingKey('voice', cfg, ctx).kind).toBe('refused');
+    expect(resolveSettingKey('cleanup', cfg, ctx).kind).toBe('refused');
   });
 });
