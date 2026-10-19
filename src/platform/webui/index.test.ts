@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import { PAGE_SIZE, PAGE_SIZE_MAX, resolvePageSize } from '../../core/paging.js';
 import { WebuiConfigSchema } from '../config-schemas.js';
-import { createWebuiAdapter } from './index.js';
+import { createWebuiAdapter, diskUploadStore } from './index.js';
 import { CHANNEL } from './room.js';
 import type { ConversationAddress } from '../../core/conversation.js';
 import type { PlatformAdapter } from '../adapter.js';
@@ -190,5 +190,41 @@ describe('webui adapter: outbound', () => {
     const address = await somewhere(first);
     // A second adapter over the same config dir is what a daemon restart looks like from here.
     await expect(adapter().sendMessage(address, 'still there')).resolves.toBeDefined();
+  });
+});
+
+describe('webui adapter: where the operator\'s own pictures are kept', () => {
+  it('writes one under a name of its own, readable once `ready` settles, and deletes it on discard', async () => {
+    const at = path.join(dir, 'uploads');
+    const store = diskUploadStore(at);
+    const { path: file, ready } = store.save('../../etc/evil name.PNG', Buffer.from('picture bytes').toString('base64'));
+    // The browser's name never becomes a path: only its extension survives, lowercased.
+    expect(path.dirname(file)).toBe(at);
+    expect(path.basename(file)).toMatch(/^[0-9a-f-]{36}\.png$/);
+    await ready;
+    expect(fs.readFileSync(file, 'utf8')).toBe('picture bytes');
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    store.discard(file);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('starts empty: what an earlier run kept, no download table can reach any more', async () => {
+    const at = path.join(dir, 'uploads');
+    const first = diskUploadStore(at);
+    const { path: file, ready } = first.save('a.png', 'AAAA');
+    await ready;
+    expect(fs.existsSync(file)).toBe(true);
+    diskUploadStore(at);
+    expect(fs.existsSync(at)).toBe(false);
+  });
+
+  it('settles `ready` even when the write fails, so a download waiting on it is answered', async () => {
+    // A FILE where the directory should be: mkdir fails, and the failure must not become a rejection
+    // nobody handles — the download that awaits this answers 404 instead.
+    const at = path.join(dir, 'not-a-dir');
+    const store = diskUploadStore(at);
+    fs.writeFileSync(at, 'x');
+    await expect(store.save('a.png', 'AAAA').ready).resolves.toBeUndefined();
   });
 });

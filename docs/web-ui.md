@@ -46,6 +46,11 @@ screen shows as much as fits, and the ✓ and duration at its end always stay vi
 Click a row to read it in full, and again to fold it; **Show all** under the bubble
 opens every row, including the ones the agent adds after you press it.
 
+**Pictures.** Paste a screenshot (Ctrl-V) or attach one and it shows as a thumbnail in the
+composer, with an × to take it back off the message. Once sent, your message shows it too, and a
+tap fills the screen with it. The daemon keeps that copy only while it is running: after a
+restart, a message from before it keeps the picture's name but not the picture.
+
 **Built for a bad connection.** Replies are sent when they settle rather than on
 every keystroke of the stream, everything on the wire is compressed, and a dropped
 connection resumes from where it left off instead of re-downloading the

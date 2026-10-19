@@ -741,6 +741,32 @@ describe('webui server: traffic', () => {
     expect(res.headers.get('content-security-policy')).toContain('sandbox');
   });
 
+  it('serves an operator\'s own picture once its write has finished, not a 404 before it', async () => {
+    const { base, room } = await boot();
+    const cookie = await signIn(base);
+    // The echo that names this URL reaches the page as the write starts; the request for it can
+    // arrive first. Here the file does not exist until `ready` settles.
+    const file = path.join(os.tmpdir(), `webui-upload-${process.pid}-${Date.now()}.png`);
+    let finish: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      finish = () => {
+        fs.writeFileSync(file, 'png bytes');
+        resolve();
+      };
+    });
+    const url = room.publish(file, 'pasted-1.png', { ready });
+    const pending = fetch(`${base}/${url}`, { headers: { cookie } });
+    setTimeout(finish, 50);
+    const res = await pending;
+    try {
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/png');
+      expect(await res.text()).toBe('png bytes');
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
   it.each([
     ['an .svg, which is XML a browser runs', 'diagram.svg'],
     ['a .pdf, which browsers render and which scripts', 'report.pdf'],

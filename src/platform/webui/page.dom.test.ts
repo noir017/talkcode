@@ -1866,6 +1866,42 @@ describe('webui page: pasting', () => {
     expect(files[0]!.data).toBe('iVBORw==');
   });
 
+  it('shows a sent screenshot in the transcript once the echo brings it, and opens it on a tap', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+    h.el('input').dispatchEvent(pasteOf(h, [{ kind: 'file', type: 'image/png', file: image(h, 'image.png', 'image/png') }]));
+    await until('the chip is rendered', () => chipNames(h).length > 0);
+    (h.el('input') as HTMLTextAreaElement).value = 'what is wrong here?';
+    await h.click('#composer button[type="submit"]');
+
+    // The local bubble names the file and draws nothing: drawing it would put the whole file into
+    // this bubble as a data: URL, and this bubble is what the cache keeps if the send fails.
+    const bubble = h.el('log').children[0] as HTMLElement;
+    expect(bubble.querySelector('img')).toBeNull();
+    expect(bubble.innerHTML).not.toContain('data:');
+    expect(bubble.querySelector('.files .chip')?.textContent).toBe('pasted-1.png');
+
+    // The echo, in the shape room.ts renderBody builds it.
+    const nonce = h.calls.find((c) => c.path === 'api/send')?.body.nonce as string;
+    const html =
+      '<div class="raw">what is wrong here?</div>' +
+      '<div class="shots"><img class="shot" src="f/0123abcd" alt="pasted-1.png" loading="lazy"></div>' +
+      '<div class="files"><span class="chip">pasted-1.png</span></div>';
+    await h.emit({ t: 'msg', msg: { ...message('w1', html, true), nonce } });
+
+    expect(h.el('log').children[0]).toBe(bubble);
+    expect(bubble.querySelector('img.shot')?.getAttribute('src')).toBe('f/0123abcd');
+    await h.click('#log img.shot');
+    expect(h.el('lightbox').hidden).toBe(false);
+    expect(h.el('lightbox-img').getAttribute('src')).toBe('http://localhost:8787/f/0123abcd');
+
+    // After a restart the file is gone: the frame hides and the name is what is left.
+    const img = bubble.querySelector('img.shot') as HTMLImageElement;
+    img.dispatchEvent(new h.window.Event('error'));
+    expect(img.style.display).toBe('none');
+    expect(bubble.querySelector('.files .chip')?.textContent).toBe('pasted-1.png');
+  });
+
   it('gives each paste a name of its own', async () => {
     // Every engine calls a pasted screenshot image.png, so without this two of them are two
     // indistinguishable chips and two attachments the agent cannot tell apart.

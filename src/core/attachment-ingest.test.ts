@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   ingestAttachments,
   isReadableText,
+  MAX_PROMPT_IMAGE_BYTES,
+  MAX_PROMPT_IMAGE_TOTAL_BYTES,
+  sniffImageType,
   type AttachmentInput,
   type AttachmentIngestConfig,
   type AttachmentIngestDeps,
@@ -19,7 +22,7 @@ function bytesOf(s: string): Uint8Array {
 
 /** Mock deps: download returns by url→content map; save returns a fake path and records the call. */
 function makeDeps(opts: {
-  contents?: Record<string, { text: string; contentType?: string; name?: string }>;
+  contents?: Record<string, { text?: string; bytes?: Uint8Array; contentType?: string; name?: string }>;
   downloadError?: Record<string, boolean>;
 } = {}): AttachmentIngestDeps & { saveCalls: Array<{ name: string; bytes: Uint8Array }> } {
   const saveCalls: Array<{ name: string; bytes: Uint8Array }> = [];
@@ -29,7 +32,7 @@ function makeDeps(opts: {
       if (opts.downloadError?.[url]) throw new Error('network error');
       const c = opts.contents?.[url];
       if (!c) throw new Error(`mock not configured for url: ${url}`);
-      return { bytes: bytesOf(c.text), contentType: c.contentType, name: c.name };
+      return { bytes: c.bytes ?? bytesOf(c.text ?? ''), contentType: c.contentType, name: c.name };
     }),
     save: vi.fn(async (name: string, bytes: Uint8Array) => {
       saveCalls.push({ name, bytes });
@@ -243,5 +246,140 @@ describe('ingestAttachments · inline data: URLs', () => {
     const res = await ingestAttachments([att], CFG, deps);
 
     expect(res.files[0]?.name).toBe('cat.png');
+  });
+});
+
+/** The first bytes of each format a model takes, padded to a plausible length. */
+const MAGIC = {
+  png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  jpeg: [0xff, 0xd8, 0xff, 0xe0],
+  gif: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61],
+  webp: [0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+};
+function picture(magic: number[], length = 64): Uint8Array {
+  const out = new Uint8Array(Math.max(length, magic.length));
+  out.set(magic);
+  return out;
+}
+
+describe('sniffImageType', () => {
+  it('names the four formats a model takes from their magic numbers', () => {
+    expect(sniffImageType(picture(MAGIC.png))).toBe('image/png');
+    expect(sniffImageType(picture(MAGIC.jpeg))).toBe('image/jpeg');
+    expect(sniffImageType(picture(MAGIC.gif))).toBe('image/gif');
+    expect(sniffImageType(picture([0x47, 0x49, 0x46, 0x38, 0x37, 0x61]))).toBe('image/gif');
+    expect(sniffImageType(picture(MAGIC.webp))).toBe('image/webp');
+  });
+
+  it('refuses what only resembles one: a RIFF that is audio, a truncated header, HEIC, text', () => {
+    expect(sniffImageType(picture([0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]))).toBeUndefined();
+    expect(sniffImageType(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBeUndefined();
+    expect(sniffImageType(new Uint8Array([0x47, 0x49, 0x46, 0x38]))).toBeUndefined();
+    expect(sniffImageType(picture([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]))).toBeUndefined();
+    expect(sniffImageType(bytesOf('PNGDATA'))).toBeUndefined();
+    expect(sniffImageType(new Uint8Array())).toBeUndefined();
+  });
+});
+
+describe('ingestAttachments · pictures the agent is shown', () => {
+  const ROOMY: AttachmentIngestConfig = { maxInjectBytes: 100, maxDownloadBytes: 50_000_000 };
+
+  it('returns a picture as bytes AND keeps its path line exactly as before', async () => {
+    const att: AttachmentInput = { type: 'image', url: 'p', name: 'pasted-1.png', mime: 'image/png' };
+    const bytes = picture(MAGIC.png);
+    const res = await ingestAttachments([att], ROOMY, makeDeps({ contents: { p: { bytes } } }));
+
+    expect(res.images).toEqual([{ name: 'pasted-1.png', mimeType: 'image/png', bytes }]);
+    // Nothing narrated about the picture being attached: the line says where the file is, as it did.
+    expect(res.promptText).toBe('[Attachment pasted-1.png: /cache/pasted-1.png (image/png)]');
+    expect(res.heldBack).toEqual([]);
+  });
+
+  it('types a picture by its bytes, not by what the platform declared', async () => {
+    // A mismatched media_type is a 400 from the API — and the block stays in the session's history.
+    const att: AttachmentInput = { type: 'image', url: 'p', name: 'photo.jpg', mime: 'image/jpeg' };
+    const res = await ingestAttachments([att], ROOMY, makeDeps({ contents: { p: { bytes: picture(MAGIC.png) } } }));
+
+    expect(res.images[0]?.mimeType).toBe('image/png');
+  });
+
+  it('holds back, with a reason, a picture in a format no model takes — it still has its path', async () => {
+    const heic = picture([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+    const att: AttachmentInput = { type: 'image', url: 'p', name: 'IMG_0001.heic', mime: 'image/heic' };
+    const res = await ingestAttachments([att], ROOMY, makeDeps({ contents: { p: { bytes: heic } } }));
+
+    expect(res.images).toEqual([]);
+    expect(res.heldBack).toEqual([{ name: 'IMG_0001.heic', reason: 'not png/jpeg/gif/webp' }]);
+    expect(res.promptText).toContain('[Attachment IMG_0001.heic: /cache/IMG_0001.heic');
+  });
+
+  it('leaves a picture sent as a document a document', async () => {
+    const att: AttachmentInput = { type: 'file', url: 'p', name: 'diagram.png', mime: 'application/octet-stream' };
+    const res = await ingestAttachments([att], ROOMY, makeDeps({ contents: { p: { bytes: picture(MAGIC.png) } } }));
+
+    expect(res.images).toEqual([]);
+    expect(res.heldBack).toEqual([]);
+    expect(res.files).toHaveLength(1);
+  });
+
+  it('takes one the element left untyped once its mime says it is a picture (Lark reports it with the bytes)', async () => {
+    const att: AttachmentInput = { type: 'file', url: 'p' };
+    const deps = makeDeps({ contents: { p: { bytes: picture(MAGIC.jpeg), contentType: 'image/jpeg', name: 'img_v3.jpg' } } });
+    const res = await ingestAttachments([att], ROOMY, deps);
+
+    expect(res.images.map((i) => [i.name, i.mimeType])).toEqual([['img_v3.jpg', 'image/jpeg']]);
+  });
+
+  it('sends one past the per-picture cap by path only', async () => {
+    const atts: AttachmentInput[] = [
+      { type: 'image', url: 'fits', name: 'fits.png' },
+      { type: 'image', url: 'big', name: 'big.png' },
+    ];
+    const deps = makeDeps({
+      contents: {
+        fits: { bytes: picture(MAGIC.png, MAX_PROMPT_IMAGE_BYTES) },
+        big: { bytes: picture(MAGIC.png, MAX_PROMPT_IMAGE_BYTES + 1) },
+      },
+    });
+    const res = await ingestAttachments(atts, ROOMY, deps);
+
+    expect(res.images.map((i) => i.name)).toEqual(['fits.png']);
+    expect(res.heldBack.map((h) => h.name)).toEqual(['big.png']);
+    expect(res.heldBack[0]?.reason).toContain(String(MAX_PROMPT_IMAGE_BYTES));
+    expect(res.files.map((f) => f.name)).toEqual(['fits.png', 'big.png']);
+  });
+
+  it('stops at the per-message budget, in order: the first pictures go in, the rest by path', async () => {
+    const each = 3_500_000;
+    const count = Math.floor(MAX_PROMPT_IMAGE_TOTAL_BYTES / each) + 1;
+    const atts: AttachmentInput[] = [];
+    const contents: Record<string, { bytes: Uint8Array }> = {};
+    for (let i = 1; i <= count; i++) {
+      atts.push({ type: 'image', url: `s${i}`, name: `shot-${i}.png` });
+      contents[`s${i}`] = { bytes: picture(MAGIC.png, each) };
+    }
+    const res = await ingestAttachments(atts, ROOMY, makeDeps({ contents }));
+
+    expect(res.images.map((i) => i.name)).toEqual(atts.slice(0, count - 1).map((a) => a.name));
+    expect(res.heldBack).toEqual([
+      { name: `shot-${count}.png`, reason: `the message's pictures pass ${MAX_PROMPT_IMAGE_TOTAL_BYTES} bytes` },
+    ]);
+  });
+
+  it('keeps attachment order across pictures and other files', async () => {
+    const atts: AttachmentInput[] = [
+      { type: 'image', url: 'a', name: 'a.webp' },
+      { type: 'file', url: 'n', name: 'notes.md', mime: 'text/markdown' },
+      { type: 'image', url: 'b', name: 'b.gif' },
+    ];
+    const deps = makeDeps({
+      contents: { a: { bytes: picture(MAGIC.webp) }, n: { text: 'hi' }, b: { bytes: picture(MAGIC.gif) } },
+    });
+    const res = await ingestAttachments(atts, ROOMY, deps);
+
+    expect(res.images.map((i) => [i.name, i.mimeType])).toEqual([
+      ['a.webp', 'image/webp'],
+      ['b.gif', 'image/gif'],
+    ]);
   });
 });

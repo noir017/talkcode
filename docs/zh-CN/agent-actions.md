@@ -46,4 +46,9 @@ Antigravity（`agy`）只有 skill：它没有按会话添加工具的途径，�
 同样的两件事在它的 skill 里以 CLI 命令的形式提供。为什么正好两个工具、被它替换掉的提示词注入
 是怎么退场的，见 [`src/ipc/README.md`](../../src/ipc/README.md)。
 
+**图片就是图片。** 你发的截图或照片会以图片的形式直接交给 Claude Code、Codex 和 OpenCode，
+智能体不用去打开文件就能看到；消息里照样写着它存在哪里，智能体要原文件时用得上。支持 PNG、
+JPEG、GIF、WebP，单张约 3.75 MB 以内、一起发出的图片合计 15 MB 以内；超出的、其他格式的（比如
+HEIC），或者发给 Antigravity 的，只给路径——也就是 2.4.0 之前所有图片的待遇。
+
 `schedule` 工具登记的是什么，见[定时任务](scheduled-tasks.md)。

@@ -3,7 +3,8 @@
  *
  * Discord CDN URLs expire, so attachments are downloaded and cached. Readable text
  * documents are inlined into the agent prompt; binaries/images get a local path for
- * the agent to Read itself.
+ * the agent to Read itself — and a picture the agent can be shown as one is ALSO handed back
+ * as bytes (`images`), for a harness that takes it in the prompt (see `PromptImage`).
  *
  * Pure orchestration: aside from injected download/save (IO via DI), no side
  * effects, no clock, no globals/env — mocking download/save covers every branch.
@@ -44,6 +45,94 @@ export interface IngestedAttachments {
   promptText: string;
   /** Files persisted to disk (for logging / future use). */
   files: Array<{ path: string; name: string; mime?: string }>;
+  /** Pictures that can go to the agent as pictures, in attachment order. Each also has its path line. */
+  images: PromptImage[];
+  /** Pictures that did not make `images`, and why — for the daemon to log, since none of this is visible to anyone. */
+  heldBack: Array<{ name: string; reason: string }>;
+}
+
+// ============================================================================
+// Pictures the agent is shown, not just told about
+// ============================================================================
+
+/**
+ * The image formats a model API takes: Anthropic's vision docs list exactly these four, and
+ * OpenAI's are the same set. Anything else a platform sends as a picture (HEIC off an iPhone,
+ * BMP, TIFF, SVG) stays a path.
+ */
+export type PromptImageType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+/** One picture to put in front of the agent as a picture, beside the path line naming it. */
+export interface PromptImage {
+  name: string;
+  /** Read off the bytes (see `sniffImageType`), never taken from what the platform declared. */
+  mimeType: PromptImageType;
+  bytes: Uint8Array;
+}
+
+/**
+ * Largest picture sent as a picture: 5,000,000 bytes once base64'd, the strictest per-image cap
+ * among the places a request may end up (Anthropic's direct API takes more; Bedrock and Vertex
+ * stop at 5 MB — platform.claude.com vision docs, read 2026-10-09). The relay in front of the
+ * model is the operator's and its upstream is not knowable from here, so the smallest one wins.
+ *
+ * Past it the picture is still saved and named by path, which is how every picture went before.
+ */
+export const MAX_PROMPT_IMAGE_BYTES = 3_750_000;
+
+/**
+ * Most picture bytes one prompt carries, 20 MB once base64'd. A request is capped at 32 MB and
+ * the session's history rides in the same request, so one merged batch of screenshots must not
+ * spend all of it. Pictures past it go by path, in order: the first ones fit, the rest do not.
+ */
+export const MAX_PROMPT_IMAGE_TOTAL_BYTES = 15_000_000;
+
+/**
+ * What the bytes ARE, from their magic numbers; `undefined` for anything outside PromptImageType.
+ *
+ * Not the declared mime, and that is load-bearing rather than tidy. Anthropic's API answers 400
+ * when an image block's `media_type` disagrees with its data, and a prompt the harness has already
+ * written into its history is re-sent on every later request — so one mislabelled screenshot (a
+ * platform that calls every photo `image/jpeg`, a browser guessing from a renamed file) would fail
+ * that turn and every turn after it in the same session.
+ */
+export function sniffImageType(bytes: Uint8Array): PromptImageType | undefined {
+  const at = (i: number, ...sig: number[]): boolean => sig.every((b, k) => bytes[i + k] === b);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x47, 0x49, 0x46, 0x38) && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return 'image/gif';
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
+  return undefined;
+}
+
+/**
+ * Pick, in order, the pictures that go in as pictures, within both caps.
+ *
+ * Only what was sent AS a picture — the element said `image`, or its type did. A PNG sent as a
+ * document is a file the user wanted handled as one, and showing it would spend a few thousand
+ * tokens of context on something nobody asked to be looked at.
+ */
+function pickImages(
+  saved: Array<{ name: string; type: AttachmentInput['type']; mime?: string; bytes: Uint8Array }>
+): Pick<IngestedAttachments, 'images' | 'heldBack'> {
+  const images: PromptImage[] = [];
+  const heldBack: IngestedAttachments['heldBack'] = [];
+  let total = 0;
+  for (const f of saved) {
+    if (f.type !== 'image' && !f.mime?.toLowerCase().startsWith('image/')) continue;
+    const mimeType = sniffImageType(f.bytes);
+    if (!mimeType) {
+      heldBack.push({ name: f.name, reason: 'not png/jpeg/gif/webp' });
+    } else if (f.bytes.length > MAX_PROMPT_IMAGE_BYTES) {
+      heldBack.push({ name: f.name, reason: `${f.bytes.length} bytes, over ${MAX_PROMPT_IMAGE_BYTES}` });
+    } else if (total + f.bytes.length > MAX_PROMPT_IMAGE_TOTAL_BYTES) {
+      heldBack.push({ name: f.name, reason: `the message's pictures pass ${MAX_PROMPT_IMAGE_TOTAL_BYTES} bytes` });
+    } else {
+      total += f.bytes.length;
+      images.push({ name: f.name, mimeType, bytes: f.bytes });
+    }
+  }
+  return { images, heldBack };
 }
 
 // ============================================================================
@@ -145,6 +234,8 @@ function displayUrl(url: string): string {
  *    - size > maxDownloadBytes: don't download, append an "too large, not downloaded" line.
  *  - A single download error doesn't stop the rest; degrades to a "download failed" line.
  *  - Empty array → promptText is ''.
+ *  - Of what was saved, each picture in a format and size a model takes is also returned in
+ *    `images`; the rest are listed in `heldBack` with the reason (see pickImages).
  */
 export async function ingestAttachments(
   atts: AttachmentInput[],
@@ -153,6 +244,7 @@ export async function ingestAttachments(
 ): Promise<IngestedAttachments> {
   const lines: string[] = [];
   const files: IngestedAttachments['files'] = [];
+  const saved: Parameters<typeof pickImages>[0] = [];
 
   for (const att of atts) {
     const name = displayName(att);
@@ -171,6 +263,7 @@ export async function ingestAttachments(
         }
         // Exceeded maxInjectBytes after download: persist and give the path.
         await saveAndRecord(att, name, bytes, deps, files, lines);
+        saved.push({ name, type: att.type, mime: att.mime, bytes });
         continue;
       }
 
@@ -205,13 +298,14 @@ export async function ingestAttachments(
         files,
         lines
       );
+      saved.push({ name: display, type: att.type, mime: resolvedMime, bytes: got.bytes });
     } catch {
       // Single failure degrades to a line, doesn't affect the rest.
       lines.push(`[Attachment ${name} failed to download. URL: ${displayUrl(att.url)}]`);
     }
   }
 
-  return { promptText: lines.join('\n'), files };
+  return { promptText: lines.join('\n'), files, ...pickImages(saved) };
 }
 
 /**
@@ -220,6 +314,10 @@ export async function ingestAttachments(
  * The line states where the file is and nothing else. It used to add "use the Read tool to view it
  * when needed", which is the gateway telling the agent how to work — and named a tool agy does not
  * have. An agent handed a path knows what to do with one.
+ *
+ * A picture that also goes in as a picture (`images`) keeps exactly this line, with nothing added
+ * like "shown above": the agent sees the picture and is told where its file is, which are both
+ * facts, and how they relate is not the gateway's to narrate.
  */
 async function saveAndRecord(
   att: AttachmentInput,

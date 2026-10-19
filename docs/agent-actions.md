@@ -51,4 +51,11 @@ will not edit its global MCP config. The same two commands are in its skill as C
 [`src/ipc/README.md`](../src/ipc/README.md) for why exactly two tools, and how the prompt injection
 this replaced was retired.
 
+**Pictures arrive as pictures.** A screenshot or photo you send is put in front of Claude Code,
+Codex and OpenCode as an image, so the agent sees it without opening a file — and the message
+still says where it was saved, for an agent that wants the file itself. PNG, JPEG, GIF and WebP,
+up to about 3.75 MB each and 15 MB across the pictures sent together; anything past that, in
+another format (HEIC, say), or sent to Antigravity goes by path only, as every picture did before
+2.4.0.
+
 What the `schedule` tool registers is described in [Scheduled tasks](scheduled-tasks.md).

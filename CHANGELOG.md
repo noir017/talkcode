@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A picture you send reaches the agent as a picture, not as a path it may or may not open.**
+  Every picture used to be saved and named in the prompt by its path, and what happened next was
+  the agent's call: Claude Code spent a Read call on a screenshot it then looked at, or answered
+  about one it never saw. Now Claude Code, Codex and OpenCode are given each picture as an image in
+  the prompt itself — on all platforms, and for a message joined into a running turn as well as for
+  a new one. Measured on cc and cx: two screenshots sent together had their codes read back, in
+  order, with no tool call at all. The path line is unchanged, so an agent that wants the file still
+  has it. Whether a harness gets pictures is decided by what it says it accepts when it starts
+  (`promptCapabilities.image`), not by its name; one that does not, and Antigravity, whose input is
+  text only, keep the path and the daemon log says so. Only PNG, JPEG, GIF and WebP, at most 3.75 MB
+  each and 15 MB across the pictures sent together: past that a picture goes by path, also logged.
+  The type is read off the file's bytes rather than taken from the platform. An image labelled as
+  the wrong type is rejected by the model API, and since the prompt stays in the session's history,
+  every later turn in that session would be rejected too. A picture whose pixels do not decode was
+  tried on both cc and cx and left the session working. The cost is context: each picture is now
+  in it from the start, up to about 4.8k tokens for a large screenshot, even when the agent would
+  not have looked.
+- **The web UI shows the pictures you sent, not just their names.** A screenshot pasted into a
+  message used to become a file name once sent, so there was no checking what it had shown. Now the
+  sent message has it as a thumbnail, up to 160px high and side by side when they fit, and a tap
+  fills the screen. The daemon keeps that copy only while it runs, in `webui-uploads-<id>/` beside
+  the topic list: the folder is emptied at startup, and a picture is deleted once the 200-file
+  download table lets it go. So after a restart, a message from before it keeps the name and the
+  picture is hidden, the same as a file the agent sent. The bubble shown while the message is still
+  being sent has names only, and the pictures come with the daemon's copy a moment later. Drawing
+  them sooner would put each whole file into that bubble, and that bubble is what the page saves if
+  the send fails.
+
 ## [2.3.0] - 2026-10-17
 
 ### Added

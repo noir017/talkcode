@@ -67,7 +67,10 @@ const MAX_MESSAGES = 500;
 /** How many emitted events a topic keeps so a reconnect can be caught up rather than re-synced. */
 const MAX_BACKLOG = 300;
 
-/** How many of the agent's sent files stay downloadable, across all topics. */
+/**
+ * How many files stay downloadable, across all topics: the agent's sent files and the operator's
+ * own pictures (see `submit`) share the one table.
+ */
 const MAX_DOWNLOADS = 200;
 
 /**
@@ -139,6 +142,33 @@ interface Stored {
 /** Where an event goes. `id` is the SSE event id a reconnect may resume from. */
 export type Sink = (id: string, ev: WebEvent) => void;
 
+/**
+ * Where the operator's own pictures are kept, so the message they sent can show them.
+ *
+ * Injected (`useUploads`) rather than written here, so this file stays free of the disk the way it
+ * is free of HTTP — `index.ts` owns the directory. Absent in a test that does not care, which then
+ * renders sent pictures as names, as every message did before.
+ */
+export interface UploadStore {
+  /**
+   * Start writing one upload; returns where it will be and when it is there. `ready` never
+   * rejects: a write that failed is logged by the store, and the download it backs answers 404,
+   * which the page already turns into "show the name, hide the frame".
+   */
+  save(name: string, base64: string): { path: string; ready: Promise<void> };
+  /** Delete one the download table has let go of. Best-effort. */
+  discard(path: string): void;
+}
+
+/** One entry of the download table. `ready`/`owned` only on an upload this room wrote itself. */
+interface Download {
+  path: string;
+  name: string;
+  ready?: Promise<void>;
+  /** The file is ours to delete once nothing can reach it — never true of a file the agent sent. */
+  owned?: boolean;
+}
+
 interface Client {
   topic: string;
   send: Sink;
@@ -184,7 +214,9 @@ export class WebRoom {
   private readonly startedAt = Date.now();
   private readonly rooms = new Map<string, Room>();
   private readonly clients = new Set<Client>();
-  private readonly downloads = new Map<string, { path: string; name: string }>();
+  private readonly downloads = new Map<string, Download>();
+  /** See `UploadStore`; set once by `useUploads`. */
+  private uploads: UploadStore | null = null;
   private readonly nonces = new Set<string>();
   private commands: SlashCommandSpec[] = [];
 
@@ -810,24 +842,36 @@ export class WebRoom {
   }
 
   /**
-   * Register a file the agent sent, and return the page-relative URL that serves it.
+   * Register a file, and return the page-relative URL that serves it.
    *
    * The path never reaches the browser and the browser never names one: it gets an opaque
    * token this map alone can resolve. Relative (`f/<token>`, no leading slash) so the page
    * works unchanged when a reverse proxy mounts it under a sub-path.
+   *
+   * `upload` marks a file this room wrote itself (see `submit`): the download waits for its write,
+   * and when the table lets it go nothing else can reach it, so it is deleted then. A file the agent
+   * sent is the agent's and is never touched.
    */
-  publish(path: string, name: string): string {
+  publish(path: string, name: string, upload?: { ready: Promise<void> }): string {
     if (this.downloads.size >= MAX_DOWNLOADS) {
       const oldest = this.downloads.keys().next().value;
-      if (oldest !== undefined) this.downloads.delete(oldest);
+      if (oldest !== undefined) {
+        const gone = this.downloads.get(oldest);
+        this.downloads.delete(oldest);
+        if (gone?.owned) void gone.ready?.then(() => this.uploads?.discard(gone.path));
+      }
     }
     const token = randomUUID().replace(/-/g, '');
-    this.downloads.set(token, { path, name });
+    this.downloads.set(token, { path, name, ...(upload ? { ready: upload.ready, owned: true } : {}) });
     return `f/${token}`;
   }
 
-  resolveDownload(token: string): { path: string; name: string } | undefined {
+  resolveDownload(token: string): Download | undefined {
     return this.downloads.get(token);
+  }
+
+  useUploads(store: UploadStore): void {
+    this.uploads = store;
   }
 
   /** Send everything being held and stop every timer. Called on shutdown. */
@@ -875,7 +919,11 @@ export class WebRoom {
     // not send one, in which case the page had no placeholder to retire either.
     const msg = this.post(
       req.topic,
-      { own: true, html: renderBody(req.text, attachments), ...(req.nonce !== undefined ? { nonce: req.nonce } : {}) },
+      {
+        own: true,
+        html: renderBody(req.text, attachments, this.keepPictures(req.files ?? [])),
+        ...(req.nonce !== undefined ? { nonce: req.nonce } : {}),
+      },
       req.text
     );
     const inbound: InboundMessage = {
@@ -934,6 +982,26 @@ export class WebRoom {
 
   // ── Internals ──────────────────────────────────────────────────────────────
 
+  /**
+   * Keep each picture the operator sent and publish it, so their message can show what it showed
+   * the agent instead of a file name.
+   *
+   * It has to be kept HERE: the page drops the bytes once they are sent (they are base64 in a
+   * request body, not something to put in its transcript cache), and the copy the daemon saves for
+   * the agent is written later, by the turn, and named for the agent. Pictures only, by the same
+   * closed list that decides what may be served as itself (`inlineImageType`); anything else stays
+   * a name, as before.
+   */
+  private keepPictures(files: NonNullable<SendRequest['files']>): Array<{ name: string; url: string }> {
+    const store = this.uploads;
+    if (!store) return [];
+    return files
+      .filter((f) => inlineImageType(f.name) !== undefined)
+      .map((f) => {
+        const { path, ready } = store.save(f.name, f.data);
+        return { name: f.name, url: this.publish(path, f.name, { ready }) };
+      });
+  }
   private roomOf(topicId: string): Room {
     let room = this.rooms.get(topicId);
     if (!room) {
@@ -1052,7 +1120,8 @@ function toAttachment(file: { name: string; mime: string; data: string }): NonNu
 }
 
 /**
- * The operator's own message: their text verbatim, plus a line naming whatever they attached.
+ * The operator's own message: their text verbatim, the pictures they sent, and a line naming
+ * whatever they attached.
  *
  * Verbatim, NOT through `renderWebMarkdown` the way the agent's side is. What the operator
  * typed is a prompt, and a prompt is the one text on this page whose exact characters matter:
@@ -1063,12 +1132,25 @@ function toAttachment(file: { name: string; mime: string; data: string }): NonNu
  * client typed it; this is that same behaviour, arrived at from a bug report.
  *
  * `escapeHtml` still runs, and must: verbatim means the characters, not the markup.
+ *
+ * A picture is an `img.shot` — the class the page already opens full-screen on a tap and hides
+ * when it 404s — and its name chip stays below it either way. That chip is what is left once the
+ * download table forgets the file or a restart empties it, exactly as with a picture the agent sent.
  */
-function renderBody(text: string, attachments: ReadonlyArray<{ name?: string }>): string {
+function renderBody(
+  text: string,
+  attachments: ReadonlyArray<{ name?: string }>,
+  shots: ReadonlyArray<{ name: string; url: string }> = []
+): string {
   const body = `<div class="raw">${escapeHtml(text)}</div>`;
   if (attachments.length === 0) return body;
+  const pictures = shots.length
+    ? `<div class="shots">${shots
+        .map((s) => `<img class="shot" src="${escapeHtml(s.url)}" alt="${escapeHtml(s.name)}" loading="lazy">`)
+        .join('')}</div>`
+    : '';
   const names = attachments.map((a) => `<span class="chip">${escapeHtml(a.name ?? 'file')}</span>`).join('');
-  return `${body}<div class="files">${names}</div>`;
+  return `${body}${pictures}<div class="files">${names}</div>`;
 }
 
 export { TopicStore, type Topic } from './topics.js';
