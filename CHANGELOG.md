@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-19
+
 ### Added
 
 - **A picture you send reaches the agent as a picture, not as a path it may or may not open.**
