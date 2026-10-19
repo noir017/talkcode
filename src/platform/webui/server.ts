@@ -613,6 +613,9 @@ async function clearTopics({ req, res }: Req, ctx: Ctx): Promise<void> {
 async function download(req: IncomingMessage, res: ServerResponse, room: WebRoom, token: string): Promise<void> {
   const entry = room.resolveDownload(decodeURIComponent(token));
   if (!entry) return send(req, res, 404, { error: 'no such file' });
+  // An operator's own picture is published the moment it is sent and written alongside; the page
+  // asks for it as soon as the echo lands, which can be before the write has finished.
+  if (entry.ready) await entry.ready;
   const size = await stat(entry.path).then(
     (s) => s.size,
     () => undefined

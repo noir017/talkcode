@@ -46,6 +46,8 @@ other than its session:
   turn (`/stop`) restarts the child and resumes the same conversation, so context survives.
 - **A message sent mid-turn waits for the turn to end**: agy's stream-json input runs
   each message as a turn of its own, with no way to join one already running.
+- **A picture you send reaches it as a path.** The stream-json input carries text only, so
+  where the ACP harnesses are shown the picture itself, agy is told where it was saved.
 
 Any of the daemon's default flags can be overridden through `args` (they are
 appended after the defaults, and agy's flag parsing is last-wins).

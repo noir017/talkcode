@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import { WebuiConfigSchema } from '../config-schemas.js';
-import { CHANNEL, DIR_TTL_MS, inlineImageType, OWNER, WebRoom, type WebuiInstance } from './room.js';
+import { CHANNEL, DIR_TTL_MS, inlineImageType, OWNER, WebRoom, type UploadStore, type WebuiInstance } from './room.js';
 import { MAX_TOPICS, TopicStore } from './topics.js';
 import type { InboundMessage } from '../../types.js';
 import type { WebEvent, WebMessage } from './protocol.js';
@@ -439,6 +439,95 @@ describe('WebRoom: inbound', () => {
     expect(got[0]?.attachments).toEqual([
       { type: 'image', url: 'data:image/png;base64,AAAA', name: 'a.png', mime: 'image/png' },
     ]);
+  });
+
+  /** An UploadStore that records instead of writing: paths are predictable, `ready` is already settled. */
+  function fakeUploads(): UploadStore & { saved: Array<{ name: string; base64: string }>; discarded: string[] } {
+    const saved: Array<{ name: string; base64: string }> = [];
+    const discarded: string[] = [];
+    return {
+      saved,
+      discarded,
+      save(name, base64) {
+        saved.push({ name, base64 });
+        return { path: `/uploads/${saved.length}-${name}`, ready: Promise.resolve() };
+      },
+      discard(p) {
+        discarded.push(p);
+      },
+    };
+  }
+
+  /** The html of the last message the topic's subscriber was sent. */
+  function lastHtml(seen: Seen[]): string {
+    return (seen.filter((s) => s.ev.t === 'msg').pop()?.ev as { msg: WebMessage }).msg.html;
+  }
+
+  it('shows the pictures the operator sent, not just their names — the other files stay names', () => {
+    const { room, topic } = attached();
+    const uploads = fakeUploads();
+    room.useUploads(uploads);
+    const seen: Seen[] = [];
+    room.subscribe(topic, (id, ev) => seen.push({ id, ev }));
+    room.submit({
+      topic,
+      text: 'what is wrong here?',
+      files: [
+        { name: 'pasted-1.png', mime: 'image/png', data: 'iVBORw0K' },
+        { name: 'notes.txt', mime: 'text/plain', data: 'aGk=' },
+        { name: 'diagram.svg', mime: 'image/svg+xml', data: 'PHN2Zz4=' },
+      ],
+    });
+
+    // Only the picture is kept: an .svg is code (inlineImageType), a .txt has nothing to draw.
+    expect(uploads.saved).toEqual([{ name: 'pasted-1.png', base64: 'iVBORw0K' }]);
+    const html = lastHtml(seen);
+    const src = /<img class="shot" src="(f\/[0-9a-f]{32})" alt="pasted-1\.png" loading="lazy">/.exec(html)?.[1];
+    expect(src).toBeDefined();
+    expect(room.resolveDownload(src!.slice(2))).toMatchObject({ path: '/uploads/1-pasted-1.png', name: 'pasted-1.png', owned: true });
+    // Every file keeps its name chip, the picture included: it is what is left once the file is gone.
+    expect(html.match(/<span class="chip">[^<]*<\/span>/g)).toEqual([
+      '<span class="chip">pasted-1.png</span>',
+      '<span class="chip">notes.txt</span>',
+      '<span class="chip">diagram.svg</span>',
+    ]);
+    // The path on disk never reaches the page.
+    expect(html).not.toContain('/uploads/');
+  });
+
+  it('escapes a picture\'s name where it lands in an attribute', () => {
+    const { room, topic } = attached();
+    room.useUploads(fakeUploads());
+    const seen: Seen[] = [];
+    room.subscribe(topic, (id, ev) => seen.push({ id, ev }));
+    room.submit({ topic, text: '', files: [{ name: '"><script>x</script>.png', mime: 'image/png', data: 'AAAA' }] });
+    expect(lastHtml(seen)).not.toContain('<script>');
+    expect(lastHtml(seen)).toContain('alt="&quot;&gt;&lt;script&gt;');
+  });
+
+  it('shows names only when nothing keeps the pictures', () => {
+    const { room, topic } = attached();
+    const seen: Seen[] = [];
+    room.subscribe(topic, (id, ev) => seen.push({ id, ev }));
+    room.submit({ topic, text: '', files: [{ name: 'a.png', mime: 'image/png', data: 'AAAA' }] });
+    expect(lastHtml(seen)).not.toContain('<img');
+    expect(lastHtml(seen)).toContain('<span class="chip">a.png</span>');
+  });
+
+  it('deletes a kept picture once the download table lets it go — and never a file the agent sent', async () => {
+    const { room, topic } = attached();
+    const uploads = fakeUploads();
+    room.useUploads(uploads);
+    room.publish('/work/agent-shot.png', 'agent-shot.png');
+    room.submit({ topic, text: '', files: [{ name: 'mine.png', mime: 'image/png', data: 'AAAA' }] });
+    // Fill the table: each publish past its size evicts the oldest entry.
+    for (let i = 0; i < 199; i++) room.publish(`/work/f${i}.txt`, `f${i}.txt`);
+    expect(uploads.discarded).toEqual([]);
+    room.publish('/work/next.txt', 'next.txt'); // evicts the agent's file
+    room.publish('/work/next2.txt', 'next2.txt'); // evicts the upload
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uploads.discarded).toEqual(['/uploads/1-mine.png']);
   });
 
   it('ignores an empty submission', () => {

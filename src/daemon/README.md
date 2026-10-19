@@ -956,9 +956,19 @@ what the reverse CLI depends on: the shim at the front of `PATH`, and the skill 
 ### What a session is given: the user's words, two tools, a skill
 
 Neither runtime adds text of its own to a turn. `promptBlocks` sends the user's text as the only
-block on every turn; agy gets the same string. Until 1.40 a `<system-reminder>` went in front of
+text block on every turn; agy gets the same string. Until 1.40 a `<system-reminder>` went in front of
 each session's first turn — see [`src/ipc/README.md`](../ipc/README.md#how-it-got-here) for its
 history and why it went.
+
+The user's pictures go in as ACP `image` blocks ahead of that text, on a harness whose `initialize`
+claims `promptCapabilities.image` (asked per harness, kept across a rebuilt child like
+`loadSession`); the text still names each by its saved path. A harness that does not claim it, and
+agy, get the text alone and a log line saying the pictures stayed paths. Which pictures qualify is
+core's call (`attachment-ingest.ts` `pickImages`); `turn-runner.ts` only base64s them, for a turn and
+for a message joined into one. Verified 2026-10-19 on cc and cx, both fresh and mid-turn: two
+screenshots read with zero tool calls. A picture whose pixels do not decode does not wedge the
+session on either — Claude Code swaps it for a text note before the request, codex falls back to the
+path.
 
 What replaced it:
 

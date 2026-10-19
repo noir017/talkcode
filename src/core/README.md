@@ -745,7 +745,7 @@ Pure orchestration; `download` and `save` are injected (the real IO, including t
 guards, lives in [`daemon/attachment-io.ts`](../daemon/README.md)). Platform CDN URLs
 expire, so attachments are downloaded and cached. Readable text ≤ `maxInjectBytes`
 (100 KB) is inlined into the prompt; anything larger or binary gets a local path for the
-agent to `Read` itself. Above `maxDownloadBytes` (25 MB) nothing is fetched and only a
+agent to open itself. Above `maxDownloadBytes` (25 MB) nothing is fetched and only a
 metadata line is emitted.
 
 `download` may report a `name` and a `contentType` alongside the bytes, and both are
@@ -754,6 +754,15 @@ media needs a platform-specific fetch (Lark) are exactly the ones whose elements
 neither, so the fetch is the only place either can be learned: a Feishu image has no filename at
 all. Learning them late changes two decisions, which is why they are not merely logged — what
 the saved file is called, and whether this was readable text after all.
+
+**Pictures are also returned as bytes** (`images`), for a harness that takes them as prompt blocks
+(see `promptBlocks` in [`daemon/`](../daemon/README.md)). Each keeps its path line unchanged. Only
+what was sent *as* a picture qualifies (element type `image`, or an `image/*` mime), and only
+PNG/JPEG/GIF/WebP, ≤ 3.75 MB each and 15 MB together — the strictest per-image cap among the APIs
+a relay might front, and room left in a 32 MB request for the history. The type comes from the
+bytes (`sniffImageType`), never the platform's label: a mismatched `media_type` is a 400, and a
+prompt already in the harness's history is re-sent on every later turn of that session. Whatever
+misses a cap or the format list is reported in `heldBack` for the daemon to log.
 
 ## `runtime-footer.ts`
 

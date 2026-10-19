@@ -963,7 +963,26 @@ describe('parseFormElicitation (agent asks the user, ACP elicitation/create)', (
  */
 describe('what the agent is given', () => {
   it('sends the user\'s text as the only prompt block — no preamble on any turn', () => {
-    expect(promptBlocks({ prompt: 'fix the build' })).toEqual([{ type: 'text', text: 'fix the build' }]);
+    expect(promptBlocks({ prompt: 'fix the build' }, true)).toEqual([{ type: 'text', text: 'fix the build' }]);
+  });
+
+  const shots = [
+    { name: 'a.png', mimeType: 'image/png' as const, data: 'iVBORw0K' },
+    { name: 'b.jpg', mimeType: 'image/jpeg' as const, data: '/9j/4AAQ' },
+  ];
+
+  it('puts the pictures in as pictures, in order and before the text, when the harness takes them', () => {
+    expect(promptBlocks({ prompt: 'what is wrong here?', images: shots }, true)).toEqual([
+      { type: 'image', data: 'iVBORw0K', mimeType: 'image/png' },
+      { type: 'image', data: '/9j/4AAQ', mimeType: 'image/jpeg' },
+      { type: 'text', text: 'what is wrong here?' },
+    ]);
+  });
+
+  it('sends text only to a harness that did not claim promptCapabilities.image — the prompt still names the paths', () => {
+    expect(promptBlocks({ prompt: 'what is wrong here?', images: shots }, false)).toEqual([
+      { type: 'text', text: 'what is wrong here?' },
+    ]);
   });
 
   it('hands every session the stdio tool server, with token, socket and cwd in its own env', () => {

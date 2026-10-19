@@ -896,6 +896,11 @@ function createAgySession(
       // It is what the user sent and nothing of the gateway's. agy also gets no native tools — it does
       // not speak ACP, and its MCP servers live in a global config the gateway will not edit — so what
       // it can do here reaches it through the bundled skill alone (see daemon/skill-link.ts).
+      // For the same reason a picture stays a path here: the prompt already names each one by its
+      // saved file, so dropping `input.images` loses nothing agy could have used.
+      if (input.images?.length) {
+        console.log(`[agy] ${conversationId}: stream-json takes text only; ${input.images.length} picture(s) go by path only`);
+      }
       proc!.stdin.write(JSON.stringify({ event: 'user', message: { content: input.prompt } }) + '\n');
 
       try {

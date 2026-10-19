@@ -333,6 +333,14 @@ button:disabled{opacity:.5;cursor:default}
    4K display would otherwise push the timestamp and everything after it off the fold, and the
    point of showing it here is to recognise it, not to read it — that is what tapping is for. */
 .shot{display:block;margin-top:6px;max-width:100%;max-height:340px;border:1px solid var(--line);border-radius:4px;cursor:zoom-in}
+/* The pictures in your own message: in a row and smaller than one the agent sent, because you saw
+   them while pasting and they are here to say which pictures this message was about. A tap still
+   opens one full-screen. flex-start, not the default stretch, or a short picture beside a tall one
+   is stretched to its height and distorted; flex:none for the same reason across its width. A
+   quote is text, so a reply quoting this message leaves the pictures out. */
+.shots{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px}
+.shots .shot{flex:none;max-height:160px}
+.q .shots{display:none}
 /* The tapped-open view. display:flex has to be restated under [hidden] or it beats the
    attribute's UA display:none and the overlay is never actually hidden. */
 #lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:12px;cursor:zoom-out}
@@ -2296,7 +2304,12 @@ const SCRIPT = `
    */
   var outbox = {};
 
-  /** The same shape renderBody builds server-side, so the echo can replace it invisibly. */
+  /**
+   * The same shape renderBody builds server-side, minus the pictures, so the echo can replace it in
+   * place. The pictures arrive with the echo: they are served from the daemon's copy, and drawing
+   * them here would mean putting the whole file into this bubble as a data: URL — and this bubble
+   * is what goes into the transcript cache if the send fails.
+   */
   function localBody(typed, names){
     var h = '<div class="raw">'+text(typed)+'</div>';
     if(!names.length) return h;

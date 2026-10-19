@@ -21,6 +21,8 @@
  * in `room.ts` and `server.ts`, `measureRendered` and the typed `MessageNotEditableError`
  * below.
  */
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { configDir } from '../../config/load.js';
@@ -29,7 +31,7 @@ import type { MessageRef, SlashCommandSpec } from '../../types.js';
 import type { PlatformAdapter } from '../adapter.js';
 import { renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import { WebAuth, fileSessionStore } from './auth.js';
-import { CHANNEL, inlineImageType, TopicStore, WebRoom, type WebuiInstance } from './room.js';
+import { CHANNEL, inlineImageType, TopicStore, WebRoom, type UploadStore, type WebuiInstance } from './room.js';
 import { createWebServer, type WebServer } from './server.js';
 import { WebSso } from './sso.js';
 import { TerminalSessions } from './terminal-sessions.js';
@@ -116,6 +118,7 @@ export function createWebuiAdapter(instance: WebuiInstance): PlatformAdapter {
   // The page is never without a room to be in, including on a brand-new install.
   topics.current();
   const room = new WebRoom(instance, topics);
+  room.useUploads(diskUploadStore(path.join(configDir(), `webui-uploads-${instance.id}`)));
   // Owned here because both ends of it are wired here: the server feeds it (a pane attaches on
   // every proxied handshake) and the room reads it (the switcher's terminal marker). Given the
   // command up front, since whether a session can be ended at all decides whether the page
@@ -148,6 +151,37 @@ export function createWebuiAdapter(instance: WebuiInstance): PlatformAdapter {
 
 function describe(instance: WebuiInstance): Pick<PlatformAdapter, 'platform' | 'platformType' | 'capabilities'> {
   return { platform: instance.id, platformType: 'webui', capabilities: CAPABILITIES };
+}
+
+/**
+ * The operator's own pictures, on disk, so the message they sent can show them (room.ts `UploadStore`).
+ *
+ * Emptied when the adapter is built. The only thing that names these files is the download table,
+ * which lives in memory, so after a restart nothing can reach them and they would only pile up.
+ * Per instance and beside its topic file, for the reason that file is per instance.
+ *
+ * The browser's file name is never part of the path, only its extension — which `inlineImageType`
+ * has already matched against its closed list before anything reaches here.
+ */
+export function diskUploadStore(dir: string): UploadStore {
+  fs.rmSync(dir, { recursive: true, force: true });
+  const failed = (what: string) => (e: unknown) =>
+    console.error(`[webui] could not ${what}: ${e instanceof Error ? e.message : e}`);
+  return {
+    save(name, base64) {
+      const file = path.join(dir, `${randomUUID()}${/\.[a-z0-9]+$/i.exec(name)?.[0]?.toLowerCase() ?? ''}`);
+      // Decoded inside the chain, not before it, so a large screenshot is not turned back into bytes
+      // on the request that is still waiting for its 202.
+      const ready = fs.promises
+        .mkdir(dir, { recursive: true, mode: 0o700 })
+        .then(() => fs.promises.writeFile(file, Buffer.from(base64, 'base64'), { mode: 0o600 }))
+        .catch(failed(`keep ${name} for the transcript`));
+      return { path: file, ready };
+    },
+    discard(file) {
+      fs.promises.rm(file, { force: true }).catch(failed(`delete ${file}`));
+    },
+  };
 }
 
 type Outbound = Pick<

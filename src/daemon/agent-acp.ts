@@ -82,12 +82,24 @@ const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 // ───────────────────────── What the agent is given: tools, not text ─────────────────────────
 
 /**
- * The prompt of a turn: what the user sent, as the only block. The gateway adds nothing of its own
- * — no preamble, no reminder — so that what the agent reads is what it was asked (see
+ * The prompt of a turn: what the user sent, as the only text block. The gateway adds nothing of its
+ * own — no preamble, no reminder — so that what the agent reads is what it was asked (see
  * ipc/commands.ts HELP_TOPICS for what replaced the `<system-reminder>` that used to go first).
+ *
+ * The user's pictures go in as pictures when the harness said it takes them (`takesImages`, its
+ * `initialize` → `promptCapabilities.image`). Before this every picture was a path, and an agent
+ * given a path to a screenshot decides for itself whether to open it — which is a tool call
+ * when it does, and an answer about a picture it never saw when it does not. Probed 2026-10-09
+ * (project-reports/2026-10-09-agent-anywhere-image-prompt-blocks.md): claude-agent-acp, codex-acp
+ * and `opencode acp` all claim it, and each read text off a screenshot with zero tool calls.
+ * Asked per harness rather than assumed, because a harness that does not claim it is one that
+ * may reject the block. The pictures go first, the order Anthropic's vision docs recommend; the
+ * text still names each by path, in the same order.
  */
-export function promptBlocks(turn: Pick<RunTurnInput, 'prompt'>): ContentBlock[] {
-  return [{ type: 'text', text: turn.prompt }];
+export function promptBlocks(turn: Pick<RunTurnInput, 'prompt' | 'images'>, takesImages: boolean): ContentBlock[] {
+  const text: ContentBlock = { type: 'text', text: turn.prompt };
+  if (!takesImages || !turn.images?.length) return [text];
+  return [...turn.images.map((img): ContentBlock => ({ type: 'image', data: img.data, mimeType: img.mimeType })), text];
 }
 
 /**
@@ -928,6 +940,23 @@ function createAcpSession(
    */
   let steeringMode: SteeringMode = 'none';
   /**
+   * Whether this harness takes a picture as a prompt block (initialize → `promptCapabilities.image`;
+   * see promptBlocks). A property of the binary like the two above, kept across a rebuilt child.
+   */
+  let imagePrompts = false;
+  /**
+   * A turn's or a joined message's blocks, saying in the log when its pictures had to stay paths —
+   * which is otherwise invisible: the agent still gets the path line and the turn looks normal.
+   */
+  const blocksOf = (input: Pick<RunTurnInput, 'prompt' | 'images'>): ContentBlock[] => {
+    if (input.images?.length && !imagePrompts) {
+      console.log(
+        `[acp] ${conversationId}: "${def.id}" does not take pictures in a prompt (initialize: promptCapabilities.image is not true); ${input.images.length} go by path only`
+      );
+    }
+    return promptBlocks(input, imagePrompts);
+  };
+  /**
    * Hands a message to the running turn, set by runTurn once its prompt is out and cleared when it
    * ends — so its presence is what "a turn is open to messages" means (see steer).
    */
@@ -1205,6 +1234,7 @@ function createAcpSession(
       });
       loadSessionSupported = initResult.agentCapabilities?.loadSession === true;
       steeringMode = steeringModeOf(initResult);
+      imagePrompts = initResult.agentCapabilities?.promptCapabilities?.image === true;
 
       // Resume persisted context first: the harness keeps conversation history on its own disk, so a
       // daemon restart only loses the process — session/load replays the stored ACP session into the
@@ -1964,7 +1994,7 @@ function createAcpSession(
         promptedYet = true; // from here on, renderable output is this session's own (see promptedYet)
         const session = active!;
         const agentCtx = conn!.agent;
-        send(session, promptBlocks(input));
+        send(session, blocksOf(input));
         joinTurn = steeringMode === 'none' ? undefined : (blocks) => {
           // The turn's last prompt has settled, so its `stop` is on the way: a message taken now
           // would be answered by the harness after this turn stopped listening.
@@ -2043,12 +2073,12 @@ function createAcpSession(
       }
     },
 
-    async steer(input: Pick<RunTurnInput, 'prompt'>): Promise<SteerOutcome> {
+    async steer(input: Pick<RunTurnInput, 'prompt' | 'images'>): Promise<SteerOutcome> {
       // A turn still starting has not sent its prompt: wait for it rather than refuse, or the message
       // would sit out the whole turn (see promptSent).
       if (promptSent) await promptSent;
       if (!joinTurn || aborting) return 'refused';
-      return joinTurn(promptBlocks(input));
+      return joinTurn(blocksOf(input));
     },
 
     setFollowUpSink(sink: FollowUpSink): void {

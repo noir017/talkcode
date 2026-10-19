@@ -638,7 +638,8 @@ is behind it is an agent with full tool access.
    render on this origin. A path never reaches the browser and the browser can never name one.
    The one exception is [a raster image](#showing-a-picture-instead-of-a-download), which is
    served as itself so the page can draw it; `nosniff` is what keeps that from being a hole,
-   and SVG is deliberately not in the set.
+   and SVG is deliberately not in the set. The operator's own sent pictures are served through
+   the same table and the same headers.
 6. **Uploads become `data:` URLs**, the shape `adapter-telegram` already uses, so
    `daemon/attachment-io.ts` handles them through its existing branch and its SSRF guard has
    nothing to act on. A temp file and a `file://` URL would be refused by that guard outright.
@@ -696,10 +697,27 @@ or not, has a × (44px under the narrow-screen layout). Two things about it are 
   because that object is the upload itself: `api/send` is `.strict()` and would refuse a message
   carrying one key too many. `page.dom.test.ts` pins both halves.
 
-Once sent, the operator's *own* uploads are shown in the transcript as named chips, not
-thumbnails. They are base64 in the request body and deliberately never stored. See [the local
-transcript cache](#the-local-transcript-cache): the same reason means a failed message cannot be
-retried after a reload.
+**Once sent, the operator's own pictures show in their message too** (since 2.4.0; before, only
+their names did). The page drops the bytes once they are sent — they are base64 in a request
+body, and the same reason means a failed message cannot be retried after a reload, see [the local
+transcript cache](#the-local-transcript-cache) — so the daemon keeps the copy. `room.ts` `submit`
+hands each upload `inlineImageType` accepts to an `UploadStore` and publishes it through the same
+download table and headers as a picture the agent sent; `renderBody` draws it as an `img.shot`
+inside a `.shots` row, which is what the page already opens full-screen and hides on a 404. Four
+things about it:
+
+- **`index.ts` owns the disk**: `webui-uploads-<id>/` beside the topic file, one `0600` file per
+  picture named by a UUID — the browser's name is never part of a path, only its extension.
+- **Nothing outlives what can reach it.** The download table (200 entries, shared with the agent's
+  files) is in memory, so the directory is emptied when the adapter is built, and an upload the
+  table evicts is deleted then. A file the agent sent is the agent's and is never deleted.
+- **The write is async and the download waits for it** (`Download.ready`). The echo naming the URL
+  goes out as the write starts, and the page can ask before it finishes; `ready` never rejects, so
+  a failed write is a logged 404 — a hidden frame and the name chip, not a crash.
+- **The local bubble draws names only; the echo brings the pictures.** Drawing them before the echo
+  would put each file into that bubble as a `data:` URL, and that bubble is what the transcript
+  cache keeps if the send fails. After a restart the cached message's pictures 404 and hide,
+  leaving the chips — the same degradation as an agent's evicted picture.
 
 ### The other door: `sso.ts`
 

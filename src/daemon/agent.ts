@@ -9,7 +9,7 @@ import type {
   ToolEvent,
   ToolFinishEvent,
 } from '../types.js';
-
+import type { PromptImageType } from '../core/attachment-ingest.js';
 // ModelSelector lives in types.ts rather than here: core/model-menu.ts renders it into a paginated
 // button menu, and core may not import daemon/. Re-exported so the runtimes keep one import site.
 // EffortSelector likewise, for core/effort-menu.ts; SteerOutcome for core/inbound-merger.ts.
@@ -155,9 +155,25 @@ export interface AgentUsage {
   cost?: { amount: number; currency: string };
 }
 
+/** One picture as a runtime sends it: core's `PromptImage`, base64'd for the wire. */
+export interface TurnImage {
+  name: string;
+  /** Sniffed from the bytes, never the platform's claim (see core `sniffImageType`). */
+  mimeType: PromptImageType;
+  /** base64, no `data:` prefix — the shape ACP's `ImageContent.data` takes. */
+  data: string;
+}
+
 export interface RunTurnInput {
   /** Merged user input (already assembled into one segment). */
   prompt: string;
+  /**
+   * Pictures the user sent, for a runtime that can put them in front of the agent as pictures.
+   * `prompt` names every one of them by its saved path regardless, so a runtime that cannot (agy,
+   * or an ACP harness whose `initialize` does not claim `promptCapabilities.image`) drops these,
+   * logs that it did, and still leaves the agent a file it can open.
+   */
+  images?: TurnImage[];
   /**
    * per-session stable token (injected into the agent child env as TALKCODE_TURN_TOKEN at spawn).
    * Reverse commands use it to connect back; the daemon resolves it to the current turn's channel. Same value every turn.
@@ -187,7 +203,7 @@ export interface AgentSession {
    *
    * Optional: a runtime with no notion of it omits it, which reads as `refused` every time.
    */
-  steer?(input: Pick<RunTurnInput, 'prompt'>): Promise<SteerOutcome>;
+  steer?(input: Pick<RunTurnInput, 'prompt' | 'images'>): Promise<SteerOutcome>;
   /** Interrupt the current turn (`/stop`). */
   abort(): void;
   /**

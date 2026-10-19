@@ -12,7 +12,7 @@ import type {
   SteerOutcome,
 } from '../types.js';
 import type { PlatformAdapter } from '../platform/adapter.js';
-import type { AgentFactory, AgentSession, AgentStreamHandlers, AgentUsage, FollowUpSink } from './agent.js';
+import type { AgentFactory, AgentSession, AgentStreamHandlers, AgentUsage, FollowUpSink, TurnImage } from './agent.js';
 import { StreamBuffer } from '../core/stream-buffer.js';
 import { ToolRenderer } from '../core/tool-renderer.js';
 import { describeOutboundError, MessageNotEditableError } from '../core/outbound-errors.js';
@@ -351,7 +351,7 @@ export class TurnRunner {
     // (crash, `/cd`, idle reclaim all rebuild one underneath it), and a sink installed on a dead
     // child would leave background output with nowhere to go.
     agent.setFollowUpSink?.(this.followUpSink(conversationId));
-    const prompt = await this.buildPrompt(batch, platform);
+    const { prompt, images } = await this.buildPrompt(batch, platform);
     console.log(`[turn] ${conversationId} starting turn (${batch.length} message(s))`);
     // Open to messages sent while it runs (see steer) from here until it ends. Keyed by conversation,
     // and removed only if it is still THIS turn, so a turn can never unregister its successor.
@@ -360,7 +360,7 @@ export class TurnRunner {
 
     try {
       await agent.runTurn(
-        { prompt, sessionToken, model: this.deps.getModelOverride(conversationId) },
+        { prompt, ...(images.length > 0 ? { images } : {}), sessionToken, model: this.deps.getModelOverride(conversationId) },
         render.handlers
       );
       if (signal?.aborted) {
@@ -446,9 +446,9 @@ export class TurnRunner {
         turn.lanes.some((lane) => sameAddress(lane, addressOf(m.conversation)))
     );
     if (!fromThisLane) return 'refused';
-    const prompt = await this.buildPrompt(batch, this.adapterFor(turn.platformId));
+    const { prompt, images } = await this.buildPrompt(batch, this.adapterFor(turn.platformId));
     if (this.running.get(conversationId) !== turn) return 'refused';
-    const outcome = await turn.agent.steer({ prompt });
+    const outcome = await turn.agent.steer({ prompt, ...(images.length > 0 ? { images } : {}) });
     console.log(`[turn] ${conversationId} ${batch.length} message(s) sent mid-turn: ${outcome}`);
     return outcome;
   }
@@ -1157,14 +1157,18 @@ export class TurnRunner {
 
   /**
    * Assemble the final turn prompt: after mergePrompt (quote context), best-effort append injected text
-   * from inbound attachments (readable text inlined + binary/image saved-path lines).
+   * from inbound attachments (readable text inlined + binary/image saved-path lines), plus the pictures
+   * a harness may be shown as pictures (core `pickImages` decides which).
    *
    * Any attachment-processing error is swallowed and logged — never blocks the turn (the agent still
    * runs, just without attachment context). The attachment block is separated by `---\nAttachments:`.
    */
-  private async buildPrompt(batch: InboundMessage[], platform: PlatformAdapter): Promise<string> {
+  private async buildPrompt(
+    batch: InboundMessage[],
+    platform: PlatformAdapter
+  ): Promise<{ prompt: string; images: TurnImage[] }> {
     const base = this.mergePrompt(batch);
-    if (!this.config.attachments.enabled) return base;
+    if (!this.config.attachments.enabled) return { prompt: base, images: [] };
 
     // Collect all attachments in the batch (order-preserving); return early if none.
     const atts: AttachmentInput[] = [];
@@ -1173,10 +1177,10 @@ export class TurnRunner {
         atts.push({ type: a.type, url: a.url, name: a.name, mime: a.mime, size: a.size });
       }
     }
-    if (atts.length === 0) return base;
+    if (atts.length === 0) return { prompt: base, images: [] };
 
     try {
-      const { promptText } = await ingestAttachments(
+      const { promptText, images, heldBack } = await ingestAttachments(
         atts,
         {
           maxInjectBytes: this.config.attachments.maxInjectBytes,
@@ -1189,12 +1193,20 @@ export class TurnRunner {
           platform.fetchAttachment ? (url) => platform.fetchAttachment!(url) : undefined
         )
       );
-      if (!promptText) return base;
-      return `${base}\n\n---\nAttachments:\n${promptText}`;
+      for (const h of heldBack) {
+        console.log(`[turn] picture ${h.name} goes to the agent by path only: ${h.reason}`);
+      }
+      const turnImages = images.map((img) => ({
+        name: img.name,
+        mimeType: img.mimeType,
+        data: Buffer.from(img.bytes).toString('base64'),
+      }));
+      if (!promptText) return { prompt: base, images: turnImages };
+      return { prompt: `${base}\n\n---\nAttachments:\n${promptText}`, images: turnImages };
     } catch (e) {
       // best-effort: attachment injection failure never blocks the turn.
       console.error('[turn] attachment injection failed:', e instanceof Error ? e.message : e);
-      return base;
+      return { prompt: base, images: [] };
     }
   }
 }
