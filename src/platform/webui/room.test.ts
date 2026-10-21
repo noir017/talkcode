@@ -441,6 +441,23 @@ describe('WebRoom: inbound', () => {
     ]);
   });
 
+  it('writes how many files came with a message into the [in] line', () => {
+    // The preview is the first 50 characters of the text, so before this a file sent alone logged
+    // an empty line and "did it arrive with its attachment" could not be answered from the log.
+    const { room, topic } = attached();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const file = { name: 'a.pdf', mime: 'application/pdf', data: 'AAAA' };
+
+    room.submit({ topic, text: 'look at this', files: [file, file] });
+    room.submit({ topic, text: '', files: [file] });
+    room.submit({ topic, text: 'no files' });
+
+    const lines = log.mock.calls.flat().filter((l) => String(l).startsWith('[in]')).map(String);
+    expect(lines[0]).toMatch(/: look at this \(\+2 files\)$/);
+    expect(lines[1]).toMatch(/:\s+\(\+1 file\)$/);
+    expect(lines[2]).toMatch(/: no files$/);
+  });
+
   /** An UploadStore that records instead of writing: paths are predictable, `ready` is already settled. */
   function fakeUploads(): UploadStore & { saved: Array<{ name: string; base64: string }>; discarded: string[] } {
     const saved: Array<{ name: string; base64: string }> = [];

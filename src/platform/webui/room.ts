@@ -942,7 +942,11 @@ export class WebRoom {
       console.log(`[webui] "${this.instance.id}": dropped a message — chat.channels does not list ${CHANNEL}/${req.topic}`);
       return 'accepted';
     }
-    console.log(`[in] ${describeConversation(inbound.conversation)} @${OWNER}: ${text.slice(0, 50).replace(/\n/g, ' ')}`);
+    // The attachment count is in the line because this is where "did it arrive with its file" gets
+    // answered: the preview is the first 50 characters of the text, which says nothing of what
+    // rode along, and a file sent alone would otherwise log an empty line.
+    const files = attachments.length > 0 ? ` (+${attachments.length} file${attachments.length === 1 ? '' : 's'})` : '';
+    console.log(`[in] ${describeConversation(inbound.conversation)} @${OWNER}: ${text.slice(0, 50).replace(/\n/g, ' ')}${files}`);
     this.onMsg?.(inbound);
     return 'accepted';
   }

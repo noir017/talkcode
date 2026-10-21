@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A web UI message that never got an answer no longer sits grey for ever.** The grey bubble means
+  "still being sent", and the page waited on the request with no limit: `fetch` has none, and only a
+  network error or a 5xx was retried. A request that simply went quiet — a tunnel that took the body
+  and stopped — therefore left the message grey with no red edge and no **Retry**, and the text was
+  gone from the composer. Now an attempt is abandoned after 15 seconds, plus one more per 64 KiB of
+  what is being sent up to five minutes (the most Node lets a body take anyway, so a 20 MB
+  attachment on a slow uplink is not cut off in the middle), and the message turns red with Retry,
+  Copy and Discard. A short message is retried twice first, under the same nonce, so one that had in
+  fact landed is not sent twice; an attempt that was given over a minute is an upload and fails
+  once, since starting it over from its first byte twice more is a quarter of an hour of waiting.
+  The same failure now covers a body the browser cannot build into one string, which used to throw
+  out of the send and leave the bubble grey. The page's timeout is exercised in jsdom with a
+  stubbed `fetch`; it has not been run against a real browser and tunnel.
+
+### Changed
+
+- **A send the web UI's server refuses, or loses, now leaves a line in the log.** A 413, a 415 or
+  a 400 told the page and nobody else, and a client that hung up in the middle of a body came out
+  of the route as `request failed` with a stack trace — which is what every abandoned upload would
+  have become once the page started abandoning them. Each is now one `[webui] POST /api/send:
+  refused — …` line; the hang-up says how many of the declared bytes had arrived. Only the send
+  route logs it: `api/login` is open to strangers. The `[in]` line also ends `(+N files)`, so "did
+  it arrive with its attachment" can be answered from the log; before, a file sent without text
+  logged an empty line.
+
 ## [2.4.0] - 2026-10-19
 
 ### Added

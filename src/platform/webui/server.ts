@@ -540,7 +540,7 @@ function openStream(req: IncomingMessage, res: ServerResponse): Stream {
 }
 
 async function submit({ req, res }: Req, ctx: Ctx): Promise<void> {
-  const parsed = await readBody(req, res, SendRequestSchema);
+  const parsed = await readBody(req, res, SendRequestSchema, true);
   if (!parsed) return;
   switch (ctx.room.submit(parsed)) {
     case 'unknown-topic':
@@ -777,43 +777,75 @@ function refuse(socket: Socket, status: number, reason: string): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * One log line for a request this server turned away or lost.
+ *
+ * Until it existed a refused upload left nothing behind: the page was told (413, 400) and the log
+ * said nothing, so "I sent a file and the agent never got it" could not be told apart from
+ * "the file never left the browser" — which is the whole question when that is the complaint.
+ */
+function logRefused(req: IncomingMessage, why: string): void {
+  console.warn(`[webui] ${req.method ?? '?'} ${(req.url ?? '').split('?')[0]}: ${why}`);
+}
+
+/**
  * Read, parse and validate a JSON body, answering the request itself on any failure.
  *
  * Returns `undefined` to mean "already answered, stop" — the alternative, throwing, would put
  * a routine oversized upload through the 500 path.
+ *
+ * `logRefusals` is opt-in, and only the send route asks for it: `api/login` is reachable without
+ * a session, so a stranger's malformed bodies must not be able to write a line each into the log.
  */
 async function readBody<T>(
   req: IncomingMessage,
   res: ServerResponse,
-  schema: Parameters<typeof parseBody<T>>[0]
+  schema: Parameters<typeof parseBody<T>>[0],
+  logRefusals = false
 ): Promise<T | undefined> {
+  const refused = (why: string): void => {
+    if (logRefusals) logRefused(req, `refused — ${why}`);
+  };
   // Requiring JSON is half the CSRF story: a form or an <img> can only produce a simple
   // request, which cannot carry this content type without a preflight.
   if (!(req.headers['content-type'] ?? '').includes('application/json')) {
+    refused('content-type is not application/json');
     send(req, res, 415, { error: 'expected application/json' });
     return undefined;
   }
+  const declared = req.headers['content-length'] ?? '?';
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    size += buf.length;
-    if (size > MAX_BODY_BYTES) {
-      send(req, res, 413, { error: 'that is too large to send' });
-      req.destroy();
-      return undefined;
+  try {
+    for await (const chunk of req) {
+      const buf = chunk as Buffer;
+      size += buf.length;
+      if (size > MAX_BODY_BYTES) {
+        refused(`the body passed ${MAX_BODY_BYTES} bytes (Content-Length ${declared})`);
+        send(req, res, 413, { error: 'that is too large to send' });
+        req.destroy();
+        return undefined;
+      }
+      chunks.push(buf);
     }
-    chunks.push(buf);
+  } catch (e) {
+    // The client went away mid-body — a page that timed an upload out and abandoned it, or a link
+    // that dropped. Nobody is left to answer, and it is routine on the very links this page is
+    // built for, so it is one line here rather than a stack trace from the route's catch-all.
+    // The two numbers are what a stalled upload looks like from this side.
+    refused(`the client hung up after ${size} of ${declared} bytes (${e instanceof Error ? e.message : String(e)})`);
+    return undefined;
   }
   let raw: unknown;
   try {
     raw = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
   } catch {
+    refused(`malformed JSON (${size} bytes)`);
     send(req, res, 400, { error: 'malformed JSON' });
     return undefined;
   }
   const parsed = parseBody(schema, raw);
   if (!parsed.ok) {
+    refused(parsed.error);
     send(req, res, 400, { error: parsed.error });
     return undefined;
   }

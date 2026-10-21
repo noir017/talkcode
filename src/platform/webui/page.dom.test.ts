@@ -84,6 +84,8 @@ interface Harness {
   confirms: string[];
   /** Every MediaRecorder the page constructed (only with the `mic` option), oldest first. */
   recorders: FakeRecorder[];
+  /** The delay of every timer the page armed for 10 s or more (only with `shortenLong`), in ms. */
+  longTimers: number[];
   el: (id: string) => HTMLElement;
   /** Messages currently painted in the transcript. */
   painted: () => number;
@@ -116,6 +118,19 @@ async function until(what: string, ok: () => boolean): Promise<void> {
     await tick();
   }
   throw new Error(`never happened: ${what}`);
+}
+
+/**
+ * `until`, for a wait that really is wall-clock. The page's own back-off between two attempts at a
+ * send is 700 ms, which a count of macrotask turns cannot stand in for.
+ */
+async function within(what: string, ms: number, ok: () => boolean): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (ok()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`never happened within ${ms} ms: ${what}`);
 }
 
 /** The same wait, for a condition that is itself a database read. */
@@ -250,6 +265,18 @@ async function open(
      * refuses the microphone. Absent = jsdom as it is, with neither mediaDevices nor MediaRecorder.
      */
     mic?: { types: string[]; deny?: boolean };
+    /**
+     * Paths whose request is never answered. The stub settles it only the way a browser's fetch
+     * does when its AbortSignal fires: by rejecting with an AbortError. A page that never aborts
+     * therefore waits for ever, which is exactly the bug this exists to reproduce.
+     */
+    hang?: string[];
+    /**
+     * Run any timer of 10 s or more after 30 ms instead, and write down what it was asked for.
+     * That is how a 15-second request limit is both exercised and checked for its value without
+     * a test that takes 15 seconds. Off by default: only the tests about those limits want it.
+     */
+    shortenLong?: boolean;
   } = {}
 ): Promise<Harness> {
   const {
@@ -265,6 +292,8 @@ async function open(
     terminalEnd = false,
     password = true,
     mic,
+    hang = [],
+    shortenLong = false,
   } = opts;
   const streams: Stream[] = [];
   const recorders: FakeRecorder[] = [];
@@ -272,6 +301,7 @@ async function open(
   const clipboard: string[] = [];
   const alerts: string[] = [];
   const confirms: string[] = [];
+  const longTimers: number[] = [];
 
   const dom = new JSDOM(renderPage('Chat', terminal, password, terminalEnd), {
     url,
@@ -318,8 +348,23 @@ async function open(
         alerts.push(String(s));
       };
       if (mic) installMic(w, mic, recorders);
-      (w as any).fetch = (path: string, init: { body: string }) => {
+      if (shortenLong) {
+        const real = w.setTimeout.bind(w) as (fn: () => void, ms: number) => number;
+        (w as any).setTimeout = (fn: () => void, ms: number): number => {
+          if (ms < 10_000) return real(fn, ms);
+          longTimers.push(ms);
+          return real(fn, 30);
+        };
+      }
+      (w as any).fetch = (path: string, init: { body: string; signal?: AbortSignal }) => {
         calls.push({ path, body: JSON.parse(init.body) });
+        if (hang.includes(path)) {
+          return new Promise((_, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }))
+            );
+          });
+        }
         const code = status[path] ?? 200;
         return Promise.resolve({
           ok: code < 400,
@@ -350,6 +395,7 @@ async function open(
     alerts,
     confirms,
     recorders,
+    longTimers,
     cached: (topic) => readCache(idb, topic),
     emit: async (ev) => {
       live().onmessage?.({ data: JSON.stringify(ev) });
@@ -1637,6 +1683,81 @@ describe('webui page: sending', () => {
     expect(again.doc.querySelector('[data-retry]')).toBeNull();
     expect(again.doc.querySelector('[data-copy]')).not.toBeNull();
     expect(again.doc.querySelector('[data-discard]')).not.toBeNull();
+  });
+
+  it('turns a send nobody answers into a failure, instead of leaving it grey for ever', async () => {
+    // A tunnel that took the body and went quiet: no response, no error. fetch has no timeout of
+    // its own, so the bubble used to sit in `sending` with nothing armed that could ever change
+    // it — no red, no Retry, nothing to wait for and nothing to do.
+    const h = await open({ hang: ['api/send'], shortenLong: true });
+    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+    (h.el('input') as HTMLTextAreaElement).value = 'is anybody there';
+    await h.click('#composer button[type="submit"]');
+    expect(h.doc.querySelector('.m.pending')).not.toBeNull();
+
+    await within('the failure is drawn', 5000, () => h.doc.querySelector('.m.failed') !== null);
+
+    expect(h.doc.querySelector('.m.pending')).toBeNull();
+    expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
+    // A silent attempt is retried like a dropped one — three attempts under ONE nonce, which is
+    // what makes that safe if the first had in fact landed — and a line of text gets the floor.
+    const sent = h.calls.filter((c) => c.path === 'api/send');
+    expect(sent).toHaveLength(3);
+    expect(new Set(sent.map((c) => c.body.nonce)).size).toBe(1);
+    expect(h.longTimers).toEqual([15000, 15000, 15000]);
+  });
+
+  it('allows an attachment longer in proportion to its size, and does not start an upload over', async () => {
+    // One page sends a line of text and a 20 MB file; a limit that catches the first would cut the
+    // second off mid-upload on an ordinary uplink and call that a failure. And an attempt that was
+    // given over a minute was carrying an upload: repeating it from byte zero twice more is a
+    // quarter of an hour of grey, so it fails once and Retry is one tap.
+    const h = await open({ hang: ['api/send'], shortenLong: true });
+    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+    const big = new h.window.File([new Uint8Array(3_000_000)], 'big.png', { type: 'image/png' });
+    const ev = new h.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'clipboardData', {
+      value: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => big }] },
+    });
+    h.el('input').dispatchEvent(ev);
+    await until('the chip is rendered', () => chipNames(h).length > 0);
+    await h.click('#composer button[type="submit"]');
+
+    await within('the failure is drawn', 5000, () => h.doc.querySelector('.m.failed') !== null);
+
+    const sent = h.calls.filter((c) => c.path === 'api/send');
+    expect(sent).toHaveLength(1);
+    const file = (sent[0]?.body.files as Array<{ name: string; data: string }>)[0]!;
+    // Fifteen seconds, plus one more for every 64 KiB of what is being sent.
+    expect(h.longTimers).toEqual([Math.round(15000 + (file.name.length + file.data.length) / 65.536)]);
+    expect(h.longTimers[0]).toBeGreaterThan(60000);
+    expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
+  });
+
+  it('reports a body it could not even build as a failure, not as a message still on its way', async () => {
+    // JSON.stringify throws on a body too big for the engine to build as one string. That used to
+    // escape from the send itself, after the bubble had been marked `sending` and before any
+    // promise existed to mark it anything else.
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+    const json = h.window.JSON;
+    const real = json.stringify;
+    json.stringify = ((v: unknown, ...rest: unknown[]) => {
+      if ((v as { text?: string } | null)?.text === 'too big to build') throw new RangeError('Invalid string length');
+      return (real as (...a: unknown[]) => string)(v, ...rest);
+    }) as typeof JSON.stringify;
+    try {
+      (h.el('input') as HTMLTextAreaElement).value = 'too big to build';
+      await h.click('#composer button[type="submit"]');
+      await until('the failure is drawn', () => h.doc.querySelector('.m.failed') !== null);
+    } finally {
+      json.stringify = real;
+    }
+
+    expect(h.doc.querySelector('.m.pending')).toBeNull();
+    expect(h.el('log').textContent).toContain('too big to build');
+    expect(h.doc.querySelector('[data-copy]')).not.toBeNull();
+    expect(h.calls.filter((c) => c.path === 'api/send')).toHaveLength(0);
   });
 });
 
