@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-21
+
 ### Fixed
 
 - **A web UI message that never got an answer no longer sits grey for ever.** The grey bubble means
