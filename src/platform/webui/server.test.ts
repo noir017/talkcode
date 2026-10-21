@@ -687,6 +687,70 @@ describe('webui server: built for a weak link', () => {
   });
 });
 
+describe('webui server: a send that does not arrive whole', () => {
+  /** What the log was told, as one string. */
+  const warned = (spy: ReturnType<typeof vi.spyOn>): string => spy.mock.calls.flat().join('\n');
+
+  it('says in the log why a send was refused, which it never used to', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { base, topic } = await boot();
+    const cookie = await signIn(base);
+    // `files` is not a list: the schema refuses it, and the page is told 400.
+    const res = await fetch(`${base}/api/send`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, cookie },
+      body: JSON.stringify({ topic, text: 'x', files: 'nope' }),
+    });
+    expect(res.status).toBe(400);
+    expect(warned(warn)).toMatch(/POST \/api\/send: refused — malformed request: files/);
+  });
+
+  it('says so when a body is too large, with the length the client declared', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { base, topic } = await boot();
+    const cookie = await signIn(base);
+    // The server hangs up on an oversized body while it is still being sent, so the client may see
+    // either the 413 or a reset. Neither is the point: the line is written before the answer.
+    await fetch(`${base}/api/send`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, cookie },
+      body: JSON.stringify({ topic, text: 'x'.repeat(37 * 1024 * 1024) }),
+    }).catch(() => undefined);
+    expect(warned(warn)).toMatch(/POST \/api\/send: refused — the body passed 37748736 bytes \(Content-Length 3\d{7}\)/);
+  });
+
+  it('notes a client that hung up mid-body in one line, not as a failed request with a stack', async () => {
+    // What a page that timed an upload out and abandoned it looks like from here — and the reason
+    // this had to be handled: before, it came out of the route as `request failed` with a stack.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { base, port } = await boot();
+    const cookie = await signIn(base);
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      method: 'POST',
+      path: '/api/send',
+      headers: { ...JSON_HEADERS, cookie, 'content-length': '1000' },
+    });
+    req.on('error', () => {});
+    req.write('{"topic":"');
+    await new Promise((r) => setTimeout(r, 50));
+    req.destroy();
+    await until(() => /hung up/.test(warned(warn)), 'the hang-up is logged');
+    expect(warned(warn)).toMatch(/POST \/api\/send: refused — the client hung up after 10 of 1000 bytes/);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('leaves the login route out of it, since a stranger can reach that one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { base } = await boot();
+    const res = await fetch(`${base}/api/login`, { method: 'POST', headers: JSON_HEADERS, body: '{not json' });
+    expect(res.status).toBe(400);
+    expect(warned(warn)).not.toContain('refused');
+  });
+});
+
 describe('webui server: traffic', () => {
   it('delivers a posted message to the room', async () => {
     const { base, room, topic } = await boot();

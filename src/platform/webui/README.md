@@ -301,6 +301,26 @@ the POST is a separate concern:
 - a failure leaves it there, edged red, carrying **Retry / Copy / Discard**. Retry re-posts the
   same nonce, so a request that actually landed cannot double.
 
+**A send that is never answered fails; it does not wait.** `fetch` has no timeout, so before
+2.4.1 a request that went quiet — a tunnel that took the body and stopped, a socket the OS had not
+yet noticed was dead — left the bubble dimmed for ever: no error to turn it red, no Retry, and
+nothing in the daemon's log, because a request is only logged once its body has been read. Now
+`post()` takes a `limit` and aborts the attempt through an `AbortController`; the send passes
+`sendLimit(body)` — 15 s plus 1 s per 64 KiB, capped at the 300 s Node's `http.Server.requestTimeout`
+already allows a body. It is scaled because the same page sends a line of text and a 20 MB file. An
+attempt that was given over a minute was an upload, and is not repeated from byte zero (it fails
+once, and Retry is one tap); a short one is retried under the same nonce like any dropped request.
+`deliver()` also turns a *synchronous* throw from `post()` — `JSON.stringify` on a body too big to
+build — into the same failure; it used to leave the bubble dimmed with nothing attached that could
+ever change it. Only the send passes a `limit`: the other callers' requests are short.
+
+The server's half is the log. `readBody` has an opt-in `logRefusals`, which only the send route
+asks for because `api/login` is reachable without a session and a stranger must not be able to
+write a line per malformed body. A 413, a 415, a 400 and a client that hung up mid-body each leave
+one `[webui] POST /api/send: refused — …` line, the last with how many of the declared bytes had
+arrived; and the `[in]` line says `(+N files)`. Before, a refused upload told the page and told
+nobody else, and "the file never left the browser" and "the server threw it away" read the same.
+
 The one asymmetry worth knowing: **Retry lives in memory and Copy does not.** The body it would
 re-send holds its attachments as base64, and that is not something to write into a cache meant
 for a transcript — so a failed message restored after a reload offers Copy and Discard alone,

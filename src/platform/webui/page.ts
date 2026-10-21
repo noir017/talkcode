@@ -714,15 +714,50 @@ const SCRIPT = `
   // Retried, which is only safe because every send carries a nonce the server remembers: on a
   // bad link a request can be accepted and still time out, and without the nonce a retry would
   // post the same message twice.
-  function post(path, body, tries){
-    return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(body),credentials:'same-origin'}).then(function(r){
-        if(!r.ok && r.status>=500 && tries>0) return wait(700).then(function(){ return post(path, body, tries-1); });
-        return r;
-      }, function(e){
-        if(tries>0) return wait(700).then(function(){ return post(path, body, tries-1); });
-        throw e;
-      });
+  //
+  // limit is how long ONE attempt may go unanswered, in ms, before it is abandoned and counted as
+  // a dropped request. fetch has no timeout of its own, so a request that never answers — a tunnel
+  // that took the body and went quiet, a socket the OS has not noticed is dead — used to leave the
+  // caller waiting for ever: for a send, a grey bubble that neither turned red nor offered Retry.
+  // Only a send passes one. The other callers' requests are short, and a stuck button is a
+  // different complaint from a message that looks sent and is not.
+  function post(path, body, tries, limit){
+    // Built first: JSON.stringify is the one thing here that can throw, and nothing is armed yet.
+    var init = {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),credentials:'same-origin'};
+    var expired = false, timer = 0;
+    if(limit && typeof AbortController === 'function'){
+      var ctl = new AbortController();
+      init.signal = ctl.signal;
+      timer = setTimeout(function(){ expired = true; ctl.abort(); }, limit);
+    }
+    return fetch(path, init).then(function(r){
+      clearTimeout(timer);
+      if(!r.ok && r.status>=500 && tries>0) return wait(700).then(function(){ return post(path, body, tries-1, limit); });
+      return r;
+    }, function(e){
+      clearTimeout(timer);
+      // An attempt that was given a minute or more was carrying an upload, and starting one over
+      // from its first byte twice more is a quarter of an hour of grey for a link that has just
+      // shown it cannot do it. It fails once instead, and Retry is a single tap.
+      if(tries>0 && !(expired && limit > 60000)) return wait(700).then(function(){ return post(path, body, tries-1, limit); });
+      throw e;
+    });
+  }
+
+  /**
+   * How long one attempt at posting this message may take: fifteen seconds, plus one for every
+   * 64 KiB of it, up to the five minutes the server allows a request body (Node's
+   * http.Server.requestTimeout, whose default has been 300000 since v18 — nodejs.org, http docs).
+   *
+   * Scaled rather than flat because the same page sends a line of text and a 20 MB attachment: a
+   * limit short enough to catch the first would cut the second off mid-upload on any ordinary
+   * mobile uplink and call that a failure.
+   */
+  function sendLimit(body){
+    var n = (body.text || '').length, f = body.files || [];
+    for(var i=0;i<f.length;i++) n += f[i].data.length + f[i].name.length;
+    return Math.min(300000, 15000 + Math.round(n / 65.536));
   }
 
   function atBottom(){ return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
@@ -2378,7 +2413,14 @@ const SCRIPT = `
     var body = outbox[nonce];
     if(!body) return;
     setLocal(nonce, 'sending');
-    post('api/send', body, 2).then(function(r){
+    // post() can throw before it returns a promise — JSON.stringify on a body too big for the
+    // engine to build as one string. Left to escape, the bubble stayed 'sending' for ever, because
+    // nothing was attached that could ever change it; as a rejection it becomes a failure, with
+    // Copy and Discard, like any other message that did not go.
+    var sent;
+    try { sent = post('api/send', body, 2, sendLimit(body)); }
+    catch(x){ sent = Promise.reject(x); }
+    sent.then(function(r){
       setLocal(nonce, (r && r.ok) ? 'sent' : 'failed');
     }, function(){
       setLocal(nonce, 'failed');
