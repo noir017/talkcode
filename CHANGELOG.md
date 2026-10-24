@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-10-24
+
 ### Fixed
 
 - **A prompt sent from the web UI is no longer lost when the connection goes away mid-send.** When
