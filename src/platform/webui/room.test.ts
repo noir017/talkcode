@@ -5,7 +5,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import { WebuiConfigSchema } from '../config-schemas.js';
-import { CHANNEL, DIR_TTL_MS, inlineImageType, OWNER, WebRoom, type UploadStore, type WebuiInstance } from './room.js';
+import {
+  CHANNEL,
+  DIR_TTL_MS,
+  inlineImageType,
+  OWNER,
+  WebRoom,
+  type Kept,
+  type TranscriptStore,
+  type UploadStore,
+  type WebuiInstance,
+} from './room.js';
 import { MAX_TOPICS, TopicStore } from './topics.js';
 import type { InboundMessage } from '../../types.js';
 import type { WebEvent, WebMessage } from './protocol.js';
@@ -365,6 +375,195 @@ describe('WebRoom: a topic older than the process', () => {
     const seen: Seen[] = [];
     reopened.subscribe(old.id, (id, ev) => seen.push({ id, ev }));
     expect(seen[0]?.ev).not.toHaveProperty('stale');
+  });
+});
+
+describe('WebRoom: a starred topic keeps its transcript across a restart', () => {
+  /** A TranscriptStore in memory: what a file per topic would hold, and every call made of it. */
+  const memory = (): TranscriptStore & { kept: Map<string, Kept[]>; saves: string[] } => {
+    const kept = new Map<string, Kept[]>();
+    const saves: string[] = [];
+    return {
+      kept,
+      saves,
+      load: () => new Map([...kept].map(([k, v]) => [k, structuredClone(v)])),
+      save: (topicId, messages) => {
+        saves.push(topicId);
+        kept.set(topicId, structuredClone(messages));
+      },
+      drop: (topicId) => void kept.delete(topicId),
+    };
+  };
+  const syncOf = (room: WebRoom, topic: string): Extract<WebEvent, { t: 'sync' }> => {
+    const seen: Seen[] = [];
+    room.subscribe(topic, (id, ev) => seen.push({ id, ev }));
+    return seen[0]!.ev as Extract<WebEvent, { t: 'sync' }>;
+  };
+
+  it('comes back as the run it was said in, with no buttons, and the room is not stale', () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const file = path.join(dir, 'kept.json');
+    const disk = memory();
+    const before = new WebRoom(instance(), new TopicStore(file));
+    before.useTranscripts(disk);
+    const topic = before.topics.create('worth keeping').id;
+    before.starTopic(topic, true);
+    before.post(topic, { own: true, html: '<p>a question</p>', nonce: 'n1' }, 'a question');
+    before.post(topic, { own: false, html: '<p>pick one</p>', buttons: [{ id: 'b:yes', label: 'Yes' }] }, 'pick one');
+    const epoch = syncOf(before, topic).epoch;
+    // Shutdown, which writes whatever the timer has not yet.
+    before.dispose();
+
+    vi.setSystemTime(2_000_000);
+    const after = new WebRoom(instance(), new TopicStore(file));
+    after.useTranscripts(disk);
+    const sync = syncOf(after, topic);
+
+    expect(sync.epoch).not.toBe(epoch);
+    expect(sync.messages.map((m) => [m.html, m.g, m.buttons])).toEqual([
+      ['<p>a question</p>', epoch, []],
+      ['<p>pick one</p>', epoch, []],
+    ]);
+    // Its echo still names the send it answered, which is how a message the page restored as
+    // unconfirmed finds out it did arrive.
+    expect(sync.messages[0]?.nonce).toBe('n1');
+    expect(sync).not.toHaveProperty('stale');
+    // And the agent can read it back.
+    expect(after.history(topic, {}).map((m) => m.content)).toEqual(['a question', 'pick one']);
+  });
+
+  it('starts its ids past the kept ones, so a new message cannot overwrite one', () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const file = path.join(dir, 'ids.json');
+    const disk = memory();
+    const before = new WebRoom(instance(), new TopicStore(file));
+    before.useTranscripts(disk);
+    const topic = before.topics.create('ids').id;
+    before.starTopic(topic, true);
+    for (const t of ['one', 'two', 'three']) before.post(topic, { own: false, html: `<p>${t}</p>` }, t);
+    before.dispose();
+
+    vi.setSystemTime(2_000_000);
+    const after = new WebRoom(instance(), new TopicStore(file));
+    after.useTranscripts(disk);
+    const fresh = after.post(topic, { own: false, html: '<p>four</p>' }, 'four');
+
+    expect(['w1', 'w2', 'w3']).not.toContain(fresh.id);
+    expect(syncOf(after, topic).messages.map((m) => m.html)).toEqual(['<p>one</p>', '<p>two</p>', '<p>three</p>', '<p>four</p>']);
+  });
+
+  it('keeps each message under the run it was said in, through more than one restart', () => {
+    // Re-saved by the second run, a first-run message must still say first run: the page's cache
+    // keys it that way, and a message re-marked as the second run's would be drawn twice.
+    vi.useFakeTimers({ now: 1_000_000 });
+    const file = path.join(dir, 'twice.json');
+    const disk = memory();
+    const one = new WebRoom(instance(), new TopicStore(file));
+    one.useTranscripts(disk);
+    const topic = one.topics.create('twice').id;
+    one.starTopic(topic, true);
+    one.post(topic, { own: false, html: '<p>first run</p>' }, 'first run');
+    const e1 = syncOf(one, topic).epoch;
+    one.dispose();
+
+    vi.setSystemTime(2_000_000);
+    const two = new WebRoom(instance(), new TopicStore(file));
+    two.useTranscripts(disk);
+    two.post(topic, { own: false, html: '<p>second run</p>' }, 'second run');
+    const e2 = syncOf(two, topic).epoch;
+    two.dispose();
+
+    vi.setSystemTime(3_000_000);
+    const three = new WebRoom(instance(), new TopicStore(file));
+    three.useTranscripts(disk);
+    expect(syncOf(three, topic).messages.map((m) => [m.html, m.g])).toEqual([
+      ['<p>first run</p>', e1],
+      ['<p>second run</p>', e2],
+    ]);
+  });
+
+  it('writes a starred topic within seconds of a new message', () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const disk = memory();
+    const room = new WebRoom(instance(), new TopicStore(path.join(dir, 'posted.json')));
+    room.useTranscripts(disk);
+    const topic = room.topics.create('posted').id;
+    room.starTopic(topic, true);
+    vi.advanceTimersByTime(10_000);
+
+    room.post(topic, { own: false, html: '<p>news</p>' }, 'news');
+    vi.advanceTimersByTime(3_000);
+    expect(disk.kept.get(topic)?.map((k) => k.text)).toEqual(['news']);
+  });
+
+  it('writes a starred topic within seconds of a change, not only at shutdown', () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const disk = memory();
+    const room = new WebRoom(instance(), new TopicStore(path.join(dir, 'often.json')));
+    room.useTranscripts(disk);
+    const topic = room.topics.create('streaming').id;
+    room.starTopic(topic, true);
+    const msg = room.post(topic, { own: false, html: '<p>a</p>' }, 'a');
+    // A reply streaming for longer than the window is still written inside it: the first change
+    // arms the write and later ones ride along, rather than each pushing it back.
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(1_000);
+      room.revise(topic, msg.id, `a${'b'.repeat(i)}`);
+    }
+    expect(disk.saves.length).toBeGreaterThanOrEqual(1);
+    expect(disk.saves.length).toBeLessThanOrEqual(2);
+  });
+
+  it('writes a topic the moment it is starred, however quiet it has gone', () => {
+    // Often why it is starred: it matters, and nothing more is going to be said in it.
+    vi.useFakeTimers({ now: 1_000_000 });
+    const disk = memory();
+    const room = new WebRoom(instance(), new TopicStore(path.join(dir, 'quiet.json')));
+    room.useTranscripts(disk);
+    const topic = room.topics.create('quiet').id;
+    room.post(topic, { own: false, html: '<p>the answer</p>' }, 'the answer');
+    vi.advanceTimersByTime(10_000);
+    expect(disk.kept.size).toBe(0);
+
+    room.starTopic(topic, true);
+    vi.advanceTimersByTime(5_000);
+    expect(disk.kept.get(topic)?.map((k) => k.text)).toEqual(['the answer']);
+  });
+
+  it('keeps nothing of a topic that is not starred, and lets go of one unstarred or deleted', () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const disk = memory();
+    const room = new WebRoom(instance(), new TopicStore(path.join(dir, 'which.json')));
+    room.useTranscripts(disk);
+    const plain = room.topics.create('plain').id;
+    const starred = room.topics.create('starred').id;
+    const deleted = room.topics.create('deleted').id;
+    room.starTopic(starred, true);
+    room.starTopic(deleted, true);
+    for (const t of [plain, starred, deleted]) room.post(t, { own: false, html: '<p>x</p>' }, 'x');
+    vi.advanceTimersByTime(5_000);
+    expect([...disk.kept.keys()].sort()).toEqual([deleted, starred].sort());
+
+    room.starTopic(starred, false);
+    room.deleteTopic(deleted);
+    expect([...disk.kept.keys()]).toEqual([]);
+    room.post(starred, { own: false, html: '<p>y</p>' }, 'y');
+    room.dispose();
+    expect([...disk.kept.keys()]).toEqual([]);
+  });
+
+  it('throws away a kept transcript whose topic is no longer starred when it comes back', () => {
+    const disk = memory();
+    const store = new TopicStore(path.join(dir, 'orphan.json'));
+    const topic = store.create('was starred').id;
+    disk.kept.set(topic, [{ text: 'x', msg: { id: 'w1', own: false, html: '<p>x</p>', at: 1, g: 1, buttons: [], reactions: [] } }]);
+    disk.kept.set('deadbeef', [{ text: 'y', msg: { id: 'w2', own: false, html: '<p>y</p>', at: 1, g: 1, buttons: [], reactions: [] } }]);
+
+    const room = new WebRoom(instance(), store);
+    room.useTranscripts(disk);
+
+    expect(disk.kept.size).toBe(0);
+    expect(syncOf(room, topic).messages).toEqual([]);
   });
 });
 

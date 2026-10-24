@@ -6,8 +6,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import { PAGE_SIZE, PAGE_SIZE_MAX, resolvePageSize } from '../../core/paging.js';
 import { WebuiConfigSchema } from '../config-schemas.js';
-import { createWebuiAdapter, diskUploadStore } from './index.js';
-import { CHANNEL } from './room.js';
+import { createWebuiAdapter, diskTranscriptStore, diskUploadStore } from './index.js';
+import { CHANNEL, type Kept } from './room.js';
 import type { ConversationAddress } from '../../core/conversation.js';
 import type { PlatformAdapter } from '../adapter.js';
 
@@ -226,5 +226,68 @@ describe('webui adapter: where the operator\'s own pictures are kept', () => {
     const store = diskUploadStore(at);
     fs.writeFileSync(at, 'x');
     await expect(store.save('a.png', 'AAAA').ready).resolves.toBeUndefined();
+  });
+});
+
+describe('webui adapter: where a starred topic keeps its transcript', () => {
+  const kept = (id: string, extra: Record<string, unknown> = {}): Kept => ({
+    text: `text of ${id}`,
+    msg: { id, own: false, html: `<p>${id}</p>`, at: 1, g: 42, buttons: [], reactions: ['✅'], ...extra },
+  });
+
+  it('writes a topic to a file of its own that only the operator can read, and reads it back', () => {
+    const at = path.join(dir, 'transcripts');
+    const store = diskTranscriptStore(at);
+    store.save('a1b2c3d4', [kept('w1', { nonce: 'n1', kind: 'tools' }), kept('w2')]);
+
+    const file = path.join(at, 'a1b2c3d4.json');
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(at).mode & 0o777).toBe(0o700);
+    // No temporary file left beside it: the write is a rename.
+    expect(fs.readdirSync(at)).toEqual(['a1b2c3d4.json']);
+    expect(diskTranscriptStore(at).load().get('a1b2c3d4')).toEqual([kept('w1', { nonce: 'n1', kind: 'tools' }), kept('w2')]);
+
+    store.drop('a1b2c3d4');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('carries across only what a message is, and passes over a file it cannot read', () => {
+    const at = path.join(dir, 'transcripts');
+    fs.mkdirSync(at);
+    fs.writeFileSync(
+      path.join(at, 'a1b2c3d4.json'),
+      JSON.stringify([
+        { text: 'ok', msg: { ...kept('w1').msg, buttons: [{ id: 'b', label: 'stale' }], onclick: 'x' } },
+        { text: 'no run', msg: { id: 'w2', own: false, html: '<p>x</p>', at: 1 } },
+        'not a message',
+      ])
+    );
+    fs.writeFileSync(path.join(at, 'b2c3d4e5.json'), '{ torn');
+    fs.writeFileSync(path.join(at, 'not-a-topic.json'), '[]');
+
+    const loaded = diskTranscriptStore(at).load();
+
+    expect([...loaded.keys()]).toEqual(['a1b2c3d4']);
+    // Buttons are never restored, and nothing outside WebMessage's own fields rides along.
+    expect(loaded.get('a1b2c3d4')).toEqual([{ ...kept('w1'), text: 'ok' }]);
+  });
+
+  it('comes back after the adapter is built again, for a starred topic', async () => {
+    const first = adapter();
+    const where = await somewhere(first);
+    await first.sendMessage(where, 'said before the restart');
+    const topics = path.join(dir, 'webui-topics-webui.json');
+    // Starred the way the page does it, through the store the adapter persists.
+    const saved = JSON.parse(fs.readFileSync(topics, 'utf8')) as Record<string, { starred?: boolean }>;
+    saved[where.thread!]!.starred = true;
+    fs.writeFileSync(topics, JSON.stringify(saved));
+    // A second adapter reads the star; its first change writes the kept transcript.
+    const second = adapter();
+    await second.sendMessage(where, 'said in the second run');
+    await second.stop();
+
+    const third = adapter();
+    const history = await third.fetchHistory!(where, { limit: 10 });
+    expect(history.map((m) => m.content)).toEqual(['said in the second run']);
   });
 });

@@ -1912,6 +1912,19 @@ describe('webui page: a message the daemon never acknowledged', () => {
     expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
   });
 
+  it('is settled after a restart too, when a starred topic kept the echo', async () => {
+    // The one case a restart used to leave unknowable: the ring that could say went with the old
+    // process. A starred topic's kept transcript carries the echo, nonce and run (g) and all.
+    const { nonce, idb, storage } = await sendAndLeave([]);
+
+    const h = await open({ url: at, idb, storage });
+    await h.emit(sync(T, [{ ...message('m1', '<div class="raw">on its way</div>', true), nonce, g: 1 }], [T], { epoch: 2 }));
+
+    expect(h.painted()).toBe(1);
+    expect(h.doc.querySelector('.m.failed')).toBeNull();
+    expect(unsent(h)).toBeNull();
+  });
+
   it('keeps a restored failure under the transcript, where the reader lands, not above it', async () => {
     const msgs = [message('m1', '<p>one</p>'), message('m2', '<p>two</p>')];
     const first = await open({ url: at, status: { 'api/send': 400 } });
@@ -2189,6 +2202,37 @@ describe('webui page: the local transcript cache', () => {
     expect(h.painted()).toBe(2);
     expect(h.el('log').textContent).toContain('from before');
     expect(h.el('log').textContent).toContain('brand new');
+  });
+
+  it('takes what a starred topic kept on the daemon as the history it is, once, beside its own copy', async () => {
+    // A starred topic's transcript survives the restart on the daemon's side and arrives in the
+    // sync marked with the run it was said in (g). That is what keys it the way this browser's
+    // cache already has it; keyed by the new run instead, every message would be on screen twice.
+    const T = 'a1b2c3d4';
+    const asked = { ...message('m2', '<p>pick one</p>'), buttons: [{ id: 'b:yes', label: 'Yes' }] };
+    const first = await open({ url: `http://localhost:8787/?t=${T}` });
+    await first.emit(sync(T, [message('m1', '<p>from before</p>'), asked], [T]));
+    await saved();
+
+    const kept = [
+      { ...message('m1', '<p>from before</p>'), g: 1 },
+      { ...asked, buttons: [], g: 1 },
+    ];
+    const after = sync(T, [...kept, message('m1', '<p>said since</p>')], [T], { epoch: 2 });
+    for (const idb of [first.idb, new IDBFactory()]) {
+      // The same browser, with its cache; then one that never saw the topic, such as a phone.
+      const h = await open({ url: `http://localhost:8787/?t=${T}`, idb });
+      await h.emit(after);
+
+      expect(h.painted()).toBe(3);
+      expect(h.doc.querySelectorAll('#log > .m.hist')).toHaveLength(2);
+      expect(h.el('log').textContent).toContain('said since');
+      const divider = h.doc.querySelector('#log > .divider');
+      expect(divider?.textContent).toContain('before the daemon restarted');
+      expect(divider?.previousElementSibling?.textContent).toContain('pick one');
+      expect(h.doc.querySelector('button[data-btn]')).toBeNull();
+      expect(h.notice()).toBeNull();
+    }
   });
 
   it('keeps only the tail of a long topic', async () => {

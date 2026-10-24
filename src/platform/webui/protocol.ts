@@ -259,4 +259,15 @@ export interface WebMessage {
    * still being edited — which is most of a tool bubble's life.
    */
   kind?: 'tools';
+  /**
+   * The run of the daemon this message was said in (that run's sync `epoch`), set only on a message
+   * kept on disk from an EARLIER run — a starred topic's transcript, restored at startup.
+   *
+   * The page identifies a message by `<generation>:<id>` and takes the sync's epoch as everyone's
+   * generation, so without this a restored message would arrive under the new run's key: a second
+   * copy beside the one its own cache kept under the old key, and drawn as live when its buttons
+   * name a process that is gone. With it, it has the key the cache already has and is drawn as
+   * history.
+   */
+  g?: number;
 }

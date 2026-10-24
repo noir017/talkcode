@@ -5,6 +5,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A starred web UI topic keeps what was said in it across a restart.** A star used to keep the
+  topic's row and nothing in it: the daemon holds transcripts in memory, so a restart or a container
+  rebuild emptied every topic, starred or not. The browser's own copy was supposed to cover that, and
+  for the topics worth starring it is the wrong place. It keeps the 24 topics most recently written
+  in that browser, so a topic you starred and open once a week is exactly the one it has dropped, and
+  a phone that never opened it has nothing. Two starred topics came back empty that way after a
+  rebuild. The daemon now writes each starred topic's transcript to its own file beside the topic
+  list (`webui-transcripts-<id>/`, readable only by you), within three seconds of any change and at
+  once when you star it, and reads it back on start. After a restart it is there in every browser,
+  above the line that says it is from before the restart, with its buttons removed, since the
+  process that would have answered them is gone. Unstarring or deleting the topic removes the file.
+  Unstarred topics are unchanged, and the notice an emptied one shows now says that a star is what
+  keeps one. Checked against the real adapter stopped and rebuilt on the same directory, in Chromium,
+  with and without a browser cache. Transcripts already lost are not recovered by this. The agent
+  still has their context.
+
 ## [2.4.2] - 2026-10-24
 
 ### Fixed
