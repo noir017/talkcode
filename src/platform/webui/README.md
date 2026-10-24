@@ -297,9 +297,45 @@ the POST is a separate concern:
 
 - while it is in flight the bubble is dimmed (`.pending`);
 - the echo claims it by nonce and REUSES its node, so nothing re-runs the fade-in or moves the
-  scroll for a message that has been on screen since it was typed;
+  scroll for a message that has been on screen since it was typed — whether the echo arrives as a
+  `msg` event or inside a full `sync` (a reconnect the backlog no longer reached, a reload);
 - a failure leaves it there, edged red, carrying **Retry / Copy / Discard**. Retry re-posts the
   same nonce, so a request that actually landed cannot double.
+
+**What was sent survives the connection going away** (since 2.4.2). Every send is written to
+localStorage under `aa_unsent` — text, file names, topic, state, and the daemon's epoch — before the
+request leaves and before the composer's draft is cleared, so there is no instant at which the text
+is in neither place. A record goes when the daemon has the message (a 2xx, or its echo) or when it
+is discarded, or its topic is. Three ways of losing a message were reproduced before this, and each
+has a test in `page.dom.test.ts`:
+
+- **A reload while the send was in flight** lost it outright: it was in no store at all. This is the
+  everyday case behind Cloudflare Access. When its session lapses, every request is answered with a
+  302 to the team's sign-in page on another origin (checked against the live entrance on
+  2026-10-24), which `fetch` and `EventSource` both see as a network error — so the send fails, the
+  stream says "Reconnecting..." for ever, and a reload is the only way back in.
+- **A reload after it had failed** brought it back from the transcript cache, which is where a
+  failure used to be kept, and the first sync then sorted it above the whole topic: `reconcile`
+  appends what the sync carries, which moves it, so anything it does not carry ends up on top. On a
+  long topic that is as good as gone. `sinkLocals` keeps every unacknowledged message under the
+  transcript, where the reader lands, and moves nothing when they are already there.
+- **A switch to another topic while it was in flight**, followed by a failure, left no bubble to turn
+  red. `setLocal` now settles the record whether or not a bubble is on screen, and the way back into
+  a topic draws what it has unsent.
+
+A message restored after a reload that was still in flight when the last page went away is
+`unsure`: nothing that page saw can say how the request ended, and it says so ("Not confirmed").
+The first sync settles it. Carrying its echo, it is claimed. Not carrying it, from the daemon it was
+sent to (same epoch), it never arrived and turns into an ordinary failure. From a restarted daemon,
+whose ring starts empty, the silence proves nothing, so it stays `unsure`. Retry is offered either
+way; the nonce makes it safe against the same daemon, and only a restart in between can let it
+double.
+
+**Retry survives a reload for text, not for files.** A text-only body is rebuilt from the record,
+nonce and all. A body that carried files held them as base64, and that is not something to write
+into localStorage, so a message that carried files offers Copy and Discard alone after a reload,
+rather than pretending it can re-send files it no longer has. Text over 64KB is kept in memory only,
+for the same reason a draft that long is.
 
 **A send that is never answered fails; it does not wait.** `fetch` has no timeout, so before
 2.4.1 a request that went quiet — a tunnel that took the body and stopped, a socket the OS had not
@@ -320,11 +356,6 @@ write a line per malformed body. A 413, a 415, a 400 and a client that hung up m
 one `[webui] POST /api/send: refused — …` line, the last with how many of the declared bytes had
 arrived; and the `[in]` line says `(+N files)`. Before, a refused upload told the page and told
 nobody else, and "the file never left the browser" and "the server threw it away" read the same.
-
-The one asymmetry worth knowing: **Retry lives in memory and Copy does not.** The body it would
-re-send holds its attachments as base64, and that is not something to write into a cache meant
-for a transcript — so a failed message restored after a reload offers Copy and Discard alone,
-rather than pretending it can re-send files it no longer has.
 
 ## The local transcript cache
 
@@ -366,9 +397,11 @@ re-serialise the whole topic.
 **A browser with no IndexedDB is a supported configuration.** Private windows and old engines
 both produce one; the cache is the only thing that goes, and `page.dom.test.ts` holds that.
 
-**What is NOT cached: a send still in flight.** Only a FAILED local message is written down. One
-in flight is a question this tab alone can answer, and restoring it after a reload would either
-duplicate a message the daemon did receive or claim one was lost that was not.
+**What is NOT cached: anything typed here.** The cache holds what the daemon sent and nothing else.
+A message this page sent and has not had acknowledged lives in `aa_unsent` instead ([above](#built-for-a-bad-connection)):
+a write coalesced into a 400ms window of an asynchronous database cannot promise to land before a
+reload, and that promise is the whole point. A cache written by a page from before 2.4.2 may still
+carry a failed message; `adopt` moves it into `aa_unsent` and the cache is rewritten without it.
 
 **The echo of your own message is not rendered markdown.** `renderBody` escapes it and stops
 there, where the agent's side goes through `web-markdown.ts`. What the operator typed is a
@@ -411,13 +444,15 @@ not one per message.
 
 **The composer is swapped with the topic: text, caret and files** (`stashDraft` / `loadDraft`).
 The text is also written to localStorage under `aa_drafts`, so a reload does not cost it. Files
-are not written: they are base64, and a failed message is not retryable after a reload for the
-same reason. A few decisions here are not obvious:
+are not written: they are base64, and a failed message that carried files is not retryable after a
+reload for the same reason. A few decisions here are not obvious:
 
-- **Writes happen when a topic is left, when a message is sent, and when the page is hidden. They
-  never happen per keystroke.** The hidden transition is the last event every way out of a page
-  reliably fires, so nothing typed is still only in memory by the time the browser may discard
-  it. The one case this gives up is a crash in the foreground.
+- **Writes happen when a topic is left, when a message is sent, when the page is hidden, and once
+  typing has paused for a second. They never happen per keystroke.** The hidden transition is the
+  last event every way out of a page reliably fires, so nothing typed is still only in memory by
+  the time the browser may discard it. The pause is for the ways out that fire nothing — a renderer
+  that crashes, a phone that kills the tab in the foreground — which used to cost the whole draft
+  and now cost the last second of typing.
 - **Each write is a read-modify-write of one key, not the whole map.** A second tab on the origin
   keeps drafts of its own, and writing this tab's map wholesale would put back drafts that tab
   has since sent.
@@ -430,9 +465,10 @@ same reason. A few decisions here are not obvious:
 - **A file is attached to the topic it was picked in.** `FileReader` answers a few turns after
   the paste or pick, and clicking another topic in between used to hand the file to the wrong
   conversation.
-- **A topic's view and draft go with it**, on a delete, on "Clear all topics", and whenever the list
-  stops carrying an id (`prune`). A clear that spared starred topics spares theirs too — `keepOnly`
-  works from the list the server answered with, not from the stars this tab last drew.
+- **A topic's view, draft and unsent messages go with it**, on a delete, on "Clear all topics", and
+  whenever the list stops carrying an id (`prune`). A clear that spared starred topics spares theirs
+  too — `keepOnly` works from the list the server answered with, not from the stars this tab last
+  drew.
 
 Measured in Chromium on switches into a 250-message topic, 31 per run, compared with the code
 before the change. `saveView` costs at most 0.1ms, which is the resolution of Chrome's timer.
@@ -719,8 +755,9 @@ or not, has a × (44px under the narrow-screen layout). Two things about it are 
 
 **Once sent, the operator's own pictures show in their message too** (since 2.4.0; before, only
 their names did). The page drops the bytes once they are sent — they are base64 in a request
-body, and the same reason means a failed message cannot be retried after a reload, see [the local
-transcript cache](#the-local-transcript-cache) — so the daemon keeps the copy. `room.ts` `submit`
+body, and the same reason means a failed message that carried them cannot be retried after a
+reload, see [built for a bad connection](#built-for-a-bad-connection) — so the daemon keeps the
+copy. `room.ts` `submit`
 hands each upload `inlineImageType` accepts to an `UploadStore` and publishes it through the same
 download table and headers as a picture the agent sent; `renderBody` draws it as an `img.shot`
 inside a `.shots` row, which is what the page already opens full-screen and hides on a 404. Four
@@ -735,8 +772,9 @@ things about it:
   goes out as the write starts, and the page can ask before it finishes; `ready` never rejects, so
   a failed write is a logged 404 — a hidden frame and the name chip, not a crash.
 - **The local bubble draws names only; the echo brings the pictures.** Drawing them before the echo
-  would put each file into that bubble as a `data:` URL, and that bubble is what the transcript
-  cache keeps if the send fails. After a restart the cached message's pictures 404 and hide,
+  would put each file into that bubble as a `data:` URL, and a bubble restored after a reload is
+  rebuilt from `aa_unsent`, which keeps the names and never the bytes — so it would show the picture
+  until the next reload and then not. After a restart the cached echo's pictures 404 and hide,
   leaving the chips — the same degradation as an agent's evicted picture.
 
 ### The other door: `sso.ts`
@@ -952,4 +990,8 @@ backdrop element fails the whole file, and dropping the 16px field rule, the saf
 the collapsed-drawer offset or the narrow-screen focus guard each fails exactly the test that
 names it — including when a rule is *moved out* of the `@media` block rather than deleted. The
 same was done for switching topics: fifteen mutations, one per decision in that section, and
-each fails the test written for it.
+each fails the test written for it. And for the unsent store: seventeen mutations, each caught by
+the test that names it. Its real-browser half was checked on 2026-10-24 in Chromium against the
+real server behind a proxy that played the four failures (an Access 302 to another origin, a send
+swallowed, an answer lost, the browser offline); the same run against the code before it lost the
+draft and put the restored failure at the top.
