@@ -31,7 +31,16 @@ import type { MessageRef, SlashCommandSpec } from '../../types.js';
 import type { PlatformAdapter } from '../adapter.js';
 import { renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import { WebAuth, fileSessionStore } from './auth.js';
-import { CHANNEL, inlineImageType, TopicStore, WebRoom, type UploadStore, type WebuiInstance } from './room.js';
+import {
+  CHANNEL,
+  inlineImageType,
+  TopicStore,
+  WebRoom,
+  type Kept,
+  type TranscriptStore,
+  type UploadStore,
+  type WebuiInstance,
+} from './room.js';
 import { createWebServer, type WebServer } from './server.js';
 import { WebSso } from './sso.js';
 import { TerminalSessions } from './terminal-sessions.js';
@@ -119,6 +128,8 @@ export function createWebuiAdapter(instance: WebuiInstance): PlatformAdapter {
   topics.current();
   const room = new WebRoom(instance, topics);
   room.useUploads(diskUploadStore(path.join(configDir(), `webui-uploads-${instance.id}`)));
+  // Before anything can attach: a page that connects first would be handed an empty starred topic.
+  room.useTranscripts(diskTranscriptStore(path.join(configDir(), `webui-transcripts-${instance.id}`)));
   // Owned here because both ends of it are wired here: the server feeds it (a pane attaches on
   // every proxied handshake) and the room reads it (the switcher's terminal marker). Given the
   // command up front, since whether a session can be ended at all decides whether the page
@@ -180,6 +191,96 @@ export function diskUploadStore(dir: string): UploadStore {
     },
     discard(file) {
       fs.promises.rm(file, { force: true }).catch(failed(`delete ${file}`));
+    },
+  };
+}
+
+/**
+ * Starred topics' transcripts, on disk (room.ts `TranscriptStore`): one `<topic id>.json` per topic.
+ *
+ * `0600` in a `0700` directory, like the uploads beside it. A transcript is agent output, which
+ * carries the bytes of whatever the agent read; that is no wider than the agent's own session files,
+ * which hold all of it already, but it is not something to leave world-readable either. Written to a
+ * temporary name and renamed, so a daemon killed mid-write leaves the previous copy rather than
+ * half of a new one. Synchronous, because `dispose` writes on the way out and a promise there would
+ * be abandoned by the exit it is racing; the writes are seconds apart and a topic at most 500
+ * messages, so none of them is long.
+ */
+export function diskTranscriptStore(dir: string): TranscriptStore {
+  const file = (topicId: string): string => path.join(dir, `${topicId}.json`);
+  const failed = (what: string, e: unknown): void =>
+    console.error(`[webui] could not ${what}: ${e instanceof Error ? e.message : e}`);
+  return {
+    load() {
+      const out = new Map<string, Kept[]>();
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        return out;
+      }
+      for (const name of names) {
+        const m = /^([0-9a-f]{8})\.json$/.exec(name);
+        if (!m?.[1]) continue;
+        try {
+          const raw: unknown = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+          const kept = Array.isArray(raw) ? raw.map(parseKept).filter((k): k is Kept => k !== null) : [];
+          if (kept.length) out.set(m[1], kept);
+        } catch (e) {
+          failed(`read the kept transcript ${name}`, e);
+        }
+      }
+      return out;
+    },
+    save(topicId, messages) {
+      const tmp = `${file(topicId)}.tmp`;
+      try {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(tmp, JSON.stringify(messages), { mode: 0o600 });
+        fs.renameSync(tmp, file(topicId));
+      } catch (e) {
+        failed(`keep the transcript of ${topicId}`, e);
+      }
+    },
+    drop(topicId) {
+      try {
+        fs.rmSync(file(topicId), { force: true });
+      } catch (e) {
+        failed(`forget the transcript of ${topicId}`, e);
+      }
+    },
+  };
+}
+
+/**
+ * One kept message, or null. Rebuilt field by field rather than trusted whole: the file is this
+ * daemon's own and `0600`, but what comes out of it goes straight to the page as markup, so only
+ * the fields `WebMessage` has, of the types it has them, are carried across.
+ */
+function parseKept(value: unknown): Kept | null {
+  if (!value || typeof value !== 'object') return null;
+  const { msg, text } = value as { msg?: Record<string, unknown>; text?: unknown };
+  if (!msg || typeof text !== 'string') return null;
+  const { id, own, html, at, g, reactions, quote, file, nonce, kind } = msg;
+  if (typeof id !== 'string' || typeof html !== 'string' || typeof at !== 'number' || typeof g !== 'number') return null;
+  const q = quote as { html?: unknown } | undefined;
+  const f = file as { name?: unknown; url?: unknown; image?: unknown } | undefined;
+  return {
+    text,
+    msg: {
+      id,
+      own: own === true,
+      html,
+      at,
+      g,
+      buttons: [],
+      reactions: Array.isArray(reactions) ? reactions.filter((r): r is string => typeof r === 'string') : [],
+      ...(typeof q?.html === 'string' ? { quote: { html: q.html } } : {}),
+      ...(typeof f?.name === 'string' && typeof f.url === 'string'
+        ? { file: { name: f.name, url: f.url, ...(f.image === true ? { image: true } : {}) } }
+        : {}),
+      ...(typeof nonce === 'string' ? { nonce } : {}),
+      ...(kind === 'tools' ? { kind: 'tools' as const } : {}),
     },
   };
 }

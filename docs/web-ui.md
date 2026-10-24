@@ -159,7 +159,9 @@ means nobody opens the page at all.
 ## What to expect
 
 Everyone who knows the token shares the same topics. And a daemon restart does not replay
-what was said: the daemon keeps the transcript in memory, while the agent's session is on
-disk. The browser keeps a copy of its own, so a topic you have opened before still shows its
-messages after a restart — above a divider saying where they came from — and the agent
-carries on below them with its context intact.
+what was said in most topics: the daemon keeps the transcript in memory, while the agent's
+session is on disk. The browser keeps a copy of its own, so a topic you have opened before still
+shows its messages after a restart — above a divider saying they are from before it — and the
+agent carries on below them with its context intact. A **starred** topic (☆ in the sidebar) is
+kept by the daemon too, on its own disk, so it comes back after a restart or a container rebuild
+in every browser, including one that never opened it.

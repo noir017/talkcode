@@ -988,7 +988,7 @@ const SCRIPT = `
   }
 
   function upsert(m){
-    m._g = epoch;
+    m._g = m.g || epoch;
     var stick=atBottom();
     var key = keyOf(m);
     data[key]=m; paint(key); syncEmptyNote(); if(stick) toBottom();
@@ -1030,7 +1030,9 @@ const SCRIPT = `
     var keep={};
     for(var i=0;i<list.length;i++){
       var m=list[i];
-      m._g = epoch;
+      // A message a starred topic kept on disk from an earlier run says which run (g): it is that
+      // run's history, under the key this browser's cache already has it by.
+      m._g = m.g || epoch;
       claim(m);
       var key=keyOf(m);
       keep[key]=1;
@@ -1109,9 +1111,11 @@ const SCRIPT = `
    * restart leaves rows that open onto nothing. Rendered faithfully that is a blank panel, which
    * is indistinguishable from a page that failed to load — and is exactly how it was reported.
    */
-  var EMPTY_NOTE = 'This topic is older than the running daemon. Transcripts are kept in memory only,'
-    + ' so anything said in it is no longer here. The agent still has its context, so you can carry'
-    + ' on where you left off.';
+  // Says how to keep the next one, too: a starred topic's transcript is kept on the daemon's disk,
+  // so from 2.5.0 on this is a topic that was not starred when the daemon went down.
+  var EMPTY_NOTE = 'This topic is older than the running daemon, and only a starred topic keeps its'
+    + ' transcript across a restart, so anything said in it is no longer here. The agent still has'
+    + ' its context, so you can carry on where you left off.';
 
   function hasMessages(){
     for(var k in els) if(els.hasOwnProperty(k)) return true;
@@ -1134,15 +1138,15 @@ const SCRIPT = `
   }
 
   /**
-   * The line between what this browser remembers and what the daemon is actually serving.
+   * The line between what was said before the daemon restarted and what it is serving now.
    *
    * A transcript lives in the daemon's memory, so a restart takes it — but it does not take the
-   * conversation, which the agent still has, and it no longer takes what this page saw of it
-   * either. The messages above this line came back out of the local cache: they are real, they
-   * are just no longer anything the daemon can be asked about, which is why nothing up there has
-   * a button on it.
+   * conversation, which the agent still has, and it no longer takes what was on screen either. The
+   * messages above this line came back out of this browser's cache, or, in a starred topic, out of
+   * the daemon's own copy on disk: they are real, they are just no longer anything the process can
+   * be asked about, which is why nothing up there has a button on it.
    */
-  var DIVIDER_NOTE = 'Everything above came from this browser, kept from before the daemon restarted.'
+  var DIVIDER_NOTE = 'Everything above is from before the daemon restarted.'
     + ' The agent still has its context, so you can carry on below.';
   var dividerEl=null;
 
@@ -2723,7 +2727,7 @@ const SCRIPT = `
     delete outbox[m.nonce];
     dropUnsent(m.nonce);
     if(!els[pk]) return;
-    var key = epoch + ':' + m.id;
+    var key = (m.g || epoch) + ':' + m.id;
     if(els[key]){ els[pk].remove(); }
     else {
       els[key]=els[pk];
