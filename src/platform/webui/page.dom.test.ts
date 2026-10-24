@@ -1291,7 +1291,7 @@ describe('webui page: a composer per topic', () => {
     const first = await open({ url: `http://localhost:8787/?t=${A}` });
     await first.emit(sync(A, [], [A, B]));
     input(first).value = 'survives a reload';
-    // Typing alone writes nothing: storage is touched on the way out, not on every key.
+    // A key alone writes nothing: storage is touched on the way out, and once typing pauses.
     input(first).dispatchEvent(new first.window.Event('input', { bubbles: true }));
     expect(stored(first)).toBeNull();
 
@@ -1309,6 +1309,23 @@ describe('webui page: a composer per topic', () => {
     await again.click('#composer button[type="submit"]');
     // Sent, so gone — a reload now must not offer it for sending a second time.
     expect(stored(again)).toEqual({});
+  });
+
+  it('writes the draft down once typing pauses, for a page that goes away without a word', async () => {
+    // A renderer that crashes, or a phone that kills the tab in the foreground, fires no
+    // visibilitychange. That used to cost the whole draft; now it costs the last pause's worth.
+    const h = await open({ url: `http://localhost:8787/?t=${A}` });
+    await h.emit(sync(A, [], [A, B]));
+    const type = (s: string): void => {
+      input(h).value = s;
+      input(h).dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    };
+    type('half');
+    type('half a thought');
+    expect(stored(h)).toBeNull();
+
+    await within('the pause is written down', 3000, () => stored(h) !== null);
+    expect(stored(h)).toEqual({ [A]: 'half a thought' });
   });
 
   it('picks up its draft from the first sync when the visit named no topic', async () => {
@@ -1665,21 +1682,61 @@ describe('webui page: sending', () => {
     expect(h.painted()).toBe(0);
   });
 
-  it('keeps a failed message across a reload, offering what it can still honour', async () => {
-    // The body it would be retried with holds its attachments as base64 and is deliberately not
-    // written to the cache, so the reloaded page offers Copy and Discard and does not pretend it
-    // can re-send something it no longer has.
-    const h = await open({ url: 'http://localhost:8787/?t=a1b2c3d4', status: { 'api/send': 400 } });
-    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+  it('keeps a failed message across a reload, and can still retry one that was text alone', async () => {
+    // A text-only body is rebuilt from what was written down, nonce and all — so a Retry of one that
+    // did land after all is answered as the duplicate it is rather than posted twice.
+    const T = 'a1b2c3d4';
+    const h = await open({ url: `http://localhost:8787/?t=${T}`, status: { 'api/send': 400 } });
+    await h.emit(sync(T, [], [T]));
     (h.el('input') as HTMLTextAreaElement).value = 'do not lose this';
     await h.click('#composer button[type="submit"]');
     await until('the failure is drawn', () => h.doc.querySelector('.m.failed') !== null);
-    await saved();
+    const nonce = h.calls.find((c) => c.path === 'api/send')?.body.nonce;
+    const storage = { aa_unsent: h.window.localStorage.getItem('aa_unsent')! };
+    h.window.close();
 
-    const again = await open({ url: 'http://localhost:8787/?t=a1b2c3d4', idb: h.idb });
+    const again = await open({ url: `http://localhost:8787/?t=${T}`, idb: h.idb, storage });
 
-    await until('the failure is restored', () => again.doc.querySelector('.m.failed') !== null);
+    // Before the stream has said anything: it is this browser's, not the daemon's.
+    expect(again.doc.querySelector('.m.failed')).not.toBeNull();
     expect(again.el('log').textContent).toContain('do not lose this');
+    await again.emit(sync(T, [], [T]));
+    expect(again.el('log').textContent).toContain('Not delivered');
+    expect(again.doc.querySelector('[data-copy]')).not.toBeNull();
+    expect(again.doc.querySelector('[data-discard]')).not.toBeNull();
+
+    await again.click('[data-retry]');
+    expect(again.calls.filter((c) => c.path === 'api/send').map((c) => c.body)).toEqual([
+      { topic: T, text: 'do not lose this', nonce },
+    ]);
+    expect(again.doc.querySelector('.m.failed')).toBeNull();
+    // The daemon has it now, so the next reload must not offer it again.
+    expect(again.window.localStorage.getItem('aa_unsent')).toBeNull();
+  });
+
+  it('offers no Retry after a reload for a message that carried a file it no longer has', async () => {
+    // The file was base64 in a request body and is deliberately not written down; the text alone
+    // would be a different message.
+    const T = 'a1b2c3d4';
+    const h = await open({ url: `http://localhost:8787/?t=${T}`, status: { 'api/send': 400 } });
+    await h.emit(sync(T, [], [T]));
+    const file = new h.window.File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
+    const ev = new h.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'clipboardData', { value: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }] } });
+    h.el('input').dispatchEvent(ev);
+    await until('the chip is rendered', () => chipNames(h).length === 1);
+    (h.el('input') as HTMLTextAreaElement).value = 'about this screenshot';
+    await h.click('#composer button[type="submit"]');
+    await until('the failure is drawn', () => h.doc.querySelector('.m.failed') !== null);
+    expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
+    const storage = { aa_unsent: h.window.localStorage.getItem('aa_unsent')! };
+    h.window.close();
+
+    const again = await open({ url: `http://localhost:8787/?t=${T}`, idb: h.idb, storage });
+    await again.emit(sync(T, [], [T]));
+
+    expect(again.el('log').textContent).toContain('about this screenshot');
+    expect(again.el('log').textContent).toContain('pasted-1.png');
     expect(again.doc.querySelector('[data-retry]')).toBeNull();
     expect(again.doc.querySelector('[data-copy]')).not.toBeNull();
     expect(again.doc.querySelector('[data-discard]')).not.toBeNull();
@@ -1760,6 +1817,225 @@ describe('webui page: sending', () => {
     expect(h.calls.filter((c) => c.path === 'api/send')).toHaveLength(0);
   });
 });
+
+/**
+ * What a connection that goes away mid-send costs, which should be nothing of what was typed.
+ *
+ * The three ways it used to cost the message, each reproduced before the fix: a reload while the
+ * send was still in flight (gone — it was in no store at all); a reload after it had failed (back
+ * from the transcript cache, but sorted above the whole topic by the first sync, which on a long
+ * topic is as good as gone); and a switch to another topic while it was in flight, after which it
+ * failed with no bubble left to turn red. A Cloudflare Access session expiring is the everyday case:
+ * every request is redirected to its sign-in page, the send fails, and only a reload gets back in.
+ */
+describe('webui page: a message the daemon never acknowledged', () => {
+  const T = 'a1b2c3d4';
+  const at = `http://localhost:8787/?t=${T}`;
+  const input = (h: Harness): HTMLTextAreaElement => h.el('input') as HTMLTextAreaElement;
+  const unsent = (h: Harness): Record<string, { t: string; x: string; s: string }> | null =>
+    JSON.parse(h.window.localStorage.getItem('aa_unsent') ?? 'null');
+  const nonceOf = (h: Harness): string => h.calls.find((c) => c.path === 'api/send')?.body.nonce as string;
+  /** What is on screen, top to bottom: a message's text, or FAILED for an undelivered one. */
+  const order = (h: Harness): string[] =>
+    Array.from(h.el('log').querySelectorAll(':scope > .m')).map((n) =>
+      n.classList.contains('failed') ? 'FAILED' : (n.querySelector('.b')?.textContent ?? '')
+    );
+
+  /** Type, press Send, and close the page with the request still unanswered. */
+  const sendAndLeave = async (
+    messages: Array<Record<string, unknown>>
+  ): Promise<{ nonce: string; idb: IDBFactory | null; storage: Record<string, string> }> => {
+    const h = await open({ url: at, hang: ['api/send'] });
+    await h.emit(sync(T, messages, [T]));
+    await saved();
+    input(h).value = 'on its way';
+    await h.click('#composer button[type="submit"]');
+    expect(h.doc.querySelector('.m.pending')).not.toBeNull();
+    const nonce = nonceOf(h);
+    // What a reload finds: written down before the request left, not when it settled.
+    expect(unsent(h)?.[nonce]).toMatchObject({ t: T, x: 'on its way', s: 'sending' });
+    const storage = { aa_unsent: h.window.localStorage.getItem('aa_unsent')! };
+    h.window.close();
+    return { nonce, idb: h.idb, storage };
+  };
+
+  it('writes a message down before the request leaves, and forgets it once the daemon has it', async () => {
+    const h = await open({ url: at });
+    await h.emit(sync(T, [], [T]));
+    input(h).value = 'ship it';
+
+    // Not awaited: the record has to exist while the request is still on its way.
+    h.doc.querySelector<HTMLElement>('#composer button[type="submit"]')!.click();
+    expect(Object.values(unsent(h) ?? {})).toEqual([expect.objectContaining({ x: 'ship it', s: 'sending' })]);
+
+    await tick();
+    expect(unsent(h)).toBeNull();
+  });
+
+  it('brings back a send still in flight at a reload, and lets the sync say it arrived', async () => {
+    const earlier = message('m1', '<p>earlier</p>');
+    const { nonce, idb, storage } = await sendAndLeave([earlier]);
+
+    const h = await open({ url: at, idb, storage });
+    // Nothing this page saw can say how that request ended, and it does not pretend to.
+    expect(h.el('log').textContent).toContain('on its way');
+    expect(h.el('log').textContent).toContain('Not confirmed');
+
+    // The daemon did get it: its ring carries the echo, which takes the bubble over.
+    await h.emit(sync(T, [earlier, { ...message('m2', '<div class="raw">on its way</div>', true), nonce }], [T]));
+    expect(h.painted()).toBe(2);
+    expect(h.doc.querySelector('.m.failed')).toBeNull();
+    expect(unsent(h)).toBeNull();
+  });
+
+  it('says a send in flight at a reload never arrived when the same daemon has no echo of it', async () => {
+    const { nonce, idb, storage } = await sendAndLeave([]);
+
+    const h = await open({ url: at, idb, storage });
+    await h.emit(sync(T, [], [T]));
+
+    expect(h.el('log').textContent).toContain('Not delivered');
+    expect(unsent(h)?.[nonce]?.s).toBe('failed');
+    await h.click('[data-retry]');
+    expect(h.calls.find((c) => c.path === 'api/send')?.body).toEqual({ topic: T, text: 'on its way', nonce });
+  });
+
+  it('goes on saying it does not know when the daemon has restarted since', async () => {
+    // A restarted daemon starts with an empty ring, so the echo being absent proves nothing.
+    const { idb, storage } = await sendAndLeave([]);
+
+    const h = await open({ url: at, idb, storage });
+    await h.emit(sync(T, [], [T], { epoch: 2, stale: true }));
+
+    expect(h.el('log').textContent).toContain('Not confirmed');
+    expect(h.el('log').textContent).not.toContain('Not delivered');
+    expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
+  });
+
+  it('keeps a restored failure under the transcript, where the reader lands, not above it', async () => {
+    const msgs = [message('m1', '<p>one</p>'), message('m2', '<p>two</p>')];
+    const first = await open({ url: at, status: { 'api/send': 400 } });
+    await first.emit(sync(T, msgs, [T]));
+    input(first).value = 'do not lose this';
+    await first.click('#composer button[type="submit"]');
+    await until('the failure is drawn', () => first.doc.querySelector('.m.failed') !== null);
+    await saved();
+    const storage = { aa_unsent: first.window.localStorage.getItem('aa_unsent')! };
+    first.window.close();
+
+    const h = await open({ url: at, idb: first.idb, storage });
+    await until('the cached transcript is painted', () => h.painted() === 3);
+    expect(order(h)).toEqual(['one', 'two', 'FAILED']);
+
+    await h.emit(sync(T, msgs, [T]));
+    expect(order(h)).toEqual(['one', 'two', 'FAILED']);
+  });
+
+  it('keeps a send that fails after its topic was switched away from', async () => {
+    const A = T;
+    const B = 'b2c3d4e5';
+    const h = await open({ url: at, hang: ['api/send'], shortenLong: true });
+    await h.emit(sync(A, [], [A, B]));
+    input(h).value = 'sent, then switched away from';
+    await h.click('#composer button[type="submit"]');
+    const nonce = nonceOf(h);
+
+    await h.click(`[data-topic="${B}"]`);
+    await h.emit(sync(B, [], [A, B]));
+    expect(h.el('log').textContent).not.toContain('sent, then switched away from');
+    await within('the send gives up', 5000, () => unsent(h)?.[nonce]?.s === 'failed');
+
+    await h.click(`[data-topic="${A}"]`);
+    expect(h.el('log').textContent).toContain('sent, then switched away from');
+    await h.emit(sync(A, [], [A, B]));
+    expect(h.doc.querySelector('.m.failed')).not.toBeNull();
+    expect(h.doc.querySelector('[data-retry]')).not.toBeNull();
+  });
+
+  it('lets a sync claim the local bubble, not only a msg event', async () => {
+    // A reconnect the backlog no longer reaches is answered with a full sync, and the echo of a send
+    // made just before it is in there rather than in a msg event. It used to leave both on screen.
+    const h = await open({ url: at, hang: ['api/send'] });
+    await h.emit(sync(T, [], [T]));
+    input(h).value = 'ship it';
+    await h.click('#composer button[type="submit"]');
+    const nonce = nonceOf(h);
+
+    await h.emit(sync(T, [{ ...message('w1', '<div class="raw">ship it</div>', true), nonce }], [T]));
+
+    expect(h.painted()).toBe(1);
+    expect(h.doc.querySelector('.m.pending')).toBeNull();
+    expect(unsent(h)).toBeNull();
+    h.window.close();
+  });
+
+  it('forgets an unsent message once it is discarded, and with its topic', async () => {
+    const B = 'b2c3d4e5';
+    const h = await open({ url: at, status: { 'api/send': 400 } });
+    await h.emit(sync(T, [], [T, B]));
+    input(h).value = 'first';
+    await h.click('#composer button[type="submit"]');
+    input(h).value = 'second';
+    await h.click('#composer button[type="submit"]');
+    await until('both fail', () => h.doc.querySelectorAll('.m.failed').length === 2);
+    expect(Object.keys(unsent(h) ?? {})).toHaveLength(2);
+
+    await h.click('[data-discard]');
+    expect(Object.values(unsent(h) ?? {}).map((r) => r.x)).toEqual(['second']);
+
+    await h.click(`[data-del="${T}"]`);
+    await until('the topic is forgotten', () => unsent(h) === null);
+  });
+
+  it('moves a failure an older page kept in the transcript cache into its own store', async () => {
+    // Before this store existed a failed message was written into the cache, which no longer
+    // carries local messages — so without the move, the next write of the cache would lose it.
+    const first = await open({ url: at });
+    await first.emit(sync(T, [message('m1', '<p>one</p>')], [T]));
+    await saved();
+    first.window.close();
+    const legacy = {
+      id: 'p:oldnonce', _local: 1, _nonce: 'oldnonce', _state: 'failed', _text: 'from an older page', own: true,
+      html: '<div class="raw">from an older page</div><div class="files"><span class="chip">a.txt</span></div>',
+      at: 1, buttons: [], reactions: [],
+    };
+    await writeCache(first.idb, T, [...((await first.cached(T)) ?? []), legacy]);
+
+    const h = await open({ url: at, idb: first.idb });
+    await until('the failure is restored', () => h.doc.querySelector('.m.failed') !== null);
+    expect(unsent(h)?.oldnonce).toMatchObject({ t: T, x: 'from an older page', s: 'failed' });
+    await h.emit(sync(T, [message('m1', '<p>one</p>')], [T]));
+    await saved();
+    expect((await h.cached(T))?.map((m) => m.id)).toEqual(['m1']);
+    // It had a file, which nothing kept.
+    expect(h.doc.querySelector('[data-retry]')).toBeNull();
+    const storage = { aa_unsent: h.window.localStorage.getItem('aa_unsent')! };
+    h.window.close();
+
+    const again = await open({ url: at, idb: first.idb, storage });
+    await again.emit(sync(T, [message('m1', '<p>one</p>')], [T]));
+    expect(again.el('log').textContent).toContain('from an older page');
+  });
+});
+
+/** Overwrite one topic's cached transcript, the way an older page would have written it. */
+function writeCache(idb: IDBFactory | null, topic: string, list: Array<Record<string, unknown>>): Promise<void> {
+  if (!idb) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const rq = idb.open('aa_cache', 1);
+    rq.onerror = () => reject(rq.error);
+    rq.onsuccess = () => {
+      const db = rq.result;
+      const t = db.transaction('topics', 'readwrite');
+      t.objectStore('topics').put({ topic, at: Date.now(), json: JSON.stringify(list) });
+      t.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      t.onerror = () => reject(t.error);
+    };
+  });
+}
 
 /**
  * Stop (beside Send) and the power button (beside the title) — `/stop` and `/kill` on a tap.

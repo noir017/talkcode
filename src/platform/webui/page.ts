@@ -640,17 +640,17 @@ const SCRIPT = `
    * what it holds is already the union of cached history and what the daemon has since sent,
    * which is exactly what the next reload should get back.
    *
-   * A local message is included only once it has FAILED. One still in flight is a question this
-   * tab alone can answer, and restoring it after a reload would either duplicate a message the
-   * daemon did receive or claim one was lost that was not.
+   * A local message is never included. Everything this page has sent and not had acknowledged is
+   * written to localStorage the moment it is sent (see unsent), which a write coalesced into a
+   * 400ms window of an asynchronous database could not promise: a reload in that window used to
+   * lose a send still in flight outright.
    */
   function cacheable(){
     var out=[];
     for(var n=log.firstChild; n; n=n.nextSibling){
       var k = n.getAttribute ? n.getAttribute('data-k') : null;
       var m = k ? data[k] : null;
-      if(!m) continue;
-      if(m._local && m._state !== 'failed') continue;
+      if(!m || m._local) continue;
       out.push(m);
     }
     return out;
@@ -861,7 +861,7 @@ const SCRIPT = `
     var hist = isHistory(m);
     var cls = 'm' + (m.own ? ' own' : '') + (hist ? ' hist' : '')
       + (m._local && m._state === 'sending' ? ' pending' : '')
-      + (m._local && m._state === 'failed' ? ' failed' : '');
+      + (stuck(m) ? ' failed' : '');
     var h='';
     var tools = m.kind === 'tools';
     if(m.quote && m.quote.html) h += '<div class="q">'+m.quote.html+'</div>';
@@ -885,7 +885,7 @@ const SCRIPT = `
       }
       h += '</div>';
     }
-    if(m._local && m._state === 'failed') h += failedActions(m);
+    if(stuck(m)) h += failedActions(m);
     var meta = clock(m.at) + (m.reactions && m.reactions.length ? '  '+m.reactions.join(' ') : '');
     h += '<div class="t">'+text(meta)+(tools ? allToggle(key) : '')+'</div>';
     // Write nothing when nothing changed. A sync re-paints every message it carries, and most of
@@ -964,13 +964,24 @@ const SCRIPT = `
   /**
    * What a message that never reached the daemon offers instead of silence.
    *
-   * Retry is only there while this tab still holds the body it would re-send — the attachments
-   * in it are base64 and deliberately never written to the cache, so a failed message restored
-   * after a reload offers Copy and Discard alone. Re-sending the text without the files it was
-   * written about would be a different message.
+   * Retry is there whenever this page can rebuild exactly what was sent: always for a message
+   * typed in this tab, and after a reload for one that was text alone. A message that carried
+   * files offers Copy and Discard alone once the page has been reloaded — the files were base64 in
+   * a request body and deliberately never written down, and re-sending the text without the files
+   * it was written about would be a different message.
+   *
+   * 'unsure' is a message that was still on its way when the last page went away, so nothing here
+   * saw how it ended. The first sync settles it: carrying its echo, it is claimed like any other;
+   * not carrying it, from the same daemon, it never arrived. Until then — and for good, when the
+   * daemon has restarted since and its ring cannot say — it says it does not know.
    */
+  function stuck(m){ return Boolean(m._local) && (m._state === 'failed' || m._state === 'unsure'); }
+
   function failedActions(m){
-    var h = '<div class="warn">Not delivered — the agent never saw this.</div><div class="acts">';
+    var why = m._state === 'unsure'
+      ? 'Not confirmed — the page closed before the daemon answered, so this may not have arrived.'
+      : 'Not delivered — the agent never saw this.';
+    var h = '<div class="warn">'+why+'</div><div class="acts">';
     if(outbox[m._nonce]) h += '<button type="button" data-retry="'+text(m._nonce)+'">Retry</button>';
     return h + '<button type="button" data-copy="'+text(m._nonce)+'">Copy</button>'
       + '<button type="button" data-discard="'+text(m._nonce)+'">Discard</button></div>';
@@ -1005,6 +1016,11 @@ const SCRIPT = `
    * a daemon that is not on the other end of this stream, and a local message still waiting on
    * its POST was never the server's to know about; both would otherwise vanish the moment the
    * connection blipped.
+   *
+   * A local message whose echo the sync carries is claimed here, exactly as a msg event claims
+   * one. Only msg events used to, so an echo that arrived in a full sync instead — a reconnect the
+   * backlog no longer reached, a reload — left the local copy on screen beside it, and one restored
+   * after a reload could never be told it had arrived.
    */
   function reconcile(list){
     clearSkeleton();
@@ -1015,6 +1031,7 @@ const SCRIPT = `
     for(var i=0;i<list.length;i++){
       var m=list[i];
       m._g = epoch;
+      claim(m);
       var key=keyOf(m);
       keep[key]=1;
       data[key]=m;
@@ -1029,6 +1046,31 @@ const SCRIPT = `
       gone.push(k);
     }
     for(var j=0;j<gone.length;j++) drop(gone[j]);
+    sinkLocals();
+  }
+
+  /**
+   * Put every message still waiting on the daemon under the transcript, in the order it was sent.
+   *
+   * The loop above appends each message the sync carries, which MOVES it to the end — so anything
+   * it does not carry ends up above all of them. For cached history that is the point. For a
+   * local message it put a failure restored after a reload at the head of the topic, above every
+   * message the reader lands below, which on a long topic is indistinguishable from having lost
+   * it. A message nobody has acknowledged is the newest thing in the room and waits where the
+   * composer is. Nothing moves when they are already there, so a sync with nothing pending, which
+   * is nearly all of them, re-runs no entrance animation.
+   */
+  function sinkLocals(){
+    var mine=[], tail=0, other=false;
+    for(var n=log.lastChild; n; n=n.previousSibling){
+      if(n === syncingEl) continue;
+      var k = n.getAttribute ? n.getAttribute('data-k') : null;
+      if(k && data[k] && data[k]._local){ mine.unshift(n); if(!other) tail++; }
+      else other = true;
+    }
+    if(tail === mine.length) return;
+    var at = (syncingEl && syncingEl.parentNode === log) ? syncingEl : null;
+    for(var i=0;i<mine.length;i++) log.insertBefore(mine[i], at);
   }
 
   /**
@@ -1198,18 +1240,23 @@ const SCRIPT = `
     // Captured once: every history node goes in front of the same first live message, which is
     // what keeps them in the order they were said rather than reversing them.
     var anchor = synced ? log.firstChild : null;
+    var moved = false;
     for(var i=0;i<list.length;i++){
       var m=list[i];
       if(!m || !m.id) continue;
-      // A cached local message is a message that failed to send; nothing else is written. The
-      // body it would be retried with is not on this side of a reload, so it offers Copy alone.
-      if(m._local) m._state = 'failed';
+      if(m._local){ moved = adoptLegacy(m) || moved; continue; }
       var key = keyOf(m);
       if(data[key] || els[key]) continue;
-      if(synced && !m._local && !isHistory(m)) continue;
+      if(synced && !isHistory(m)) continue;
       data[key]=m;
-      paint(key, (synced && !m._local) ? anchor : null);
+      paint(key, synced ? anchor : null);
     }
+    // Painted only now, and the cache rewritten without them: from here on unsent is their home.
+    if(moved){ showUnsent(topic); cacheSave(); }
+    // Before the waiting line goes in. Before the first sync the cache is appended under whatever is
+    // already on screen, and that includes the messages restored from unsent, which belong under
+    // all of it.
+    sinkLocals();
     placeDivider();
     syncEmptyNote();
     // Last, so it is last in the log: what the sync may still add goes under what the cache had.
@@ -1460,6 +1507,9 @@ const SCRIPT = `
     // why the placeholders go in regardless.
     showSkeleton();
     restore(id);
+    // What was sent into this topic and not acknowledged — including a send still in flight from
+    // before the switch, whose bubble went with the transcript it was in.
+    showUnsent(id);
     connect();
   }
 
@@ -1651,7 +1701,11 @@ const SCRIPT = `
       // that reconcile performs already know whether an emptied log needs explaining.
       stale = Boolean(ev.stale);
       repaintHistory();
+      // Before the reconcile, which claims any of them whose echo this sync turns out to carry. A
+      // visit that named no topic learns only now which ones are its own.
+      showUnsent(topic);
       reconcile(ev.messages);
+      settleUnsure();
       placeDivider();
       syncEmptyNote();
       cacheSave();
@@ -1906,6 +1960,14 @@ const SCRIPT = `
       for(id in all){ if(!keep[id]) delete all[id]; else left++; }
       if(left) localStorage.setItem(DRAFTS, JSON.stringify(all)); else localStorage.removeItem(DRAFTS);
     } catch(x){}
+    // And what was sent into those rooms and never arrived: there is no longer anywhere to send it.
+    for(var n in unsent) if(Object.prototype.hasOwnProperty.call(unsent, n) && !keep[unsent[n].t]) delete unsent[n];
+    try {
+      var out = JSON.parse(localStorage.getItem(UNSENT) || 'null') || {};
+      var kept = 0;
+      for(n in out){ if(!(out[n] && keep[out[n].t])) delete out[n]; else kept++; }
+      if(kept) localStorage.setItem(UNSENT, JSON.stringify(out)); else localStorage.removeItem(UNSENT);
+    } catch(x){}
     for(id in termFrames){
       if(Object.prototype.hasOwnProperty.call(termFrames, id) && !keep[id]) dropTerm(id);
     }
@@ -2067,17 +2129,20 @@ const SCRIPT = `
    * The text is written through to localStorage, so a reload does not cost it either. Files are
    * not: they are base64, and a failed message cannot be retried after a reload for the same reason.
    *
-   * Written when a topic is left, when a message is sent and when the page is hidden — never per
-   * keystroke. visibilitychange is the last event every way out of a page reliably fires (another
-   * tab, the app backgrounded, the window closed), so nothing typed is still only in memory by the
-   * time the browser is free to discard the page. A crash in the foreground can still cost a
-   * draft; a write per keystroke to avoid that is not a trade worth making in a text field.
+   * Written when a topic is left, when a message is sent and when the page is hidden, and once
+   * typing has paused for DRAFT_IDLE_MS — never per keystroke. visibilitychange is the last event
+   * every way out of a page reliably fires (another tab, the app backgrounded, the window closed),
+   * so nothing typed is still only in memory by the time the browser is free to discard the page.
+   * The pause is for the ways out that fire nothing at all: a renderer that crashes, a phone that
+   * kills the tab in the foreground. Those used to cost the whole draft; now they cost the last
+   * second of typing, for one small write per pause rather than one per key.
    */
   var DRAFTS='aa_drafts';
   // Past this a draft is kept in memory only. localStorage is one ~5MB budget for the origin, and a
   // pasted log that filled it would take down the writes of the read marks and the drawer state too.
   var DRAFT_MAX=64*1024;
-  var drafts={};
+  var DRAFT_IDLE_MS=1000;
+  var drafts={}, draftTimer=0;
   (function(){
     var saved=null;
     try { saved = JSON.parse(localStorage.getItem(DRAFTS) || 'null'); } catch(x){}
@@ -2111,6 +2176,8 @@ const SCRIPT = `
    * most switches, reads and writes nothing.
    */
   function stashDraft(id){
+    // Whatever was waiting on a pause in the typing is being done now, for the topic it was typed in.
+    clearTimeout(draftTimer); draftTimer=0;
     if(!id) return;
     var had = Boolean(drafts[id]);
     if(input.value || files.length)
@@ -2137,6 +2204,7 @@ const SCRIPT = `
   /** Everything this page remembers about one topic, for a topic that no longer exists. */
   function forget(id){
     delete views[id];
+    for(var n in unsent) if(Object.prototype.hasOwnProperty.call(unsent, n) && unsent[n].t === id) dropUnsent(n);
     if(!drafts[id]) return;
     delete drafts[id];
     writeDraft(id);
@@ -2144,7 +2212,7 @@ const SCRIPT = `
 
   /**
    * Forget the topics the list no longer carries — deleted here, in another tab, or by a clear.
-   * Storage is only touched for a topic that actually had a draft.
+   * Storage is only touched for a topic that actually had a draft or an unsent message.
    */
   function prune(){
     // An empty list is a list about to be replaced (the page creates a topic in answer), not an
@@ -2154,6 +2222,7 @@ const SCRIPT = `
     for(var i=0;i<topics.length;i++) known[topics[i].id]=1;
     for(id in views) if(!known[id]) delete views[id];
     for(id in drafts) if(!known[id]) forget(id);
+    for(id in unsent) if(Object.prototype.hasOwnProperty.call(unsent, id) && !known[unsent[id].t]) dropUnsent(id);
   }
 
   // The way out of the page, whichever it is. The hidden transition is "the last reliable time to
@@ -2330,20 +2399,136 @@ const SCRIPT = `
   });
 
   /**
-   * Sends that have not been acknowledged, by nonce.
+   * The request bodies of sends that have not been acknowledged, by nonce — what Retry re-posts.
    *
-   * In memory only, and that is the whole reason Retry disappears across a reload: the body in
-   * here carries the attachments as base64, which is not something to write into a cache meant
-   * to hold a transcript. Re-sending the text without the files it was written about would be a
-   * different message, so a restored failure offers Copy instead of pretending otherwise.
+   * In memory only: the body carries the attachments as base64, which is not something to write
+   * into localStorage. What IS written down is the message itself, in unsent below; a text-only
+   * body is rebuilt from that after a reload, so only a message that carried files loses its Retry.
    */
   var outbox = {};
 
   /**
+   * Every message sent from this page that the daemon has not acknowledged, by nonce, written
+   * through to localStorage at the moment it is sent — before the request leaves, and before the
+   * composer's draft is cleared, so there is no instant at which the text is in neither place.
+   *
+   * This is what a connection that goes away mid-send costs nothing of. A Cloudflare Access session
+   * that expires answers every request with a redirect to its sign-in page, so the send fails, the
+   * stream cannot reconnect, and the only way back is a reload; a dead link is the same with a grey
+   * bubble instead of a red one. Before this the bubble was all there was of the message: one still
+   * in flight at the reload was gone, and one that had failed came back from the transcript cache
+   * only to be sorted above the whole topic by the first sync. And a send still in flight when the
+   * topic was switched away from failed with no bubble left to turn red.
+   *
+   * A record goes when the daemon has it — a 2xx, or its echo, in an event or in a sync — or when
+   * it is discarded, or its topic is. { t: topic, x: text, n: file names, at, s: 'sending' |
+   * 'failed' | 'unsure', g: the daemon's epoch when it was sent }. Text over DRAFT_MAX is kept in
+   * memory only, for the same reason a draft that long is.
+   */
+  var UNSENT='aa_unsent';
+  var unsent={};
+  (function(){
+    var saved=null;
+    try { saved = JSON.parse(localStorage.getItem(UNSENT) || 'null'); } catch(x){}
+    if(!saved || typeof saved !== 'object') return;
+    for(var n in saved){
+      var r = saved[n];
+      if(!Object.prototype.hasOwnProperty.call(saved, n) || !r || typeof r.t !== 'string' || typeof r.x !== 'string') continue;
+      // Anything not known to have failed was on its way when the last page went away, and nothing
+      // that page saw can say how that ended. The first sync can.
+      unsent[n] = {t:r.t, x:r.x, n:Array.isArray(r.n) ? r.n.map(String) : [], at:Number(r.at) || 0,
+        s:r.s === 'failed' ? 'failed' : 'unsure', g:Number(r.g) || 0};
+    }
+  })();
+
+  /**
+   * Write one record through, leaving every other one as it is ON DISK — a second tab on this origin
+   * has sends of its own, and its record must not be put back after it has been acknowledged there.
+   */
+  function writeUnsent(nonce){
+    try {
+      var all = JSON.parse(localStorage.getItem(UNSENT) || 'null') || {};
+      var r = unsent[nonce];
+      if(r && r.x.length <= DRAFT_MAX) all[nonce] = r;
+      else if(Object.prototype.hasOwnProperty.call(all, nonce)) delete all[nonce];
+      else return;
+      var left = false;
+      for(var k in all) if(Object.prototype.hasOwnProperty.call(all, k)){ left = true; break; }
+      if(left) localStorage.setItem(UNSENT, JSON.stringify(all)); else localStorage.removeItem(UNSENT);
+    } catch(x){}
+  }
+
+  function dropUnsent(nonce){
+    if(!unsent[nonce]) return;
+    delete unsent[nonce];
+    writeUnsent(nonce);
+  }
+
+  /** The bubble for one record, in the shape dispatch draws one. */
+  function localMsg(nonce, r){
+    return { id:'p:'+nonce, _local:1, _nonce:nonce, _state:r.s, _text:r.x,
+      own:true, html:localBody(r.x, r.n), at:r.at, buttons:[], reactions:[] };
+  }
+
+  /**
+   * Draw what was sent into this topic and not acknowledged, oldest first, where it is not drawn
+   * already. A text-only one gets its body back, which is all Retry needs; nonce and all, so a Retry
+   * of one that did land is answered as the duplicate it is.
+   */
+  function showUnsent(tId){
+    var list=[];
+    for(var n in unsent){
+      if(Object.prototype.hasOwnProperty.call(unsent, n) && unsent[n].t === tId && !data['p:'+n]) list.push(n);
+    }
+    if(!list.length) return;
+    list.sort(function(a, b){ return unsent[a].at - unsent[b].at; });
+    var stick = atBottom();
+    for(var i=0;i<list.length;i++){
+      var r = unsent[list[i]];
+      if(!outbox[list[i]] && !r.n.length) outbox[list[i]] = {topic:r.t, text:r.x, nonce:list[i]};
+      data['p:'+list[i]] = localMsg(list[i], r);
+      paint('p:'+list[i]);
+    }
+    sinkLocals();
+    syncEmptyNote();
+    if(stick) toBottom();
+  }
+
+  /**
+   * After a sync: a message restored as 'unsure' that it did not claim never arrived — provided the
+   * daemon that answered is the one it was sent to. A restarted one starts with an empty ring, so
+   * its silence says nothing, and the message goes on saying it does not know.
+   */
+  function settleUnsure(){
+    for(var n in unsent){
+      if(!Object.prototype.hasOwnProperty.call(unsent, n)) continue;
+      var r = unsent[n];
+      if(r.t === topic && r.s === 'unsure' && r.g && r.g === epoch) setLocal(n, 'failed');
+    }
+  }
+
+  /**
+   * A failure out of a transcript cache written before unsent existed, when the cache was where a
+   * failed message was kept. Moved here, because the cache no longer carries local messages and the
+   * next write of it would otherwise lose this one a reload later.
+   */
+  function adoptLegacy(m){
+    var n = m._nonce;
+    if(!n || unsent[n]) return false;
+    var t = document.createElement('template');
+    t.innerHTML = String(m.html || '');
+    var chips = t.content.querySelectorAll('.files .chip'), names = [];
+    for(var i=0;i<chips.length;i++) names.push(chips[i].textContent);
+    unsent[n] = {t:topic, x:String(m._text || ''), n:names, at:Number(m.at) || 0, s:'failed', g:0};
+    writeUnsent(n);
+    return true;
+  }
+
+  /**
    * The same shape renderBody builds server-side, minus the pictures, so the echo can replace it in
    * place. The pictures arrive with the echo: they are served from the daemon's copy, and drawing
-   * them here would mean putting the whole file into this bubble as a data: URL — and this bubble
-   * is what goes into the transcript cache if the send fails.
+   * them here would mean putting the whole file into this bubble as a data: URL — which a bubble
+   * rebuilt from unsent after a reload could not do again, since unsent keeps names and never bytes.
    */
   function localBody(typed, names){
     var h = '<div class="raw">'+text(typed)+'</div>';
@@ -2367,10 +2552,11 @@ const SCRIPT = `
     if(!typed.trim() && !files.length) return;
     var attached = files;
     input.value=''; files=[]; renderChips(); suggest(); grow();
-    // The stored draft of this topic is what was just sent. Left on disk, a reload would put it
-    // back in the composer to be sent again.
-    stashDraft(topic);
+    // Dispatched first, because dispatch is what writes the message down as unsent. Only then is
+    // the stored draft of this topic cleared — left on disk, a reload would put it back in the
+    // composer to be sent again.
     dispatch(typed, attached);
+    stashDraft(topic);
   }
 
   /**
@@ -2392,8 +2578,9 @@ const SCRIPT = `
     for(var i=0;i<attached.length;i++) names.push(attached[i].name);
     if(attached.length) body.files = attached;
     outbox[nonce] = body;
-    data['p:'+nonce] = { id:'p:'+nonce, _local:1, _nonce:nonce, _state:'sending', _text:typed,
-      own:true, html:localBody(typed, names), at:Date.now(), buttons:[], reactions:[] };
+    unsent[nonce] = {t:topic, x:typed, n:names, at:Date.now(), s:'sending', g:epoch};
+    writeUnsent(nonce);
+    data['p:'+nonce] = localMsg(nonce, unsent[nonce]);
     paint('p:'+nonce);
     syncEmptyNote();
     // Unconditionally, unlike an arriving message: you have just written this one, so wherever
@@ -2428,6 +2615,15 @@ const SCRIPT = `
   }
 
   function setLocal(nonce, state){
+    // The record first, and whether or not the bubble is on screen: a send still in flight when its
+    // topic was switched away from settles here too, and the record is all that is left of it. A
+    // 2xx is the daemon holding the message, so from there on its ring is what has it. Only a
+    // change is written — a first attempt is already on disk as 'sending', put there by dispatch.
+    var r = unsent[nonce];
+    if(r && r.s !== state){
+      if(state === 'sent') delete unsent[nonce]; else r.s = state;
+      writeUnsent(nonce);
+    }
     var key='p:'+nonce, m=data[key];
     if(!m) return;
     // Measured before the repaint: a failure grows the bubble by a warning line and three
@@ -2437,9 +2633,6 @@ const SCRIPT = `
     m._state = state;
     paint(key);
     if(stick) toBottom();
-    // Only a failure is worth writing down. One still in flight is a question this tab alone can
-    // answer, and one that got through comes back as the daemon's own echo.
-    if(state === 'failed') cacheSave();
   }
 
   /**
@@ -2476,11 +2669,20 @@ const SCRIPT = `
 
   function discardLocal(nonce){
     delete outbox[nonce];
+    dropUnsent(nonce);
     drop('p:'+nonce);
+    // For a failure an older page kept in the transcript cache: rewritten without it, or the next
+    // read of the cache would bring it back.
     cacheSave();
   }
 
-  input.addEventListener('input', function(){ grow(); suggest(); });
+  input.addEventListener('input', function(){
+    grow(); suggest();
+    // Re-armed by every key, so it fires once typing pauses. stashDraft is what clears it, and every
+    // switch calls that for the topic being left, so this never lands on the wrong one.
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(function(){ stashDraft(topic); }, DRAFT_IDLE_MS);
+  });
   /**
    * Enter sends and Shift-Enter writes a newline — except under the narrow-screen layout, where
    * the two are the other way round.
@@ -2519,6 +2721,7 @@ const SCRIPT = `
     if(!m.nonce) return;
     var pk = 'p:' + m.nonce;
     delete outbox[m.nonce];
+    dropUnsent(m.nonce);
     if(!els[pk]) return;
     var key = epoch + ':' + m.id;
     if(els[key]){ els[pk].remove(); }
@@ -2542,6 +2745,9 @@ const SCRIPT = `
   // What was being typed into this topic before the reload. A visit with no ?t= does not know its
   // topic yet, and picks its draft up from the first sync.
   if(topic && drafts[topic]) loadDraft(topic);
+
+  // And what was sent from it and never acknowledged. The same holds for a visit with no ?t=.
+  showUnsent(topic);
 
   // Reopens the pane a reload arrived in, when ?t= already named a topic. Without one this
   // does nothing and the sync handler picks it up instead.

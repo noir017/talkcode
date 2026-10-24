@@ -61,6 +61,15 @@ seconds (longer for a big attachment, up to 5 minutes) it turns red with **Retry
 **Copy** and **Discard**. A message that is still grey after that has not left the
 browser.
 
+**Nothing you typed is lost to a dropped connection.** A message is written down in the
+browser the moment you send it and kept until the daemon has it, so a reload — including
+the one an expired Cloudflare Access session forces on you — brings it back under the
+conversation instead of losing it. If the page went away before the daemon answered, the
+message says it is not confirmed until the page has checked; if the daemon never got it,
+it turns red with **Retry**. Retry after a reload works for text; a message that carried
+files offers **Copy** and **Discard**, because the files themselves are not kept. The
+composer's draft is saved too, a second after you stop typing.
+
 ## Terminal
 
 Turned on, the chat header grows a `>_` button that

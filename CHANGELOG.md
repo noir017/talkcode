@@ -5,6 +5,30 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A prompt sent from the web UI is no longer lost when the connection goes away mid-send.** When
+  a Cloudflare Access session lapses, every request is answered with a redirect to its sign-in page
+  on another origin, so the send fails, the stream cannot reconnect, and a reload is the only way
+  back in — and the page lost messages to that reload in three ways. One still in flight at the
+  reload was in no store at all and was simply gone. One that had already failed came back from the
+  transcript cache, but the first sync sorted it above the whole topic, which on a long topic is as
+  good as gone. And one still in flight when you switched to another topic, if it then failed, had
+  no bubble left to turn red. Every send is now written to the browser's localStorage before the
+  request leaves, and kept until the daemon has it. After a reload it is back under the
+  conversation, where you land. If it was still in flight when the page went away it says it is not
+  confirmed, until the sync says whether it arrived. If it never did, it turns red with **Retry**,
+  which now works after a reload for anything that was text alone. A message that carried files
+  still offers Copy and Discard, since the files are not kept. Checked in jsdom and against the real
+  server in Chromium, through a proxy playing Cloudflare Access, a dead link, a lost answer and an
+  offline browser. It has not been run behind the real Access entrance.
+
+### Changed
+
+- **The web UI saves your draft once you stop typing for a second**, as well as when you leave the
+  topic or the page is hidden. Those two are the last events a page that goes away normally fires,
+  but a tab that crashes, or one a phone kills while it is on screen, fires neither, and that used to
+  cost the whole draft.
 ## [2.4.1] - 2026-10-21
 
 ### Fixed
