@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-10-27
+
 ### Fixed
 
 - **The web UI application icon (`icon.png`) is no longer truncated with a white bottom half.** The
