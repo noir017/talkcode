@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.5.2] - 2026-10-27
+
 ### Fixed
 
 - **agy's footer and the web UI's status strip show its context, model and quota again.** All three
