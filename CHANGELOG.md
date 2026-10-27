@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **agy's footer and the web UI's status strip show its context, model and quota again.** All three
+  used to come from agy's status line, which the daemon points at a shim that hands them back over a
+  pipe. agy 1.4.7 stopped running the status line in headless `-p` runs — the only mode its
+  stream-json protocol works in — so from that upgrade on, every agy reply carried just the agent's
+  name, and the strip lost its context bar and quota pools. The same release started reporting each
+  model step's token count in the stream, and that is now where the context comes from. It is the
+  step's count, with the cached part added back (agy leaves it out, so a Claude turn that hit the
+  cache read as a few hundred tokens), and not the one in agy's `result`, which is a running total over the whole
+  conversation and would have climbed past the window in a conversation that never came near it.
+  agy still names no window size, so the window is looked up from the ones measured off its own TUI
+  status line (Gemini, Claude Sonnet/Opus 4.6, GPT-OSS 120B); any other model shows no context
+  numbers rather than a guessed percentage. The quota pools, and agy's default model when none is
+  configured, are fetched with `agy -p=/usage` and `agy -p=/model` while the turn runs. Each takes
+  about three seconds, so the quota is asked at most once a minute, and it comes in whole
+  percentages, which is all that command prints. An agy older than 1.4.7 still reports through the
+  status line, and the shim is still installed for it and for your own interactive agy.
+
 ## [2.5.1] - 2026-10-27
 
 ### Fixed

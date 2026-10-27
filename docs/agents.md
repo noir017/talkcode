@@ -30,15 +30,21 @@ other than its session:
   so the daemon answers those eleven names with a one-shot `agy -p=/<name>` and
   never forwards them. Everything else — above all your **skills** — reaches the
   session and expands normally.
-- **Context usage comes from agy's status line.** agy reports no token counts over
-  its protocol, but it does hand a context snapshot to the `statusLine` command in
-  `~/.gemini/antigravity-cli/settings.json`. On startup the daemon backs that file
-  up once and points the setting at its own shim, which passes the numbers — and
-  the name of agy's default model, which nothing else reports — straight back to
-  the daemon over a pipe for the footer, and still draws a status line for your
-  terminal. Set
-  `TALKCODE_NO_AGY_STATUSLINE=1` to leave the setting alone and go without
-  the numbers.
+- **Context usage comes from agy's stream, quota and the default model from its CLI.**
+  On agy 1.4.7 and later each model step reports its token count, which the footer
+  shows against the model's window. agy never says how big that window is, so the
+  daemon knows it only for the models it was measured on (Gemini, Claude Sonnet/Opus
+  4.6, GPT-OSS 120B); any other model shows no context numbers. The quota pools and,
+  when no model is configured, agy's default model are fetched with `agy -p=/usage`
+  and `agy -p=/model` alongside the turn — the quota at most once a minute, in whole
+  percentages.
+- **On an agy older than 1.4.7, all three come from its status line** instead: on
+  startup the daemon backs `~/.gemini/antigravity-cli/settings.json` up once and
+  points its `statusLine` at the daemon's own shim, which passes the numbers back
+  over a pipe and still draws a status line for your terminal. agy 1.4.7 stopped
+  running the status line in headless mode, but the daemon still installs the shim,
+  for older versions and for your own interactive agy. Set
+  `TALKCODE_NO_AGY_STATUSLINE=1` to leave the setting alone.
 - **Skills** are read from `<cwd>/.agents/skills`, `~/.agents/skills`,
   `~/.gemini/antigravity-cli/skills`, `~/.gemini/skills` and
   `~/.gemini/config/skills`, so `/skills` lists them and `/<name> <request>` runs one.

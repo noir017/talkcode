@@ -16,6 +16,7 @@ import type { QuotaPool } from '../types.js';
 import type { ConversationStore } from './conversation-store.js';
 import {
   buildAgentEnv,
+  buildHarnessEnv,
   buildInputPreview,
   killChildProcess,
   resolveConversationCwd,
@@ -29,6 +30,7 @@ import {
   markActivePools,
   parseAgyStatusFrame,
 } from './agy-statusline.js';
+import { agyContextWindow, agyStepContextTokens, parseAgyCurrentModel, parseAgyUsagePools } from './agy-meters.js';
 import { agentHome } from './skills-scan.js';
 
 const execFile = promisify(execFileCb);
@@ -57,8 +59,12 @@ const execFile = promisify(execFileCb);
  *                                    not end in the agent's reply — see settleErrorResult)
  *   init.conversation_id           ↔ SessionStore entry, replayed via --conversation after a restart
  *   init.model                     ↔ onModel (stored at spawn, replayed at the start of every turn)
- *   status line, over fd 3         ↔ onUsage and onQuota (live, and settled at turn end), and onModel
- *                                    when `init` named none (agy-statusline.ts)
+ *   agent_response DONE `usage`    ↔ onUsage — input + cache-read tokens, over a window from a
+ *                                    table, since agy names none (agy-meters.ts)
+ *   one-shot `agy -p=/model`       ↔ onModel when `init` named none   } run beside the turn, settled
+ *   one-shot `agy -p=/usage`       ↔ onQuota                          } at its end (agy-meters.ts)
+ *   status line, over fd 3         ↔ all three, on an agy older than 1.4.7, which stopped running
+ *                                    the status line in `-p` (agy-statusline.ts)
  *   SIGINT                         ↔ abort (agy has no in-band cancel message)
  *
  * agy pushes no command list over the wire, so onAvailableCommands is never called and no native
@@ -203,6 +209,11 @@ const CLI_COMMAND_TIMEOUT_MS = 60_000;
 /** Longest CLI answer forwarded whole. `/changelog` is the one that needs this; the rest are short. */
 const CLI_OUTPUT_MAX_CHARS = 2_500;
 
+export type AgyCliResult = { ok: true; output: string } | { ok: false; error: string };
+
+/** runAgyCliCommand's shape — a factory parameter so the session tests never start a real agy. */
+export type AgyCliRunner = (name: string, cwd: string, env?: NodeJS.ProcessEnv) => Promise<AgyCliResult>;
+
 /**
  * Run one of agy's own slash commands as its own process and return what it printed.
  *
@@ -225,7 +236,7 @@ export async function runAgyCliCommand(
   name: string,
   cwd: string,
   env?: NodeJS.ProcessEnv
-): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
+): Promise<AgyCliResult> {
   try {
     const { stdout } = await execFile(AGY_COMMAND, [`-p=/${name}`], {
       cwd,
@@ -323,7 +334,8 @@ export function createAgyAgentFactory(
   cfg: Config,
   socketPath: string,
   store?: ConversationStore,
-  modelFetcher: AgyModelFetcher = defaultFetchAgyModels
+  modelFetcher: AgyModelFetcher = defaultFetchAgyModels,
+  cli: AgyCliRunner = runAgyCliCommand
 ): AgentFactory {
   const sessions = new Map<string, AgentSession>();
   let cachedModels: Array<{ value: string; name: string }> | undefined;
@@ -403,19 +415,65 @@ export function createAgyAgentFactory(
   /**
    * Said once per daemon, not once per turn: when it fires it fires on every turn of every agy
    * conversation, and the second time adds nothing. Only armed for a home whose status line this
-   * daemon wired — with the opt-out set, or no agy config, silence on fd 3 is the expected answer.
+   * daemon wired — with the opt-out set, or no agy config, an agy older than 1.4.7 has no other
+   * channel and silence is the expected answer.
    */
   let warnedSilence = false;
   function statusSilence(): void {
     if (warnedSilence) return;
     warnedSilence = true;
     console.warn(
-      `[agy] a whole turn finished without a single status-line frame on fd ${AGY_STATUS_FD}, so the footer ` +
-        'has no context numbers and, with no model configured, no model name. On agy 1.2.9 the status-line ' +
-        'command inherited that descriptor from the daemon; if agy was upgraded since, it may have stopped ' +
-        'passing inherited descriptors on (see daemon/agy-statusline.ts). Also check that `statusLine` in ' +
-        '~/.gemini/antigravity-cli/settings.json still names agy-statusline.'
+      `[agy] a whole turn finished with no context usage from agy's stream and no status-line frame on ` +
+        `fd ${AGY_STATUS_FD}, so the footer has no context numbers. agy 1.4.7 and later report usage in ` +
+        'the stream (daemon/agy-meters.ts); older ones only through the status line, which needs ' +
+        '`statusLine` in ~/.gemini/antigravity-cli/settings.json to name agy-statusline and the ' +
+        'descriptor to reach it (daemon/agy-statusline.ts). If agy was upgraded since, its stream may ' +
+        'have moved the numbers again.'
     );
+  }
+
+  /**
+   * The quota pools, per home: they belong to whoever agy is signed in as there, so every
+   * conversation on a home shares one reading and at most one `agy -p=/usage` in flight.
+   */
+  const quotaByHome = new Map<string, { pools?: QuotaPool[]; at: number; pending?: Promise<void> }>();
+
+  function metersFor(def: AgentDef): AgyMeters {
+    const home = agentHome(def);
+    return {
+      async currentModel(cwd) {
+        const r = await cli('model', cwd, buildHarnessEnv(def));
+        if (!r.ok) {
+          console.debug(`[agy] could not ask for the default model (${def.id}):`, r.error);
+          return undefined;
+        }
+        return parseAgyCurrentModel(r.output);
+      },
+      refreshQuota(cwd) {
+        let entry = quotaByHome.get(home);
+        if (!entry) quotaByHome.set(home, (entry = { at: 0 }));
+        if (entry.pending) return entry.pending;
+        // Stamped when the run starts, not when it lands, so a failing one is not retried on every
+        // turn either: once a minute is plenty for a footer, and each run is a round trip to Google.
+        if (Date.now() - entry.at < QUOTA_REFRESH_MS) return Promise.resolve();
+        entry.at = Date.now();
+        const e = entry;
+        e.pending = cli('usage', cwd, buildHarnessEnv(def))
+          .then((r) => {
+            if (!r.ok) {
+              console.debug(`[agy] could not read the quota (${def.id}):`, r.error);
+              return;
+            }
+            const pools = parseAgyUsagePools(r.output);
+            if (pools) e.pools = pools;
+          })
+          .finally(() => {
+            e.pending = undefined;
+          });
+        return e.pending;
+      },
+      quota: () => quotaByHome.get(home)?.pools,
+    };
   }
 
   return {
@@ -435,7 +493,8 @@ export function createAgyAgentFactory(
           },
           awaitModels,
           fetchModels,
-          () => (wireStatusLine(agentHome(def)) ? statusSilence : undefined)
+          () => (wireStatusLine(agentHome(def)) ? statusSilence : undefined),
+          metersFor(def)
         );
         sessions.set(sessionId, s);
       }
@@ -466,6 +525,26 @@ const MAX_STATUS_LINE_CHARS = 64 * 1024;
  */
 const USAGE_SETTLE_MS = 1_500;
 
+/**
+ * How long a finished turn waits for the one-shots started beside it (`/model`, `/usage`) before
+ * building its footer without them. Each took ~3.5s on agy 1.4.7, and most turns run longer than
+ * that, so the wait is usually already over; the bound is for a one-shot stuck on the network.
+ */
+const SIDE_QUERY_SETTLE_MS = 5_000;
+
+/** How old a quota reading may get before a turn asks `agy -p=/usage` again. */
+const QUOTA_REFRESH_MS = 60_000;
+
+/** The one-shot side queries a session runs beside its turns (see agy-meters.ts). */
+interface AgyMeters {
+  /** agy's current default model, as an id — for a child whose `init` named none. Never rejects. */
+  currentModel(cwd: string): Promise<string | undefined>;
+  /** Re-read the quota pools, unless a recent reading or one in flight makes that pointless. */
+  refreshQuota(cwd: string): Promise<void>;
+  /** The latest quota reading for this agent's home. */
+  quota(): QuotaPool[] | undefined;
+}
+
 function createAgySession(
   def: AgentDef,
   socketPath: string,
@@ -488,7 +567,9 @@ function createAgySession(
    * agy still has no config there), which is what keeps a deliberate opt-out quiet. Asked at every
    * spawn; see the factory's `wireStatusLine` for why not once.
    */
-  statusLineAtSpawn?: () => (() => void) | undefined
+  statusLineAtSpawn?: () => (() => void) | undefined,
+  /** Where the model and quota come from on an agy that runs no status line in `-p` (1.4.7+). */
+  meters?: AgyMeters
 ): AgentSession {
   /** What statusLineAtSpawn answered for the current child. */
   let onStatusSilence: (() => void) | undefined;
@@ -538,6 +619,25 @@ function createAgySession(
    */
   let statusQuota: QuotaPool[] | undefined;
   /**
+   * Tokens in context as agy's stream last reported them (agy-meters.ts, agy 1.4.7+). Per
+   * CONVERSATION, like statusUsage and for the same reason. Kept as a count rather than a usage,
+   * because the window it is shown against depends on a model that may not be known yet.
+   */
+  let streamTokens: number | undefined;
+  /** Readings this child's stream gave. Any at all makes the status line's settle wait moot. */
+  let streamReadings = 0;
+  /**
+   * The default model `agy -p=/model` named for this child, when its `init` named none. Per CHILD,
+   * like lastSeenModel: the default is read at spawn, and a later one is a later child's.
+   */
+  let cliModel: string | undefined;
+  /** The `/model` lookup started for this child, for a turn's end to wait on (bounded). */
+  let pendingModel: Promise<void> | undefined;
+  /** The `/usage` refresh the running turn started, likewise. */
+  let pendingQuota: Promise<void> | undefined;
+  /** The model last logged as having no known window, so the log says it once, not per turn. */
+  let windowUnknownFor: string | undefined;
+  /**
    * The running turn's handlers, so a frame that arrives mid-turn can be passed on as it lands
    * (see handleStatusLine). Undefined between turns.
    */
@@ -569,15 +669,50 @@ function createAgySession(
     statusModel = undefined;
     statusFrames = 0;
     settledInVain = false;
+    streamReadings = 0;
+    cliModel = undefined;
+    pendingModel = undefined;
   }
 
   /**
    * The model to name for this child: `init`'s when agy gave one (it is what `--model=` resolved
-   * to), else the status line's, respelled as an id. Undefined only before the child has said
-   * either — the caller falls back to what was configured or picked.
+   * to), else the status line's, respelled as an id, else what `agy -p=/model` said the default
+   * is. Undefined only before the child has said any — the caller falls back to what was
+   * configured or picked.
    */
   function servingModel(): string | undefined {
-    return lastSeenModel ?? (statusModel ? agyModelId(statusModel, getModels?.()) : undefined);
+    return lastSeenModel ?? (statusModel ? agyModelId(statusModel, getModels?.()) : undefined) ?? cliModel;
+  }
+
+  /**
+   * The context reading to report. The stream's, when this conversation has one, over the window
+   * agy-meters.ts knows for the serving model — and then nothing else, even with no window known:
+   * a status-line reading from before would be a different moment presented as this one. The
+   * status line's otherwise, which is all an agy older than 1.4.7 gives.
+   */
+  function contextUsage(): AgentUsage | undefined {
+    if (streamTokens === undefined) return statusUsage;
+    const model = servingModel();
+    const size = agyContextWindow(model);
+    if (size) return { used: streamTokens, size };
+    if (model && model !== windowUnknownFor) {
+      windowUnknownFor = model;
+      console.log(`[agy] no known context window for ${model}, so its footer shows no context numbers (see daemon/agy-meters.ts)`);
+    }
+    return undefined;
+  }
+
+  /** A reading off the stream (translateAgyEvent), passed on as it lands — see handleStatusLine. */
+  function onStreamTokens(tokens: number): void {
+    streamTokens = tokens;
+    streamReadings++;
+    const usage = contextUsage();
+    if (usage) liveHandlers?.onUsage?.(usage);
+  }
+
+  /** The quota to report: the status line's when it sent one, else the last `agy -p=/usage`. */
+  function quotaReading(): QuotaPool[] | undefined {
+    return statusQuota ?? meters?.quota();
   }
 
   /**
@@ -607,7 +742,8 @@ function createAgySession(
     // turn's `finally` reports, which overwrites these. A frame here can be one model step stale
     // (see settleUsage); for a live readout that is still the newest thing known.
     if (liveHandlers) {
-      if (status.usage) liveHandlers.onUsage?.(status.usage);
+      // Not when the stream reports usage: its reading is exact, and this one is a step behind.
+      if (status.usage && streamTokens === undefined) liveHandlers.onUsage?.(status.usage);
       if (status.quota) liveHandlers.onQuota?.(markActivePools(status.quota, servingModel()));
     }
     wakeStatusWaiters();
@@ -619,17 +755,69 @@ function createAgySession(
 
   /**
    * Context numbers, quota and — when `init` named none — the model, read at the end of the turn
-   * they describe (on success, once settleUsage has seen the post-turn frame). agy publishes all of
-   * them only through its status line (see agy-statusline.ts), so they arrive out of band on the
-   * fd-3 pipe; the footer is built after this returns. Called from the turn's `finally`, because a
-   * turn that failed still consumed the window, and the footer of the message reporting the
-   * failure should say so.
+   * they describe (on success, once settleUsage and settleSideQueries have had their chance). The
+   * footer is built after this returns. Called from the turn's `finally`, because a turn that
+   * failed still consumed the window, and the footer of the message reporting the failure should
+   * say so.
    */
   function reportSettled(handlers: AgentStreamHandlers): void {
-    if (statusUsage) handlers.onUsage?.(statusUsage);
+    const usage = contextUsage();
+    if (usage) handlers.onUsage?.(usage);
     const model = servingModel();
     if (model) handlers.onModel?.(model);
-    if (statusQuota) handlers.onQuota?.(markActivePools(statusQuota, model));
+    const quota = quotaReading();
+    if (quota) handlers.onQuota?.(markActivePools(quota, model));
+  }
+
+  /**
+   * Wait, bounded, for the one-shots started beside this turn, so its footer can name the model and
+   * the quota they fetch. Usually over before it starts (see SIDE_QUERY_SETTLE_MS); on a quick
+   * first turn it is the difference between a footer that names the model and one that does not.
+   */
+  async function settleSideQueries(): Promise<void> {
+    const pending = [pendingModel, pendingQuota].filter((p): p is Promise<void> => p !== undefined);
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SIDE_QUERY_SETTLE_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+
+  /**
+   * Ask the CLI for agy's default model, for a child whose `init` named none. Beside the turn
+   * rather than before it: the answer takes seconds, and only the footer needs it. Skipped when the
+   * status line is already reporting (an agy older than 1.4.7), which names the model itself.
+   */
+  function lookUpDefaultModel(child: ChildProcessWithoutNullStreams): void {
+    if (!meters || lastSeenModel || statusFrames > 0) return;
+    pendingModel = meters
+      .currentModel(cwd)
+      .then((model) => {
+        if (proc !== child || !model) return;
+        cliModel = model;
+        // A turn is likely running by now; the strip can name the model before the turn ends.
+        const serving = servingModel();
+        if (serving) liveHandlers?.onModel?.(serving);
+        const usage = contextUsage();
+        if (usage) liveHandlers?.onUsage?.(usage);
+      })
+      .catch(() => {});
+  }
+
+  /** Start the turn's quota refresh, and pass the reading on when it lands. */
+  function refreshQuota(): void {
+    if (!meters || statusQuota) return;
+    pendingQuota = meters
+      .refreshQuota(cwd)
+      .then(() => {
+        const quota = meters.quota();
+        if (quota) liveHandlers?.onQuota?.(markActivePools(quota, servingModel()));
+      })
+      .catch(() => {});
   }
 
   /**
@@ -649,9 +837,12 @@ function createAgySession(
    *
    * Not waited at all when nothing can come: a child that has never reported, on a home whose
    * status line this daemon did not wire (`onStatusSilence` unset), or that already sat out a full
-   * bound in vain — once is the diagnosis (onStatusSilence), every turn would be a tax.
+   * bound in vain — once is the diagnosis (onStatusSilence), every turn would be a tax. Nor when the
+   * stream itself reported usage (agy 1.4.7+): its last reading lands before `result`, final, and
+   * that agy runs no status line in `-p` at all.
    */
   async function settleUsage(atResult: AgentUsage | undefined): Promise<void> {
+    if (streamReadings > 0) return;
     if (statusFrames === 0 && (!onStatusSilence || settledInVain)) return;
     const deadline = Date.now() + USAGE_SETTLE_MS;
     while (!aborting && proc && statusUsage?.used === atResult?.used) {
@@ -773,6 +964,7 @@ function createAgySession(
       if (timer) clearTimeout(timer);
       initWaiters.length = 0;
     }
+    lookUpDefaultModel(child);
   }
 
   /**
@@ -874,10 +1066,13 @@ function createAgySession(
         sawErrorStep: false,
         toolLedger: new Map(),
         toolIndexSeq: 0,
+        onContextTokens: onStreamTokens,
       };
 
       // Install the sink BEFORE writing the prompt, so no event can arrive unclaimed.
       liveHandlers = handlers;
+      pendingQuota = undefined;
+      refreshQuota();
       const done = new Promise<void>((resolve, reject) => {
         currentTurn = makeTurnSink(state, {
           done: () => {
@@ -906,10 +1101,12 @@ function createAgySession(
       try {
         await done;
         await settleUsage(statusUsage);
+        await settleSideQueries();
         // Asked only after a successful turn and its settle wait: by then the status line has had
         // every chance to tick — it does from the moment agy starts, before any prompt — so silence
-        // is a finding, where after a turn that failed fast it would only be a race.
-        if (statusFrames === 0) {
+        // is a finding, where after a turn that failed fast it would only be a race. Silence on fd 3
+        // alone is not one: agy 1.4.7 runs no status line in `-p` and reports in the stream instead.
+        if (statusFrames === 0 && streamReadings === 0) {
           settledInVain = true;
           onStatusSilence?.();
         }
@@ -1056,6 +1253,8 @@ export interface AgyEvent {
       output?: unknown;
       error?: { type?: string; message?: string };
     };
+    /** That model call's token counts, on an `agent_response` DONE frame (agy 1.4.7; agy-meters.ts). */
+    usage?: { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; total_tokens?: number };
   };
   result?: {
     conversation_id?: string;
@@ -1084,6 +1283,12 @@ export interface AgyTurnState {
   /** step_index → evolving tool state (ACTIVE then DONE arrive as separate frames). */
   toolLedger: Map<number, AgyToolRec>;
   toolIndexSeq: number;
+  /**
+   * Tokens in context, from a finished model step's `usage` (agy-meters.ts). A callback rather
+   * than a handler call: the session can make a usage of the count only once it knows the window
+   * to show it against, and that depends on a model it may still be asking about.
+   */
+  onContextTokens?: (tokens: number) => void;
 }
 
 interface AgyToolRec {
@@ -1126,9 +1331,17 @@ export function translateAgyEvent(msg: AgyEvent, st: AgyTurnState): boolean {
     // decides whether the turn's reply came out after the trouble.
     st.sawErrorStep = true;
     st.endsInReply = false;
-  } else if (s.step_type === 'agent_response' && s.text_delta) {
-    // Agent text: text_delta is incremental, so push it straight through.
-    // Only agent_response carries display text; user_input/checkpoint frames are bookkeeping.
+  } else if (s.step_type === 'agent_response') {
+    ingestResponseStep(s, st);
+  }
+  return false;
+}
+
+/** Model step: its text (as it streams), and once DONE, its token counts. */
+function ingestResponseStep(s: NonNullable<AgyEvent['step_update']>, st: AgyTurnState): void {
+  // Agent text: text_delta is incremental, so push it straight through.
+  // Only agent_response carries display text; user_input/checkpoint frames are bookkeeping.
+  if (s.text_delta) {
     if (st.lastSegment === 'tool') st.handlers.onSegmentBreak(); // tool → text boundary
     st.lastSegment = 'text';
     st.handlers.onText(s.text_delta);
@@ -1136,7 +1349,10 @@ export function translateAgyEvent(msg: AgyEvent, st: AgyTurnState): boolean {
     // must neither make a reply out of nothing nor unmake the one just written.
     if (s.text_delta.trim()) st.endsInReply = true;
   }
-  return false;
+  // The DONE frame also carries the step's usage — including a step that chose a tool and said
+  // nothing, which is why this is not inside the text branch.
+  const tokens = agyStepContextTokens(s);
+  if (tokens !== undefined) st.onContextTokens?.(tokens);
 }
 
 /**

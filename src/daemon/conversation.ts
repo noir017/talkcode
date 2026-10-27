@@ -2048,7 +2048,7 @@ export class ConversationRegistry {
         def?.harness === 'opencode'
           ? ' On opencode that means a model from a custom provider: give it a `limit` block in opencode.json (e.g. `"limit": { "context": 128000 }`) and the numbers appear.'
           : def?.harness === 'agy'
-            ? ' On agy the numbers come from its status line, which the daemon points at its own shim on startup: check that `statusLine` in `~/.gemini/antigravity-cli/settings.json` still names `agy-statusline`, and that TALKCODE_NO_AGY_STATUSLINE is not set.'
+            ? ' On agy 1.4.7 and later the count comes from its stream, but agy never says how big the window is, so the daemon only knows it for the models it was measured on (Gemini, Claude Sonnet/Opus 4.6, GPT-OSS 120B) — any other model shows no numbers. An older agy reports them through its status line instead: check that `statusLine` in `~/.gemini/antigravity-cli/settings.json` still names `agy-statusline`, and that TALKCODE_NO_AGY_STATUSLINE is not set.'
             : '';
       return (
         `Context: not reported. ${name} finished a turn without sending any usage numbers, and ` +

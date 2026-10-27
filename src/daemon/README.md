@@ -24,7 +24,8 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `session-failure.ts` | claude-agent-acp's typed failure records: the capability that asks for them, and reading one off the wire |
 | `acp-steering.ts` | How an ACP harness takes a message into a running turn (a second prompt, `_session/steering`, or not at all), read off `initialize` |
 | `agent-agy.ts` | Antigravity CLI runtime — its own stream-json protocol |
-| `agy-statusline.ts` | The only channel agy reports context usage — and its default model and quota pools — on: a shim installed into its `statusLine` setting, reporting back over fd 3 |
+| `agy-meters.ts` | Where agy 1.4.7+ reports context, model and quota, now that `-p` runs no status line: per-step stream `usage`, a measured window table, and the `/model` / `/usage` one-shots |
+| `agy-statusline.ts` | How an agy older than 1.4.7 reports the same three: a shim installed into its `statusLine` setting, reporting back over fd 3. Still installed, for that and for the operator's own TUI |
 | `status-board.ts` | Each conversation's live agent status, pushed (deduped, throttled) to a platform that can show one — the web UI's strip |
 | `claude-transcript.ts` | claude's prompt-cache expiry, read off Claude Code's own transcript (headless Claude Code runs no status line) |
 | `agent-common.ts` | Protocol-agnostic helpers shared by both runtimes |
@@ -571,11 +572,11 @@ Each harness reports a different subset, and an absent field is shown as nothing
 
 | Field | Source |
 |---|---|
-| model, effort | `onModel` / `onEffort` (ACP config options; agy's `init` or status line) |
-| context | `onUsage` — ACP `usage_update`, agy's status line |
+| model, effort | `onModel` / `onEffort` (ACP config options; agy's `init`, else `agy -p=/model` or, before 1.4.7, its status line) |
+| context | `onUsage` — ACP `usage_update`; agy's stream `usage` (1.4.7+) or status line |
 | cost | `onUsage.cost` — claude and opencode; kept across the mid-stream snapshots that carry none |
 | cache expiry | claude only: `claude-transcript.ts`, read once a moment after each model cycle ends |
-| quota | agy only: its status line, via `onQuota` |
+| quota | agy only: `agy -p=/usage` (1.4.7+) or its status line, via `onQuota` |
 
 **Why the cache expiry comes off a transcript.** Headless Claude Code runs no status line at all
 (probed on 2.1.291: zero invocations in a whole turn), so the `prompt_cache` its TUI status line is
@@ -911,9 +912,10 @@ still pushes no command list over the wire: `/agy` switches the conversation and
 form acks the binding rather than posting an empty menu.
 
 Models: agy names the one it is serving in `init` — but on agy 1.2.9 only when `--model=` asked
-for it; a conversation left on agy's default is named by the status line instead, and the display
-name it reports is respelled as the `agy models` id (`onModel` is replayed each turn, because the
-footer reads a per-turn record). While `agy` has no in-process protocol switch, `agy models` lists
+for it; a conversation left on agy's default is named by a one-shot `agy -p=/model` started beside
+the first turn (on agy 1.4.7+), or by the status line before that, whose display name is respelled
+as the `agy models` id (`onModel` is replayed each turn, because the footer reads a per-turn
+record). While `agy` has no in-process protocol switch, `agy models` lists
 available choices, and `setModel` switches via a kill-and-respawn strategy: `teardown()` stops the
 child, and the next turn respawns with `--model=<value>` while `--conversation=<id>` restores
 conversation context intact from local disk. `modelSelector()` reports the parsed model list,
@@ -926,7 +928,20 @@ binary unchanged since 09-29). The startup prefetch is therefore only a starting
 (~1.5s) and keeps the old list when the answer is empty or the run fails. Clicks on the menu that
 `/model` opened do not re-ask; they re-check against the list that `/model` just fetched.
 
-Context usage: agy reports none over its protocol, so `agy-statusline.ts` installs a shim into
+Context usage, on agy 1.4.7 and later: each `agent_response` step's DONE frame carries that model
+call's `usage`, and its `input_tokens` plus `cache_read_tokens` is the context as it stood
+(`agy-meters.ts`) — the cached part is left out of `input_tokens`, so a Claude turn that hit the
+cache read as a few hundred tokens until it was added back. Not `result`'s: that is a running total
+over the conversation. agy names no window size anywhere, so the window is
+a table of the ones measured off its own TUI status line, and a model not in it gets no context
+numbers rather than a guessed denominator. Quota comes from a one-shot `agy -p=/usage` (~3.5s, a
+round trip to Google), started beside each turn but at most once a minute per home, renamed to the
+pool ids below. A turn's end waits for the `/model` and `/usage` one-shots, bounded by
+`SIDE_QUERY_SETTLE_MS`; most turns outlast them.
+
+That replaced the status line in `-p`, because agy 1.4.7 stopped running it there ("no longer
+start your custom status line", its changelog). What follows is how an older agy reports, and the
+runtime still listens for it: `agy-statusline.ts` installs a shim into
 agy's `statusLine` setting, and the shim writes each snapshot to a fourth stdio pipe (fd 3) the
 runtime opens when it spawns agy — agy passes the descriptor on to its status-line command, which
 is undocumented and carries a Hyrum's Law warning. At the end of a turn `runTurn` waits (bounded)
@@ -1270,7 +1285,7 @@ translation; `routing.test.ts`, `command-routing.test.ts`, `session-control.test
 `conversation-store.test.ts`, `conversation-token-registry.test.ts`,
 `multi-platform.test.ts`, `slash-register.test.ts`, `ask-button.test.ts`,
 `picker-click.test.ts`, `model-menu-click.test.ts`, `settings-command.test.ts`,
-`local-commands.test.ts`, `agy-cli-command.test.ts`, `agy-statusline.test.ts`,
+`local-commands.test.ts`, `agy-cli-command.test.ts`, `agy-statusline.test.ts`, `agy-meters.test.ts`,
 `permission.test.ts`, `attachment-io.test.ts`, `voice.test.ts` and `voice-routing.test.ts` cover
 the rest.
 

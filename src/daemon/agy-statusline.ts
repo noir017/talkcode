@@ -6,7 +6,21 @@ import type { QuotaPool } from '../types.js';
 import type { AgentUsage } from './agent.js';
 
 /**
- * Context usage for the `agy` harness, via agy's own status line.
+ * Context usage for the `agy` harness, via agy's own status line — on an agy older than 1.4.7.
+ *
+ * ── Superseded in `-p` since agy 1.4.7 ────────────────────────────────────────
+ * agy 1.4.7 (2026-10-27) stopped running the status line in headless `-p` runs, which is the only
+ * mode stream-json works in — its changelog: they "no longer start your custom status line and
+ * window title commands, none of which print mode shows". A turn on 1.4.7 put nothing on fd 3.
+ * The same release's stream carries each model step's token counts, so the runtime now reads
+ * context there and fetches the model and quota with one-shots (agy-meters.ts).
+ *
+ * This file stays for two reasons. An agy older than 1.4.7 still reports only here, and the
+ * runtime keeps listening on fd 3 for it. And the operator's own interactive agy still runs the
+ * status line, which this shim draws: dropping the install would leave their terminal's status
+ * line pointing at a script nothing maintains.
+ *
+ * What follows is how it worked, and still works, where agy runs it.
  *
  * ── Why a status line ─────────────────────────────────────────────────────────
  * The footer's context segment is fed by ACP `usage_update`, and agy speaks no ACP. Its stream-json

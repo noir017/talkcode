@@ -26,12 +26,17 @@
   斜杠（`/model`、`/usage`、`/credits` 等）会直接中止整个会话，因此守护进程用一次性
   的 `agy -p=/<name>` 回答这十一个命令，绝不转发进会话。其余输入——首先是你的
   **skills**——照常进入会话并正常展开。
-- **上下文占用来自 agy 的状态栏。** agy 的协议不上报 token 数，但它会把上下文快照
-  交给 `~/.gemini/antigravity-cli/settings.json` 里配置的 `statusLine` 命令。守护进程
-  启动时会先备份该文件一次，再把这项指向自己的 shim：既通过一条管道把数字——以及
-  其他途径都拿不到的 agy 默认模型名——直接交回守护进程供页脚使用，也照样为你的终端
-  画出状态栏。设 `TALKCODE_NO_AGY_STATUSLINE=1` 可以不动这项
-  配置（代价是没有这些数字）。
+- **上下文占用来自 agy 的输出流，额度和默认模型来自它的 CLI。** agy 1.4.7 起，每个
+  模型步骤都会上报自己的 token 数，页脚拿它对比模型的上下文窗口来显示。agy 从不告诉
+  窗口有多大，所以守护进程只认得实测过的模型（Gemini、Claude Sonnet/Opus 4.6、
+  GPT-OSS 120B），其他模型不显示上下文数字。额度池，以及没配置模型时 agy 的默认模型，
+  在这一轮进行的同时用 `agy -p=/usage` 和 `agy -p=/model` 取回——额度最多每分钟查
+  一次，精度是整数百分比。
+- **agy 低于 1.4.7 时，这三样都来自它的状态栏**：守护进程启动时先备份一次
+  `~/.gemini/antigravity-cli/settings.json`，再把其中的 `statusLine` 指向自己的 shim，
+  由它通过一条管道把数字交回守护进程，也照样为你的终端画出状态栏。agy 1.4.7 在无头
+  模式下不再运行状态栏，但守护进程仍会安装这个 shim，供旧版本和你自己交互使用的 agy
+  使用。设 `TALKCODE_NO_AGY_STATUSLINE=1` 可以不动这项配置。
 - **skills** 从 `<cwd>/.agents/skills`、`~/.agents/skills`、
   `~/.gemini/antigravity-cli/skills`、`~/.gemini/skills`、`~/.gemini/config/skills`
   读取，所以 `/skills` 能列出它们，`/<名字> <请求>` 能直接调用。

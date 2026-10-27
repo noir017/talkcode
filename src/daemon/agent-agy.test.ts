@@ -13,6 +13,7 @@ import {
   parseAgyModelsOutput,
   toolLabel,
   translateAgyEvent,
+  type AgyCliRunner,
   type AgyEvent,
   type AgyTurnState,
 } from './agent-agy.js';
@@ -753,9 +754,16 @@ describe('agy session — what the status pipe tells the footer', () => {
     return { seen, handlers };
   }
 
-  function makeFactory(over: Record<string, unknown> = {}) {
+  /**
+   * The one-shots a session runs beside its turns (`agy -p=/model`, `-p=/usage`). Failing by
+   * default, which is what an agy older than 1.4.7 tests need — they get everything off the pipe —
+   * and what keeps any test from starting the real CLI.
+   */
+  const noCli: AgyCliRunner = async () => ({ ok: false, error: 'no agy in tests' });
+
+  function makeFactory(over: Record<string, unknown> = {}, cli: AgyCliRunner = noCli) {
     const cfg = { agents: [def({ id: 'ag', cwd: tmpdir(), ...over })] } as unknown as Config;
-    return createAgyAgentFactory(cfg, '/tmp/test.sock', undefined, async () => MODELS);
+    return createAgyAgentFactory(cfg, '/tmp/test.sock', undefined, async () => MODELS, cli);
   }
 
   it('names agy’s default model from the status line when `init` names none', async () => {
@@ -973,5 +981,151 @@ describe('agy session — what the status pipe tells the footer', () => {
     // Announced where it happened, and not again for agy repeating it.
     expect(notices).toEqual(['⚠️ ag hit an error and recovered: API error (attempt 1): INTERNAL (code 500): Internal error encountered.']);
     factory.dispose('conv-1');
+  });
+
+  // ── agy 1.4.7+: no status line in `-p`, so usage off the stream and the rest off one-shots ──
+
+  /**
+   * One turn as agy 1.4.7 wrote it (2026-10-27): a model step that chose a tool, the tool, the
+   * reply's step, and a `result` whose usage is the conversation's running total. Nothing on fd 3.
+   */
+  const turn147 = (first: number, second: number) => [
+    { event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'agent_response', usage: { input_tokens: first, output_tokens: 129, total_tokens: first + 129 } } },
+    { event: 'step_update', step_update: { step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command' } } },
+    { event: 'step_update', step_update: { step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command' } } },
+    { event: 'step_update', step_update: { step_index: 3, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'done one' } },
+    { event: 'step_update', step_update: { step_index: 3, state: 'DONE', step_type: 'agent_response', text_delta: '\n', usage: { input_tokens: second, output_tokens: 16, total_tokens: second + 16 } } },
+    { event: 'result', result: { status: 'SUCCESS', response: 'done one\n', usage: { input_tokens: first + second } } },
+  ];
+
+  /** The one-shots, answering as agy 1.4.7 did, and counting how often each was asked. */
+  function cli147(model = 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)') {
+    const calls: string[] = [];
+    const run: AgyCliRunner = async (name) => {
+      calls.push(name);
+      if (name === 'model') return { ok: true, output: model };
+      if (name === 'usage') {
+        return {
+          ok: true,
+          output: [
+            'Gemini Models\tWeekly Limit Remaining\t74%\t2026-10-31T04:24:11Z',
+            'Gemini Models\tFive Hour Limit Remaining\t86%\t2026-10-27T06:49:21Z',
+            'Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-03T06:27:38Z',
+            'Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-10-27T11:27:38Z',
+          ].join('\n'),
+        };
+      }
+      return { ok: false, error: `unexpected /${name}` };
+    };
+    return { calls, run };
+  }
+
+  it('reads the context off the stream — the last step’s count, never the result’s running total', async () => {
+    // Wired, so a silent fd 3 would have been reported before 1.4.7 made it the normal state.
+    vi.mocked(ensureAgyStatusLine).mockReturnValue('unchanged');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    scriptSpawn(INIT_DEFAULT, { turns: [turn147(7454, 7672)] });
+    const { run } = cli147();
+    const factory = makeFactory({}, run);
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const { seen, handlers } = recordingHandlers();
+
+    const started = Date.now();
+    await session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, handlers);
+
+    expect(seen.usage.at(-1)).toEqual({ used: 7672, size: 1_048_576 });
+    expect(seen.usage.some((u) => u.used === 15126)).toBe(false);
+    // The status line's settle wait is for a reading that lands after `result`; the stream's does not.
+    expect(Date.now() - started).toBeLessThan(USAGE_SETTLE_FLOOR_MS);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes(`fd ${AGY_STATUS_FD}`))).toEqual([]);
+    factory.dispose('conv-1');
+  });
+
+  it('names agy’s default model from `agy -p=/model` when `init` names none', async () => {
+    scriptSpawn(INIT_DEFAULT, { turns: [turn147(7454, 7672)] });
+    const { calls, run } = cli147('claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)');
+    const factory = makeFactory({}, run);
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const { seen, handlers } = recordingHandlers();
+
+    await session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, handlers);
+
+    expect(seen.models.at(-1)).toBe('claude-sonnet-4-6');
+    // And the window follows the model the CLI named.
+    expect(seen.usage.at(-1)).toEqual({ used: 7672, size: 250_000 });
+    expect(calls.filter((c) => c === 'model')).toHaveLength(1);
+    factory.dispose('conv-1');
+  });
+
+  it('does not ask for the default when `init` already named the model', async () => {
+    scriptSpawn({ ...INIT_DEFAULT, init: { ...INIT_DEFAULT.init, model: 'gpt-oss-120b-medium' } }, { turns: [turn147(100, 200)] });
+    const { calls, run } = cli147();
+    const factory = makeFactory({ model: 'gpt-oss-120b-medium' }, run);
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const { seen, handlers } = recordingHandlers();
+
+    await session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, handlers);
+
+    expect(calls).not.toContain('model');
+    expect(seen.usage.at(-1)).toEqual({ used: 200, size: 131_072 });
+    factory.dispose('conv-1');
+  });
+
+  it('reports the quota from `agy -p=/usage`, marked for the serving model, and asks once a minute at most', async () => {
+    scriptSpawn(INIT_DEFAULT, { turns: [turn147(7454, 7672), turn147(7700, 7760)] });
+    const { calls, run } = cli147();
+    const factory = makeFactory({}, run);
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const { seen, handlers } = recordingHandlers();
+
+    await session.runTurn({ prompt: 'one', sessionToken: 'sess_x' }, handlers);
+    await session.runTurn({ prompt: 'two', sessionToken: 'sess_x' }, handlers);
+
+    expect(seen.quota.at(-1)).toEqual([
+      { id: '3p-5h', remaining: 1, resetsAt: Date.parse('2026-10-27T11:27:38Z'), active: false },
+      { id: '3p-weekly', remaining: 1, resetsAt: Date.parse('2026-11-03T06:27:38Z'), active: false },
+      { id: 'gemini-5h', remaining: 0.86, resetsAt: Date.parse('2026-10-27T06:49:21Z'), active: true },
+      { id: 'gemini-weekly', remaining: 0.74, resetsAt: Date.parse('2026-10-31T04:24:11Z'), active: true },
+    ]);
+    // A round trip to Google each time: the second turn, seconds later, reuses the first reading.
+    expect(calls.filter((c) => c === 'usage')).toHaveLength(1);
+    expect(seen.usage.at(-1)).toEqual({ used: 7760, size: 1_048_576 });
+    factory.dispose('conv-1');
+  });
+
+  it('shows no context numbers for a model with no known window, rather than a guessed one', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    scriptSpawn({ ...INIT_DEFAULT, init: { ...INIT_DEFAULT.init, model: 'claude-opus-5-5-medium' } }, { turns: [turn147(100, 200)] });
+    const factory = makeFactory({ model: 'claude-opus-5-5-medium' }, cli147().run);
+    const session = factory.getOrCreate('conv-1', 'ag');
+    const { seen, handlers } = recordingHandlers();
+
+    await session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, handlers);
+
+    expect(seen.usage).toEqual([]);
+    expect(seen.models.at(-1)).toBe('claude-opus-5-5-medium');
+    factory.dispose('conv-1');
+  });
+});
+
+/** Below the status line's settle bound (USAGE_SETTLE_MS, 1.5s): proof a turn did not sit it out. */
+const USAGE_SETTLE_FLOOR_MS = 1_000;
+
+describe('translateAgyEvent — usage on a model step (agy 1.4.7)', () => {
+  it('passes a finished step’s input tokens on, including a step that only chose a tool', () => {
+    const { st } = recorder();
+    const tokens: number[] = [];
+    st.onContextTokens = (n) => tokens.push(n);
+    feed(st, { event: 'step_update', step_update: { step_index: 1, state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 7454 } } });
+    feed(st, { event: 'step_update', step_update: { step_index: 3, state: 'DONE', step_type: 'agent_response', text_delta: '\n', usage: { input_tokens: 7672 } } });
+    expect(tokens).toEqual([7454, 7672]);
+  });
+
+  it('ignores the result’s usage — a running total over the whole conversation', () => {
+    const { st } = recorder();
+    const tokens: number[] = [];
+    st.onContextTokens = (n) => tokens.push(n);
+    expect(feed(st, { event: 'result', result: { status: 'SUCCESS', usage: { input_tokens: 15126 } } })).toBe(true);
+    expect(tokens).toEqual([]);
   });
 });
