@@ -906,7 +906,7 @@ transcript cache above is the place for it, not a second copy of the shell.
 **The icon exists twice on purpose.** `ICON_SVG` is the drawing; the base64 PNG beside it is
 that same drawing rasterised to 192px, because iOS reads `<link rel="apple-touch-icon">` and
 has never accepted SVG there, and an Android launcher that declines to rasterise SVG falls
-back to a generated letter tile — which looks like a bug rather than a fallback. 1760 bytes
+back to a generated letter tile — which looks like a bug rather than a fallback. 1604 bytes
 buys not having to know which builds those are. They can drift; the regeneration command is in
 the comment above the base64, and `server.test.ts` at least asserts the bytes are still a
 192×192 PNG.

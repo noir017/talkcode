@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The web UI application icon (`icon.png`) is no longer truncated with a white bottom half.** The
+  rasterized 192×192 PNG embedded in `manifest.ts` was originally produced using headless Chrome with
+  `--window-size=192,192`. In Chrome's `--headless=new` mode, window-size sets the outer browser window
+  dimensions rather than the inner viewport, so standard window decorations (about 87px) were subtracted,
+  leaving only 105px of viewport height. The top half of the SVG prompt was rendered while the bottom 87px
+  fell outside the painted area and showed default white canvas. The PNG has been re-rasterized from `ICON_SVG`
+  without window decoration clipping, restoring the full dark background and blue cursor.
+
 ## [2.5.0] - 2026-10-24
 
 ### Added

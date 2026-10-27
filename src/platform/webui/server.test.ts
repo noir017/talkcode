@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { createGunzip } from 'node:zlib';
+import { createGunzip, inflateSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 
 import { WebuiConfigSchema } from '../config-schemas.js';
@@ -212,6 +212,14 @@ describe('webui server: installing it as an app', () => {
     const bytes = Buffer.from(await png.arrayBuffer());
     expect(bytes.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
     expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)]).toEqual([192, 192]);
+    // The bottom row must not be blank white — headless Chrome cropped the viewport at 105px
+    // when --window-size=192,192 counted window decorations, leaving the rest unpainted.
+    const idatPos = bytes.indexOf('IDAT');
+    const idatLen = bytes.readUInt32BE(idatPos - 4);
+    const raw = inflateSync(bytes.subarray(idatPos + 4, idatPos + 4 + idatLen));
+    const stride = 1 + 192 * 4;
+    const lastRow = raw.subarray(raw.length - stride + 1);
+    expect(lastRow.some((b) => b !== 255)).toBe(true);
   });
 
   it('names the app after the configured title', async () => {
