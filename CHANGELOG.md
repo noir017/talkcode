@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-28
+
 ### Added
 
 - **An agent can ask you before it runs a tool: `permissions: ask`.** Claude Code asks for permission
