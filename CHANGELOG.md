@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-28
+
 ### Added
 
 - **`/reload` applies an edited config.yaml without restarting the daemon.** Until now every edit to
