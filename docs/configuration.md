@@ -55,6 +55,29 @@ UI's `terminal:` and `sso:` in [Web UI](web-ui.md), `title:` in [Topic names](to
 and `voice:` in [Voice messages](voice.md). A handful of fields can also be changed from chat,
 without a restart — see [Settings from chat](settings.md).
 
+## Changing it while the daemon runs
+
+Edit the file, then send `/reload` in any chat. An agent that made the edit can run
+`talkcode reload` instead (a reverse command, so only from inside a conversation). The daemon re-reads
+`config.yaml` and `.env` and replies with what changed:
+
+```
+config.yaml reloaded.
+- agents: added oc2; changed cc
+- applied: routing
+- conversations: 1 restart their agent on the next message
+```
+
+- Everything except `platforms` takes effect at once. A `platforms` change (a token, a new
+  instance) is reported as needing a daemon restart.
+- A changed agent restarts its process on each conversation's next message and resumes the
+  session there. A reply already in progress finishes first. An agent whose harness cannot resume a
+  session stays on its old definition in conversations that already use it, until `/new`.
+- A new `model:` is picked up by new sessions only, as with `/setting`: a resumed session keeps
+  the model it was on. `/new` starts one on the new model.
+- Conversations bound to a removed agent move to whichever agent routing picks now.
+- If the file does not load, nothing changes, and the reply says what is wrong.
+
 ## CLI
 
 | Command | |

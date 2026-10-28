@@ -56,7 +56,16 @@ export interface ReverseCommandSpec {
  * reach the user automatically" still told the model what kind of job this was before it read the
  * job — and no wording of an injected block avoids that, because the injection is the framing.
  */
-export type HelpTopicName = 'files' | 'schedule' | 'channels' | 'history' | 'messages' | 'threads' | 'ask' | 'voice';
+export type HelpTopicName =
+  | 'files'
+  | 'schedule'
+  | 'channels'
+  | 'history'
+  | 'messages'
+  | 'threads'
+  | 'ask'
+  | 'voice'
+  | 'config';
 
 export interface HelpTopic {
   name: HelpTopicName;
@@ -126,6 +135,16 @@ export const HELP_TOPICS: HelpTopic[] = [
     notes: [
       'If your harness has a question tool (Claude Code\'s AskUserQuestion), use that: the gateway renders it as the same buttons.',
       'stdout is the chosen label, or the user\'s typed answer. Empty stdout plus a stderr note means nobody answered in time — the question WAS delivered; follow up in plain text.',
+    ],
+  },
+  {
+    name: 'config',
+    summary: 'Apply an edited config.yaml without restarting the gateway',
+    notes: [
+      'The config is `config.yaml` in the gateway\'s config directory (`~/.config/talkcode/` unless TALKCODE_CONFIG_FILE or TALKCODE_CONFIG_DIR says otherwise), with secrets in `.env` beside it. Edit the file, then run reload — the user can do the same with /reload.',
+      'Nothing is applied when the file does not load: the error says what is wrong and the gateway keeps running on the old config. Fix it and reload again.',
+      'Agents, routing, access, session, display, title and voice apply at once. A changed agent restarts its process on the conversation\'s next message and resumes its session — including the agent you are, if you change your own definition. A turn already running finishes on the old definition. A new `model` only applies to new sessions (/new).',
+      'platforms (credentials, instances) only change on a daemon restart, which ends every conversation\'s agent process, yours included; reload says when one is needed. Restarting is the user\'s call, not yours.',
     ],
   },
   {
@@ -489,5 +508,16 @@ export const REVERSE_COMMANDS: ReverseCommandSpec[] = [
       { flags: '--timeout <duration>', description: 'add: --bash time limit, e.g. 90s, 10m (default 10m, max 6h)', parse: durationArg },
     ],
     build: buildSchedule,
+  },
+  {
+    usage: 'reload',
+    topic: 'config',
+    description: 'Apply an edited config.yaml (and its .env) to the running gateway, without a restart; prints what changed',
+    options: [],
+    build: (_positionals, opts) => {
+      // About the whole deployment, like `channels`: a target would mean nothing.
+      if (str(opts.channel) !== undefined) throw new Error('reload applies to the whole gateway; --channel does not apply');
+      return { kind: 'reload-config' };
+    },
   },
 ];

@@ -14,6 +14,7 @@
 | `/cd` | 选这个会话的工作目录，见[工作目录](working-directory.md) |
 | `/title` | 给这个话题起名字；不起则自动命名，见[话题命名](topic-names.md) |
 | `/setting` | 改 config.yaml 里的设置，见[在聊天里改配置](settings.md) |
+| `/reload` | 改完 config.yaml 后不重启直接生效，见[配置](configuration.md#守护进程运行时改配置) |
 | `/cc`、`/oc`、`/cx`、`/gm`、`/agy` | 每个已配置 harness 一个，见[下文](#智能体命令) |
 | `/compact`、`/context`、`/model`、`/effort`、`/usage`、`/doctor`、`/mcp`、`/init`、`/review` | 通用词表，按 harness 翻译成各自的原生拼写，见[下文](#通用命令) |
 

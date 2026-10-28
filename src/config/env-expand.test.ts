@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expandEnvVars, loadDotEnv } from './env-expand.js';
+import { applyDotEnvDelta, dotEnvDelta, expandEnvVars, loadDotEnv } from './env-expand.js';
 
 describe('expandEnvVars', () => {
   const env = { DISCORD_TOKEN: 'tok-123', EMPTY: '' } as NodeJS.ProcessEnv;
@@ -81,5 +81,27 @@ describe('loadDotEnv', () => {
     const env: NodeJS.ProcessEnv = {};
     loadDotEnv(path.join(os.tmpdir(), 'talkcode-definitely-missing'), env);
     expect(env).toEqual({});
+  });
+});
+
+describe('reloading .env (dotEnvDelta)', () => {
+  it('updates and drops what the sidecar supplied, never what the process was started with', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talkcode-dotenv-reload-'));
+    const file = path.join(dir, '.env');
+    const env: NodeJS.ProcessEnv = { REAL: 'from-process' };
+    fs.writeFileSync(file, 'A=one\nB=gone-soon\nREAL=from-file\n');
+    loadDotEnv(dir, env);
+    expect(env).toEqual({ REAL: 'from-process', A: 'one', B: 'gone-soon' });
+
+    fs.writeFileSync(file, 'A=two\nREAL=from-file-again\n');
+    const delta = dotEnvDelta(dir, env);
+    // Computing it changes nothing: a reload validates first.
+    expect(env.A).toBe('one');
+    expect(delta.set).toEqual({ A: 'two' });
+    expect(delta.unset).toEqual(['B']);
+
+    applyDotEnvDelta(env, delta);
+    expect(env).toEqual({ REAL: 'from-process', A: 'two' });
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

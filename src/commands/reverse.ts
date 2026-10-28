@@ -326,6 +326,8 @@ const DATA_PRINTERS: Partial<Record<IpcAction['kind'], (data: unknown) => string
   'schedule-add': renderScheduleTask,
   'schedule-op': renderScheduleTask,
   'schedule-list': renderScheduleList,
+  // Already a sentence written for a person (it is also the reply to /reload in chat).
+  'reload-config': (data) => (data as { summary?: string } | undefined)?.summary ?? '',
 };
 
 /**

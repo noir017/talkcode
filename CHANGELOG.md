@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`/reload` applies an edited config.yaml without restarting the daemon.** Until now every edit to
+  the file took a restart, and a restart ends every conversation's agent process, including the
+  one that made the edit. That process is a child of the daemon, so it cannot even restart the
+  daemon itself without cutting its own answer off. `/reload` in any chat, or `talkcode reload`
+  from an agent, re-reads `config.yaml` and `.env` and copies the result into the running daemon,
+  then replies with what changed. Agents, routing, access, session, display, title and voice take
+  effect at once. An agent whose definition changed restarts its process on each conversation's
+  next message and resumes its session there. A turn already running finishes first, and a harness
+  that cannot resume a session is left on its old definition until `/new` rather than restarted
+  blank. Conversations bound to a removed agent move to whichever agent routing picks now, and the
+  slash menu is registered again if the set of agent commands changed. `platforms` is the one
+  section that still needs a restart, because the adapters connect with those credentials once,
+  and the reply says so. A file that does not load changes nothing, `process.env` included, and the
+  reply names the field that is wrong. Variables from `.env` are listed by name, never by value.
+
 ## [2.6.0] - 2026-10-28
 
 ### Added

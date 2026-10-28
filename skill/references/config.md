@@ -13,9 +13,10 @@ per-field error message, so don't invent keys.
 - Every string supports `${VAR}` expansion from the environment, and a `.env` file next
   to the config is loaded first — prefer `token: ${DISCORD_TOKEN}` + `.env` over pasting
   secrets into the YAML.
-- After editing: run `talkcode doctor` to validate (it aggregates *all* schema
-  errors at once), then have the **user** restart the daemon — changes only apply on
-  restart, and you must never restart it yourself (you are its child process).
+- After editing: run `talkcode reload`. It validates first (reporting *all* schema
+  errors at once) and applies nothing if the file does not load; otherwise everything
+  but `platforms` takes effect at once. A `platforms` change needs the **user** to restart
+  the daemon — never restart it yourself (you are its child process).
 
 ## Top-level shape
 

@@ -63,12 +63,64 @@ export function expandEnvVars(raw: unknown, env: NodeJS.ProcessEnv = process.env
  * quotes around the value, `export ` prefix tolerated. No interpolation.
  */
 export function loadDotEnv(dir: string, env: NodeJS.ProcessEnv = process.env): void {
-  const file = path.join(dir, '.env');
+  applyDotEnvDelta(env, dotEnvDelta(dir, env));
+}
+
+/**
+ * The variables each environment object took from the sidecar, as opposed to the ones it was
+ * started with.
+ *
+ * "Already set" means "set by whoever started us" only at the first load. After it, every key the
+ * sidecar filled in is set too — by us — so a reload that went by `env[key] === undefined` alone
+ * could never change a value `.env` had already supplied, and would never drop one deleted from it.
+ * Keyed by the env object so a test's throwaway env keeps its own record.
+ */
+const sidecarKeys = new WeakMap<NodeJS.ProcessEnv, Set<string>>();
+
+/** What reading `<dir>/.env` (again) would do to an environment. */
+export interface DotEnvDelta {
+  /** Values to write: gaps the sidecar fills, and sidecar values that changed. */
+  set: Record<string, string>;
+  /** Keys the sidecar supplied before and no longer does. */
+  unset: string[];
+  /** Every key the sidecar supplies once this is applied. */
+  owned: Set<string>;
+}
+
+/**
+ * Compute, without touching `env`, what loading `<dir>/.env` would change. Split from applying it
+ * so a config reload can validate against the candidate environment first and leave the process
+ * exactly as it was when the new files do not load (see config/load.ts readConfig).
+ */
+export function dotEnvDelta(dir: string, env: NodeJS.ProcessEnv = process.env): DotEnvDelta {
+  const before = sidecarKeys.get(env) ?? new Set<string>();
+  const entries = readDotEnv(dir);
+  const delta: DotEnvDelta = { set: {}, unset: [], owned: new Set() };
+  for (const [key, value] of entries) {
+    // The process environment still wins, but only over keys it really set.
+    if (env[key] !== undefined && !before.has(key)) continue;
+    delta.owned.add(key);
+    if (env[key] !== value) delta.set[key] = value;
+  }
+  for (const key of before) if (!entries.has(key)) delta.unset.push(key);
+  return delta;
+}
+
+/** Apply a delta from dotEnvDelta to the environment it was computed against. */
+export function applyDotEnvDelta(env: NodeJS.ProcessEnv, delta: DotEnvDelta): void {
+  for (const [key, value] of Object.entries(delta.set)) env[key] = value;
+  for (const key of delta.unset) delete env[key];
+  sidecarKeys.set(env, delta.owned);
+}
+
+/** The sidecar's `KEY=value` pairs, in file order; empty when there is no file. */
+function readDotEnv(dir: string): Map<string, string> {
+  const entries = new Map<string, string>();
   let text: string;
   try {
-    text = fs.readFileSync(file, 'utf8');
+    text = fs.readFileSync(path.join(dir, '.env'), 'utf8');
   } catch {
-    return; // no sidecar — fine
+    return entries; // no sidecar — fine
   }
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
@@ -83,6 +135,7 @@ export function loadDotEnv(dir: string, env: NodeJS.ProcessEnv = process.env): v
     ) {
       value = value.slice(1, -1);
     }
-    if (env[key] === undefined) env[key] = value;
+    entries.set(key, value);
   }
+  return entries;
 }

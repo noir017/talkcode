@@ -199,7 +199,7 @@ const REFUSAL_REASON: Record<string, string> = {
   'platform credentials and instances':
     'they need a restart, and a credential has no business in a chat log',
   'an agent definition beyond its model':
-    'changing how an agent is launched needs a restart',
+    'how an agent is launched is an edit to its definition, not a value to pick from a list',
   "an agent's pre-launch hook":
     'it is a shell command this machine runs, and setting one from chat would be running commands on it remotely',
   'the routing pipeline': 'a routing rule is a structure, not a single value to pick',
@@ -427,7 +427,10 @@ export function resolveSettingKey(key: string, cfg: Config, ctx: SettingsContext
       text:
         `\`${key}\` is not editable from chat — ${group} stays in the file, because ` +
         `${REFUSAL_REASON[group] ?? 'it is not offered here'}.\n` +
-        'Edit config.yaml and restart the daemon.',
+        // Platforms are the one section /reload cannot apply (see daemon/config-reload.ts).
+        (group === NOT_EDITABLE.platforms
+          ? 'Edit config.yaml and restart the daemon.'
+          : 'Edit config.yaml, then send /reload.'),
     };
   }
   return { kind: 'unknown', key };

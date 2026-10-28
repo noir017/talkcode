@@ -14,6 +14,7 @@ Discord, Slack), and equally usable as plain text everywhere else.
 | `/cd` | choose the directory this conversation works in — see [Working directory](working-directory.md) |
 | `/title` | name this topic; it is named automatically otherwise — see [Topic names](topic-names.md) |
 | `/setting` | change a saved setting in config.yaml — see [Settings from chat](settings.md) |
+| `/reload` | apply an edited config.yaml without restarting — see [Configuration](configuration.md#changing-it-while-the-daemon-runs) |
 | `/cc`, `/oc`, `/cx`, `/gm`, `/agy` | one per configured harness — see [below](#agent-commands) |
 | `/compact`, `/context`, `/model`, `/effort`, `/usage`, `/doctor`, `/mcp`, `/init`, `/review` | a generic vocabulary, translated to each harness's own spelling — see [below](#generic-commands) |
 

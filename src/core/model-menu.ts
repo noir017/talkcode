@@ -238,7 +238,7 @@ export function modelSummaryText(selector: ModelSelector): string {
 export function modelNoSelectorText(): string {
   return (
     'This agent offers no model selector — it does not let the model be chosen at runtime. ' +
-    'Set `agents[].model` (or the harness\'s own env, e.g. ANTHROPIC_MODEL) and restart to change it.'
+    'Set `agents[].model` (or the harness\'s own env, e.g. ANTHROPIC_MODEL) in config.yaml and send /reload to change it.'
   );
 }
 

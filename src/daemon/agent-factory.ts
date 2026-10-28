@@ -1,4 +1,4 @@
-import type { Config } from '../config/schema.js';
+import { findAgent, type Config } from '../config/schema.js';
 import type { AgentFactory } from './agent.js';
 import { createAcpAgentFactory } from './agent-acp.js';
 import { createAgyAgentFactory } from './agent-agy.js';
@@ -23,11 +23,11 @@ export function createAgentFactory(cfg: Config, socketPath: string, store?: Conv
   const acp = createAcpAgentFactory(cfg, socketPath, store);
   const agy = createAgyAgentFactory(cfg, socketPath, store);
 
-  const usesAgy = new Set(cfg.agents.filter((a) => a.harness === 'agy').map((a) => a.id));
-
   return {
+    // Looked up per call, not once: a config reload (daemon/config-reload.ts) can add an agent, or
+    // move one between harnesses, and the runtime that serves it has to follow.
     getOrCreate: (sessionId, agentId) =>
-      (usesAgy.has(agentId) ? agy : acp).getOrCreate(sessionId, agentId),
+      (findAgent(cfg, agentId)?.harness === 'agy' ? agy : acp).getOrCreate(sessionId, agentId),
     // Same reason dispose fans out: the caller holds a conversation key, not an agent id. Asking
     // both is cheap (two Map lookups) and at most one of them can hold that key — the runtimes are
     // partitioned by agent, and a conversation has exactly one agent at a time.

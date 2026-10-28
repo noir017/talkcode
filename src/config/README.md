@@ -10,7 +10,7 @@ nothing else from the project.
 | File | Role |
 |---|---|
 | `schema.ts` | The zod schema, the frozen `EXPERIENCE` block, `Config` type, and accessor helpers |
-| `load.ts` | Path resolution (`configDir`/`configPath`/`defaultSocketPath`), `loadConfig`, `saveConfig`, `saveConfigPatch` |
+| `load.ts` | Path resolution (`configDir`/`configPath`/`defaultSocketPath`), `loadConfig`, `readConfig` (validate without committing, for a live reload), `saveConfig`, `saveConfigPatch` |
 | `env-expand.ts` | `${VAR}` expansion over the parsed tree + the `.env` sidecar loader |
 | `migrate.ts` | v0 (`platform:` object) → v1 (`platforms:` map). Disposable by design. |
 
@@ -86,7 +86,17 @@ Expansion sits after parse and before validation for a reason: `setup` and
 written back to disk. Do not move it.
 
 `${VAR}` resolves from `process.env` plus a `<configDir>/.env` sidecar (loaded without
-overriding existing env vars). `$${VAR}` escapes to a literal `${VAR}`. All missing
+overriding existing env vars). `$${VAR}` escapes to a literal `${VAR}`.
+
+A live reload (`/reload`, see [`daemon/config-reload.ts`](../daemon/README.md)) reads both files again
+through `readConfig`, which validates against a **candidate copy** of the environment and only
+writes process.env when the caller commits — a file that fails to load leaves the process as it
+was. Which keys came from the sidecar is remembered (`dotEnvDelta`), so a reload can change or drop
+a value `.env` supplied while the process's own environment still wins over it.
+
+A new top-level section must also be classified in `RELOAD_KIND` (`daemon/config-reload.ts`):
+applied live, or reported as needing a restart. It is a `satisfies Record` over the schema's keys,
+so leaving it out fails to compile. All missing
 variables are collected and thrown as **one** error listing every config path — the
 user fixes everything in one pass. Keep that aggregate style; it matches the zod error
 report.

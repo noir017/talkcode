@@ -9,7 +9,7 @@ import {
   type Config,
   type UserConfig,
 } from './schema.js';
-import { expandEnvVars, loadDotEnv } from './env-expand.js';
+import { applyDotEnvDelta, dotEnvDelta, expandEnvVars } from './env-expand.js';
 import { isLegacyConfig, migrateLegacyConfig } from './migrate.js';
 
 /**
@@ -51,6 +51,51 @@ export function expandHome(p: string): string {
 }
 
 export function loadConfig(): Config {
+  let read: ReadConfig;
+  try {
+    read = readConfig();
+  } catch (e) {
+    // At startup the wizard is the way out; a reload's caller is told what is wrong and nothing else
+    // (an agent must not run the interactive wizard, and a chat user cannot).
+    if (e instanceof ConfigValidationError) throw new Error(`${e.message}\nrun \`talkcode setup\``);
+    throw e;
+  }
+  const { config, commitEnv } = read;
+  commitEnv();
+  // Security warning (non-blocking): agents always run with full tool access (Bash / file writes),
+  // so an empty access.allowFrom means anyone who can message the bot can drive them with no
+  // authorization gate. Warn loudly but start anyway — set access.allowFrom to lock it down.
+  if (accessUnrestricted(config)) console.warn(UNRESTRICTED_WARNING);
+  return config;
+}
+
+/** The startup warning for an empty allowlist; also what a reload that empties it logs. */
+export const UNRESTRICTED_WARNING =
+  '[config] ⚠️  access.allowFrom is empty: anyone who can message the bot can trigger an agent ' +
+  'with full tool access (Bash / file writes). Set access.allowFrom (e.g. ["discord:123456789"]) ' +
+  'to restrict who can trigger it in any shared/public deployment.';
+
+/** The file parsed but does not match the schema; the message lists every issue with its path. */
+export class ConfigValidationError extends Error {}
+
+/** A config read from disk and validated, with the `.env` changes it was read against held back. */
+export interface ReadConfig {
+  config: Config;
+  /** Apply the `.env` sidecar's values to process.env. Until this runs, the process is untouched. */
+  commitEnv(): void;
+  /** Names (never values) of the variables commitEnv will set, change or remove. */
+  envChanges: string[];
+}
+
+/**
+ * Read and validate config.yaml and its `.env` sidecar WITHOUT changing anything.
+ *
+ * loadConfig at startup and a live reload (`/reload`, daemon/config-reload.ts) both come through
+ * here. The reload is why the environment is a candidate copy until `commitEnv`: a file that fails
+ * to load — a typo, a `${VAR}` that is no longer defined — must leave the running daemon exactly as
+ * it was, and that includes process.env, which every agent spawned afterwards inherits.
+ */
+export function readConfig(): ReadConfig {
   const p = configPath();
   if (!fs.existsSync(p)) {
     throw new Error(`config not found at ${p}; run \`talkcode setup\` first`);
@@ -79,8 +124,10 @@ export function loadConfig(): Config {
   // in the tree is expanded. This happens on a load-time copy only — the raw file
   // (and anything setup/saveConfig touch) keeps the ${VAR} templates, so expanded
   // secrets are never written back to disk.
-  loadDotEnv(configDir());
-  raw = expandEnvVars(raw);
+  const delta = dotEnvDelta(configDir());
+  const env: NodeJS.ProcessEnv = { ...process.env, ...delta.set };
+  for (const key of delta.unset) delete env[key];
+  raw = expandEnvVars(raw, env);
 
   const result = ConfigSchema.safeParse(raw);
   if (!result.success) {
@@ -89,22 +136,14 @@ export function loadConfig(): Config {
       const where = i.path.join('.') || '(root)';
       return `  - ${where}: ${i.message}`;
     });
-    throw new Error(`config validation failed ${p}:\n${lines.join('\n')}\nrun \`talkcode setup\``);
+    throw new ConfigValidationError(`config validation failed ${p}:\n${lines.join('\n')}`);
   }
-  // The file only carries the slim user surface; merge in the frozen experience defaults.
-  const cfg = withExperienceDefaults(result.data);
-
-  // Security warning (non-blocking): agents always run with full tool access (Bash / file writes),
-  // so an empty access.allowFrom means anyone who can message the bot can drive them with no
-  // authorization gate. Warn loudly but start anyway — set access.allowFrom to lock it down.
-  if (accessUnrestricted(cfg)) {
-    console.warn(
-      '[config] ⚠️  access.allowFrom is empty: anyone who can message the bot can trigger an agent ' +
-        'with full tool access (Bash / file writes). Set access.allowFrom (e.g. ["discord:123456789"]) ' +
-        'to restrict who can trigger it in any shared/public deployment.'
-    );
-  }
-  return cfg;
+  return {
+    // The file only carries the slim user surface; merge in the frozen experience defaults.
+    config: withExperienceDefaults(result.data),
+    commitEnv: () => applyDotEnvDelta(process.env, delta),
+    envChanges: [...Object.keys(delta.set), ...delta.unset].sort(),
+  };
 }
 
 /** Read the existing raw config object (before schema defaults); undefined if missing or unparseable. Used by setup to merge. */

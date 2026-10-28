@@ -16,6 +16,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `routing.ts` | Pure: inbound → which agent (and whether the user *asked* for it) + which scope |
 | `conversation.ts` | `ConversationRegistry` — per-conversation state, agent binding, access + gating, command translation |
 | `settings-store.ts` | The write half of `/setting`: validate, patch config.yaml, apply to the live `Config` |
+| `config-reload.ts` | `/reload` and `talkcode reload`: diff the re-read config against the live one, copy it in place, and say what changed. Which sections apply live and which need a restart is decided in its `RELOAD_KIND`; what happens to running agent processes is `ConversationRegistry.respawnAgents` |
 | `turn-runner.ts` | One turn end to end: prompt, streaming, tools, footer, errors |
 | `paced-adapter.ts` | Wraps every `PlatformAdapter` in the shared per-chat write budget |
 | `agent.ts` | `AgentFactory` / `AgentSession` / `AgentStreamHandlers` interfaces. Dependency-free. |

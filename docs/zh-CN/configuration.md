@@ -51,6 +51,25 @@ access:
 见[网页端](web-ui.md)，`title:` 见[话题命名](topic-names.md)，`voice:` 见[语音消息](voice.md)。
 其中几项也能在聊天里直接改、不用重启——见[在聊天里改配置](settings.md)。
 
+## 守护进程运行时改配置
+
+改完文件，在任意聊天里发 `/reload`。如果是智能体改的配置，它也可以执行 `talkcode reload`（这是反向命令，
+只能在会话里用）。守护进程会重新读取 `config.yaml` 和 `.env`，并回复改了什么：
+
+```
+config.yaml reloaded.
+- agents: added oc2; changed cc
+- applied: routing
+- conversations: 1 restart their agent on the next message
+```
+
+- 除 `platforms` 外都立即生效。`platforms` 的改动（换 token、加实例）会提示要重启守护进程才生效。
+- 改了定义的智能体，在每个会话的下一条消息时重启进程，并接上原来的会话。正在进行的回复会先跑完。
+  如果某个智能体的 harness 不支持恢复会话，已经在用它的会话会继续用旧定义，直到 `/new`。
+- 新的 `model:` 和 `/setting` 一样只对新会话生效：接上的旧会话沿用原来的模型，发 `/new` 才会用新模型。
+- 绑定在已删除智能体上的会话，会改由路由现在选中的智能体接手。
+- 文件加载失败时什么都不会改，回复里会说明哪里错了。
+
 ## CLI
 
 | 命令 | |

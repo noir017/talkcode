@@ -448,7 +448,9 @@ describe('what it refuses', () => {
     ['/setting platforms.tg.token abc', 'chat log'],
     ['/setting tools.mode off', 'frozen in the code'],
     ['/setting display.footer.enabled true', 'not editable from chat'],
-    ['/setting agents.oc.harness claude', 'needs a restart'],
+    ['/setting agents.oc.harness claude', 'then send /reload'],
+    // The one section /reload cannot apply still points at a restart.
+    ['/setting token abc', 'restart the daemon'],
   ];
 
   for (const [command, expected] of cases) {

@@ -141,6 +141,8 @@ const IpcActionSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('schedule-list'), id: z.string().min(1).optional() }).strict(),
+  // About the whole deployment: no target, so no channelId.
+  z.object({ kind: z.literal('reload-config') }).strict(),
   z
     .object({ kind: z.literal('schedule-op'), id: z.string().min(1), op: z.enum(['remove', 'pause', 'resume', 'run']) })
     .strict(),
@@ -194,6 +196,7 @@ export type IpcAction =
       timeoutMs?: number;
     }
   | { kind: 'schedule-list'; id?: string }
+  | { kind: 'reload-config' }
   | { kind: 'schedule-op'; id: string; op: 'remove' | 'pause' | 'resume' | 'run' };
 
 // Compile-time alignment: the zod-inferred type must equal the hand-written union;

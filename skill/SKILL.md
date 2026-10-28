@@ -32,6 +32,7 @@ current. `talkcode help` lists the topics.
 | `threads` | opening a thread from a message |
 | `ask` | a question with buttons that blocks until answered — only without a question tool of your own |
 | `voice` | what a voice message actually said, when one reads like a mishearing |
+| `config` | applying an edited config.yaml without a restart |
 
 ## Output and errors
 
@@ -59,8 +60,9 @@ whether each agent harness is installed and signed in. Run it first and report w
   this is the file it loaded), else `~/.config/talkcode/config.yaml`. **Before writing any
   config, read [references/config.md](references/config.md)**: it is the complete field reference,
   and the loader rejects keys that are not in it. Validate with `talkcode doctor` afterwards.
-- **Changes take effect on a daemon restart — never restart it yourself.** You are running as a
-  child of that daemon, so stopping it ends your own session mid-answer. Make the edit, then tell
-  the user to restart it.
+- **Apply an edit with `talkcode reload` — never restart the daemon yourself.** Reload applies
+  everything except `platforms` at once and prints what changed (`talkcode help config`). A
+  platform change still needs a restart: you are running as a child of that daemon, so stopping it
+  ends your own session mid-answer — tell the user to restart it.
 - **`talkcode setup`** is an interactive wizard for a person at a terminal. Don't run it — it
   waits for keyboard input you cannot give. Edit the config file instead.

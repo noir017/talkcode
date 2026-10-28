@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Config } from '../config/schema.js';
-import { agentDisplayName, findAgent } from '../config/schema.js';
+import { accessUnrestricted, agentDisplayName, findAgent } from '../config/schema.js';
+import { readConfig, UNRESTRICTED_WARNING, type ReadConfig } from '../config/load.js';
+import { applyConfig, describeReload, diffConfig } from './config-reload.js';
 import {
   agentCommandSpecs,
   agentForCommand,
@@ -165,6 +167,7 @@ const GATEWAY_QUERY_KINDS = {
   'schedule-add': true,
   'schedule-list': true,
   'schedule-op': true,
+  'reload-config': true,
 } as const satisfies Partial<Record<IpcAction['kind'], true>>;
 type GatewayQuery = Extract<IpcAction, { kind: keyof typeof GATEWAY_QUERY_KINDS }>;
 const isGatewayQuery = (a: IpcAction): a is GatewayQuery => a.kind in GATEWAY_QUERY_KINDS;
@@ -773,6 +776,8 @@ export class Daemon {
         this.onEffortMenuRequest(id, agentId, msg, selector),
       // A `/setting` on a platform that can carry (and later edit) buttons.
       onSettingMenuRequest: (id, msg, menu) => this.onSettingMenuRequest(id, msg, menu),
+      // `/reload`: the same entry `talkcode reload` uses, answered with the same sentence.
+      onReloadRequest: () => this.reloadConfig().summary,
       // `/setting schedule …` — the tasks live here, not in the registry.
       onScheduleSetting: (id, msg, args, canMenu) => this.onScheduleSetting(id, msg, args, canMenu),
       scheduleSummary: () =>
@@ -1057,11 +1062,66 @@ export class Daemon {
         return this.requireSchedules().list(id, action.id);
       case 'schedule-op':
         return { task: this.requireSchedules().op(action.id, action.op, id) };
+      case 'reload-config': {
+        // A file that did not load is an error to the CLI (non-zero exit), not a printed result.
+        const reload = this.reloadConfig();
+        if (!reload.ok) throw new Error(reload.summary);
+        return reload;
+      }
       default: {
         const _exhaustive: never = action;
         throw new Error(`unknown gateway query: ${JSON.stringify(_exhaustive)}`);
       }
     }
+  }
+
+  /**
+   * `/reload` and `talkcode reload`: re-read config.yaml and `.env` and apply what a running daemon
+   * can take (see daemon/config-reload.ts for what that is and why it is done in place).
+   *
+   * Never throws: a file that does not load becomes the answer, and in that case NOTHING has
+   * changed — readConfig validates against a candidate environment, so even process.env is only
+   * written once the new config is known to be good.
+   */
+  reloadConfig(): { ok: boolean; summary: string } {
+    let read: ReadConfig;
+    try {
+      read = readConfig();
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      console.warn(`[reload] config.yaml not reloaded: ${why}`);
+      return { ok: false, summary: `config.yaml was not reloaded — nothing changed.\n${why}` };
+    }
+    const next = read.config;
+    const diff = diffConfig(this.config, next);
+    const commandsBefore = JSON.stringify(buildRegisteredSpecs(this.config));
+    const wasRestricted = !accessUnrestricted(this.config);
+
+    read.commitEnv();
+    applyConfig(this.config, next);
+
+    if (diff.sections.includes('session')) this.registry.idleTimeoutChanged();
+    const respawn = this.registry.respawnAgents(new Set([...diff.agentsChanged, ...diff.agentsRemoved]));
+    // Only when the set changed: re-registering is a platform API call per instance, and Telegram
+    // and Discord rate-limit it.
+    if (JSON.stringify(buildRegisteredSpecs(this.config)) !== commandsBefore) void this.registerCommands();
+
+    const warnings: string[] = [];
+    if (wasRestricted && accessUnrestricted(this.config)) {
+      console.warn(UNRESTRICTED_WARNING);
+      warnings.push('access.allowFrom is now empty: anyone who can message the bot can run an agent with full tool access');
+    }
+    // A task pinned to a removed agent fails each time it comes due; say so now rather than then.
+    const orphaned = (this.schedules?.tasks() ?? []).filter(
+      (t) => t.run.kind === 'agent' && diff.agentsRemoved.includes(t.run.agent)
+    );
+    if (orphaned.length) {
+      warnings.push(`scheduled task(s) ${orphaned.map((t) => t.id).join(', ')} run a removed agent; they will fail until changed or removed`);
+    }
+
+    const summary = describeReload(diff, respawn, read.envChanges, warnings);
+    console.log(`[reload] ${summary.replace(/\n/g, ' | ')}`);
+    return { ok: true, summary };
   }
 
   /** The schedule service, or a sentence saying this daemon was started without one. */
@@ -2618,9 +2678,10 @@ export class Daemon {
   /**
    * Register this deployment's fixed command set on every slash-capable instance.
    *
-   * Called once at startup: the set derives from config alone (see buildRegisteredSpecs), so unlike
-   * the previous agent-reported union it cannot change while running. Best-effort — a failure is
-   * logged and never throws, since slash is a convenience over plain-text commands.
+   * Called at startup, and again by a config reload that changes the set: it derives from config
+   * alone (see buildRegisteredSpecs), so unlike the previous agent-reported union nothing else can
+   * change it while running. Best-effort — a failure is logged and never throws, since slash is a
+   * convenience over plain-text commands.
    */
   private async registerCommands(): Promise<void> {
     const all = buildRegisteredSpecs(this.config);

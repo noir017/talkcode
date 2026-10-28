@@ -98,6 +98,7 @@ import { fallbackTitle, generateTitle } from '../core/title-namer.js';
 import { shouldRespond, type GateConfig } from '../core/inbound-gate.js';
 import { TurnRunner } from './turn-runner.js';
 import { StatusBoard } from './status-board.js';
+import type { RespawnCounts } from './config-reload.js';
 import { claudeProjectsDir, readCacheExpiry, type CacheReading } from './claude-transcript.js';
 import type { ConversationStore } from './conversation-store.js';
 import { buildChannelList } from '../core/channel-list.js';
@@ -114,6 +115,9 @@ const STOP_RE = /^\/stop(@\S+)?$/;
 
 /** `/kill` — end the agent's process without ending the conversation (see DAEMON_COMMANDS). */
 const KILL_RE = /^\/kill(@\S+)?$/;
+
+/** `/reload` — apply an edited config.yaml without a restart (see daemon/config-reload.ts). */
+const RELOAD_RE = /^\/reload(@\S+)?$/;
 
 /**
  * Spellings of the settings command the gateway answers.
@@ -314,6 +318,13 @@ interface ConversationState {
   modelOverride?: string;
   /** If set, reclaim this conversation's agent child as soon as the merger becomes idle. */
   reclaimOnIdle?: boolean;
+  /**
+   * If set, a config reload changed this conversation's agent while a turn was running: drop the
+   * session when the merger becomes idle, so the next turn is built from the new definition (see
+   * respawnAgents). Unlike reclaimOnIdle it is NOT cancelled by a new message — the definition is
+   * still stale however busy the conversation stays.
+   */
+  respawnOnIdle?: boolean;
   /** Platform instance of the most recently routed message (a shared-scope conversation may hop instances). */
   platform: string;
   /**
@@ -493,6 +504,11 @@ export class ConversationRegistry {
        * `open` is set when the user named a key (`/setting idle`), so the menu skips the list level
        * and lands on that setting's values.
        */
+      /**
+       * `/reload`: re-read config.yaml and apply it. The daemon does it — it owns the files, the
+       * platforms and the slash registration — and answers with the sentence to post.
+       */
+      onReloadRequest?(): string;
       onSettingMenuRequest?(
         id: ConversationId,
         msg: InboundMessage,
@@ -731,6 +747,55 @@ export class ConversationRegistry {
     return true;
   }
 
+  /**
+   * A config reload changed or removed these agents: move every conversation running one of them
+   * onto what config says now. Returns how each was handled, for the reply (see describeReload).
+   *
+   * A session captures its agent definition when it is created, so "onto the new definition" means
+   * dropping the session — through the factory, so the handle goes too and the next getOrCreate
+   * builds one from the current config. When:
+   *  - no child running (never started, reclaimed, crashed): now; it costs nothing;
+   *  - idle, with a child that can resume: now. The next message respawns it and session/load puts
+   *    the context back — the path an idle reclaim takes;
+   *  - mid-turn, or holding a pending ask: when the merger goes idle (respawnOnIdle). A reload never
+   *    cuts a turn short;
+   *  - a harness that cannot resume a session: not at all. Restarting it would restart the user's
+   *    task blank, the degradation idle reclaim refuses too; it moves at the next /new. Except for
+   *    an agent that was REMOVED — nothing is left to protect, and route() rebinds the
+   *    conversation on its next message anyway.
+   */
+  respawnAgents(agentIds: ReadonlySet<string>): RespawnCounts {
+    const counts: RespawnCounts = { now: 0, afterTurn: 0, kept: 0 };
+    for (const [id, state] of this.conversations) {
+      if (!agentIds.has(state.agentId)) continue;
+      const session = this.agents.peek(id);
+      if (!session) continue;
+      const removed = !findAgent(this.config, state.agentId);
+      const reclaim = session.reclaimState?.() ?? 'unresumable';
+      if (reclaim === 'no-child') {
+        this.agents.dispose(id);
+        continue;
+      }
+      if (reclaim === 'unresumable' && !removed) {
+        counts.kept++;
+        continue;
+      }
+      if (!state.merger.isIdle() || this.hooks?.hasPendingWork?.(id)) {
+        state.respawnOnIdle = true;
+        counts.afterTurn++;
+        continue;
+      }
+      this.agents.dispose(id);
+      counts.now++;
+    }
+    return counts;
+  }
+
+  /** `session.idleTimeoutMs` was replaced by a config reload: the sweeper's timer has to follow. */
+  idleTimeoutChanged(): void {
+    this.rearmIdleSweeper();
+  }
+
   reclaimIdleSessions(): void {
     const idleMs = this.config.session.idleTimeoutMs;
     if (!(idleMs > 0)) return; // disabled, or absent from a hand-built config (see startIdleSweeper)
@@ -938,7 +1003,7 @@ export class ConversationRegistry {
       //  3. the pipeline / routing.default.
       // Order matters: reading the store first would make the first message after a restart
       // ignore its own `/cc` prefix and answer as whoever was bound before.
-      const agentId = choice.explicit ? choice.agentId : (this.store?.boundAgent(key) ?? choice.agentId);
+      const agentId = choice.explicit ? choice.agentId : (this.storedBinding(key) ?? choice.agentId);
       state = {
         merger: this.buildMerger(key),
         agentId,
@@ -954,9 +1019,7 @@ export class ConversationRegistry {
       // of the sticky binding, and the fix for "first message answered by oc, second by claude".
       // Note what is NOT done here: the outgoing agent's own session id stays in the store, so
       // switching back resumes its thread instead of restarting the task.
-      if (choice.explicit && choice.agentId !== state.agentId) {
-        this.rebind(key, state, choice.agentId, conv.platform, address);
-      }
+      if (this.mustRebind(key, state, choice)) this.rebind(key, state, choice.agentId, conv.platform, address);
     }
 
     // A bare `/oc` with nothing to say: it is a binding instruction, not a prompt — the binding is
@@ -1286,6 +1349,28 @@ export class ConversationRegistry {
    * The id is read from the store rather than from in-memory state so the first message after a
    * restart is held to the same rule: in-memory state is gone then, the session is not.
    */
+  /**
+   * The agent a previous run bound this conversation to, if it is still configured. A binding to an
+   * agent since removed (then reloaded or restarted) counts as none: there is nothing left to
+   * resume, and keeping it would fail every turn.
+   */
+  private storedBinding(key: ConversationId): string | undefined {
+    const stored = this.store?.boundAgent(key);
+    return stored !== undefined && findAgent(this.config, stored) ? stored : undefined;
+  }
+
+  /**
+   * Whether an existing conversation moves to `choice.agentId`: on an explicit `/name` for another
+   * agent, or when the agent it is bound to was removed by a config reload — then it moves on to
+   * whoever routing picks now.
+   */
+  private mustRebind(key: ConversationId, state: ConversationState, choice: AgentChoice): boolean {
+    if (choice.explicit && choice.agentId !== state.agentId) return true;
+    if (findAgent(this.config, state.agentId)) return false;
+    console.log(`[reload] ${key}: agent "${state.agentId}" is no longer configured; rebinding to "${choice.agentId}"`);
+    return true;
+  }
+
   private refuseAgentSwitch(
     key: ConversationId,
     choice: AgentChoice,
@@ -1295,6 +1380,8 @@ export class ConversationRegistry {
     if (!choice.explicit) return false;
     const bound = this.conversations.get(key)?.agentId ?? this.store?.boundAgent(key);
     if (!bound || bound === choice.agentId) return false;
+    // Removed from config since: its session cannot be resumed any more, so there is nothing to lose.
+    if (!findAgent(this.config, bound)) return false;
     const sessionId = this.store?.agentSession(key, bound);
     if (sessionId === undefined) return false;
     console.log(`[conversation] ${key} is bound to "${bound}" with a session; refused a switch to "${choice.agentId}"`);
@@ -1388,7 +1475,7 @@ export class ConversationRegistry {
       .get(msg.conversation.platform)
       ?.sendMessage(
         address,
-        `No ${missing} agent is configured here, so /${missing} selects nothing. Add one under \`agents:\` in config.yaml (\`harness: ${missing}\`) and restart the daemon; /help lists the agents this gateway does have.`
+        `No ${missing} agent is configured here, so /${missing} selects nothing. Add one under \`agents:\` in config.yaml (\`harness: ${missing}\`) and send /reload; /help lists the agents this gateway does have.`
       )
       .catch((e) => console.warn('[conversation] failed to report an unconfigured harness:', e instanceof Error ? e.message : e));
     return true;
@@ -1458,13 +1545,8 @@ export class ConversationRegistry {
       return true;
     }
 
-    // `/help` lists what THIS gateway understands, which is the vocabulary a chat user has no other
-    // way to discover — the platform menu shows names without saying who answers them, and the
-    // harness's own /help knows nothing about /new, /oc or the generic translation.
-    if (HELP_RE.test(text)) {
-      this.sendHelp(key, fallbackAgent, conv.platform, address);
-      return true;
-    }
+    // `/help` and `/reload`: about the gateway, not this conversation's agent.
+    if (this.answerGatewayCommand(key, text, fallbackAgent, conv, address, ack)) return true;
 
     // `/setting` — the only one of these whose effect outlives the conversation: it writes
     // config.yaml. Parsed rather than regex-matched because, unlike the rest, it takes arguments.
@@ -1508,6 +1590,33 @@ export class ConversationRegistry {
     }
 
     return false;
+  }
+
+  /**
+   * The daemon commands about the gateway itself rather than this conversation's agent: `/help`
+   * and `/reload`. Split out of answerDaemonCommand only to keep that one readable.
+   */
+  private answerGatewayCommand(
+    key: ConversationId,
+    text: string,
+    fallbackAgent: string,
+    conv: ConversationRef,
+    address: ConversationAddress,
+    ack: (what: string, body: string) => void
+  ): boolean {
+    // `/help` lists what THIS gateway understands, which is the vocabulary a chat user has no other
+    // way to discover — the platform menu shows names without saying who answers them, and the
+    // harness's own /help knows nothing about /new, /oc or the generic translation.
+    if (HELP_RE.test(text)) {
+      this.sendHelp(key, fallbackAgent, conv.platform, address);
+      return true;
+    }
+    // `/reload` applies config.yaml to the running daemon. About the whole deployment rather than
+    // this conversation, but asked from one, so the answer goes back to it.
+    if (!RELOAD_RE.test(text)) return false;
+    console.log(`[conversation] /reload by ${conv.platform}:${conv.user}`);
+    ack('/reload', this.hooks?.onReloadRequest?.() ?? 'Reloading the config is not available in this daemon.');
+    return true;
   }
 
   /**
@@ -3038,6 +3147,11 @@ ${formatTokens(left)} left before compaction — ${name}`;
           if (state?.reclaimOnIdle) {
             state.reclaimOnIdle = false;
             this.reclaimSession(conversationId, 'ask timed out (1h)');
+          }
+          if (state?.respawnOnIdle) {
+            state.respawnOnIdle = false;
+            this.agents.dispose(conversationId);
+            console.log(`[reload] ${conversationId}: turn over — agent "${state.agentId}" restarts on its new definition with the next message`);
           }
         },
       }

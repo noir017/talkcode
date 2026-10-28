@@ -65,6 +65,10 @@ export type Harness = AgentDef['harness'];
  * machine to edit YAML and restarting, which stops every resident agent — is the cost this gateway
  * exists to remove.
  *
+ * `/reload` is `/setting`'s other half: for a change made to config.yaml directly — an agent added,
+ * a route edited — it applies the file to the running daemon (daemon/config-reload.ts). Without it
+ * the only way was a restart, which ends every resident agent, including the one that made the edit.
+ *
  * `/cd` is the one that costs the most when used, and it is here rather than in the generic
  * vocabulary because it is not a question for the harness at all: the directory is recorded against
  * the CONVERSATION and read at spawn, so every harness gets it, including the ones (agy) that
@@ -78,6 +82,7 @@ export const DAEMON_COMMANDS: SlashCommandSpec[] = [
   { name: 'kill', description: 'End the agent process (keeps the conversation; the next message resumes it)' },
   { name: 'cd', description: 'Choose the working directory (starts a fresh session there)' },
   { name: 'setting', description: 'Change a saved setting (default agent, model, session)' },
+  { name: 'reload', description: 'Apply an edited config.yaml without restarting the daemon' },
   { name: 'title', description: 'Name this topic (it is named automatically otherwise)' },
   { name: 'skills', description: "List the current agent's own commands" },
   { name: 'help', description: 'List the commands this gateway understands' },
