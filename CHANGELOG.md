@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-28
+
 ### Added
 
 - **An agent can run a command of yours before it starts: `hooks.preLaunch`.** Some agents need
