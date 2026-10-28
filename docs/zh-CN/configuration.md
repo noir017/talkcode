@@ -44,7 +44,7 @@ access:
 `${VAR}` 从环境变量及 `<配置目录>/.env` 展开，YAML 本身可以提交进仓库。
 
 > [!WARNING]
-> 智能体拥有完整工具权限。`access.allowFrom` 留空意味着任何能给机器人发消息的人
+> 除非设成 [`permissions: ask`](agents.md#权限请求)，智能体拥有完整工具权限。`access.allowFrom` 留空意味着任何能给机器人发消息的人
 > 都能在你的机器上执行命令——共享部署务必填写白名单。
 
 其余配置在用到它的地方讲：各 harness 的选项见[智能体](agents.md)，网页端的 `terminal:`、`sso:`

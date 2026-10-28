@@ -156,6 +156,9 @@ DMs always get a response regardless of `requireMention` (frozen behavior).
   model: <model-id>     # best-effort; whether it applies depends on the harness
   env:                  # env vars injected into the agent subprocess; ${VAR} expands
     ANTHROPIC_API_KEY: ${MY_KEY}
+  permissions: auto     # auto (default) | ask — see below
+  hooks:
+    preLaunch: docker start my-agent   # bash -lc, run to completion before every spawn
 ```
 
 Notes:
@@ -167,8 +170,14 @@ Notes:
   CLI-answered slash (`/model`, `/usage`) aborts the whole session; pass
   `args: ["--disable-slash-commands=false"]` to opt back in. Every default flag is
   overridable via `args` (appended after the defaults; agy's parsing is last-wins).
-- There is **no per-tool permission config**: the daemon auto-approves every tool
-  request, so agents run with full tool access. The only gate is `access.allowFrom`.
+- `permissions: auto` (the default) approves every tool request the agent asks about, so it
+  runs with full tool access and the only gate is `access.allowFrom`. `permissions: ask` puts
+  each request to the user as buttons in the chat; one nobody answers within an hour is
+  declined, and the agent is told no one answered (not that the user refused). Scheduled runs
+  are always approved. Only harnesses that ask at all are affected — Claude Code does in its
+  default mode; Codex and OpenCode did not ask when measured. Not available for `agy`.
+- `hooks.preLaunch` runs before every start of the agent's process; a non-zero exit or 60s
+  without finishing fails the turn and the agent is not started. See docs/agents.md.
 
 ## `routing`
 

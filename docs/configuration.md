@@ -46,7 +46,8 @@ access:
 the YAML can be committed.
 
 > [!WARNING]
-> Agents run with full tool access. An empty `access.allowFrom` lets anyone
+> Agents run with full tool access unless set to
+> [`permissions: ask`](agents.md#permission-requests). An empty `access.allowFrom` lets anyone
 > who can message the bot run commands on your machine — fill it in any
 > shared deployment.
 

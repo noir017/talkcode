@@ -70,11 +70,13 @@ import { withOutboundPacing } from './paced-adapter.js';
 import type {
   AgentCommand,
   AgentElicitation,
+  AgentPermissionRequest,
   ButtonInteraction,
   CommandInteraction,
   ConversationId,
   EffortSelector,
   ElicitAnswer,
+  PermissionAnswer,
   ElicitQuestion,
   InboundMessage,
   MessageRef,
@@ -318,6 +320,20 @@ export function composeElicitPrompt(
   return note ? `${body}\n\n${note}` : body;
 }
 
+/** How much of a tool call's title a permission bubble shows; a heredoc can run to pages. */
+const PERMISSION_TITLE_MAX = 600;
+
+/**
+ * The bubble a `permissions: ask` request is posted as: what the agent wants to run, in a code
+ * block because it usually is code (a shell command, a path), and what happens if nobody answers —
+ * said up front, since the answer decides whether the turn can go on.
+ */
+export function composePermissionPrompt(title: string, timeoutMs: number): string {
+  const shown = title.length > PERMISSION_TITLE_MAX ? `${title.slice(0, PERMISSION_TITLE_MAX)}…` : title;
+  const minutes = Math.round(timeoutMs / 60_000);
+  return `🔐 The agent asks to run:\n\`\`\`\n${shown}\n\`\`\`\nNo answer within ${minutes} min declines it.`;
+}
+
 /**
  * Affordance line under a live multi-select question.
  *
@@ -395,7 +411,14 @@ export function buildAskButtons(
  * `labels` is a list rather than one string because a multi-select round resolves with everything
  * that was ticked; a single-select round always carries exactly one, and neither is ever empty.
  */
-export type AskOutcome = { kind: 'option'; labels: string[] } | { kind: 'text'; text: string };
+export type AskOutcome =
+  | { kind: 'option'; labels: string[] }
+  | { kind: 'text'; text: string }
+  /**
+   * Nobody answered in time. Apart from null (called off) because a permission request has to
+   * tell the agent which of the two happened; the other callers read both as "no answer".
+   */
+  | { kind: 'timeout' };
 
 /**
  * What happened to a conversation while the next round of its form was still being posted.
@@ -752,6 +775,9 @@ export class Daemon {
       // The agent stopped mid-turn to ask the user something (ACP elicitation) → buttons.
       onElicitRequest: (id, platform, address, request) =>
         this.onElicitRequest(id, platform, address, request),
+      // An agent configured `permissions: ask` wants to run a tool → buttons, same lane.
+      onPermissionRequest: (id, platform, address, request) =>
+        this.onPermissionRequest(id, platform, address, request),
       // Idle reclaim asks before stopping a child: a pending `ask` is the daemon holding work for a
       // conversation from OUTSIDE any turn, so the merger looks idle while a CLI process sits
       // blocked on a button nobody has pressed yet. (This is the guard PendingAsk.conversationId is
@@ -1161,7 +1187,12 @@ export class Daemon {
     // the prompt came from the agent itself rather than from a schema it has to validate against.
     // The join is a formality: `ask` never requests a multi-select, so there is always one label.
     return {
-      chosen: chosen === null ? null : chosen.kind === 'option' ? chosen.labels.join(', ') : chosen.text,
+      chosen:
+        chosen === null || chosen.kind === 'timeout'
+          ? null
+          : chosen.kind === 'option'
+            ? chosen.labels.join(', ')
+            : chosen.text,
     };
   }
 
@@ -1186,7 +1217,7 @@ export class Daemon {
     labels: string[],
     timeoutMs: number,
     conversationId?: ConversationId,
-    opts: { acceptsText?: boolean; multi?: boolean } = {}
+    opts: { acceptsText?: boolean; multi?: boolean; timeoutNote?: string } = {}
   ): Promise<AskOutcome | null> {
     const reqId = randomUUID().slice(0, 8);
     const acceptsText = opts.acceptsText ?? true;
@@ -1199,7 +1230,7 @@ export class Daemon {
       (ref) =>
         new Promise<AskOutcome | null>((resolve) => {
           const timer = setTimeout(() => {
-            if (this.settleAsk(reqId, null, '(timed out)')) {
+            if (this.settleAsk(reqId, { kind: 'timeout' }, opts.timeoutNote ?? '(timed out)')) {
               if (conversationId !== undefined && timeoutMs >= DEFAULT_ASK_TIMEOUT_MS) {
                 this.registry.reclaimAfterAskTimeout(conversationId);
               }
@@ -1360,6 +1391,47 @@ export class Daemon {
   }
 
   /**
+   * A `permissions: ask` agent wants to run a tool: post its options as buttons and wait.
+   *
+   * Buttons only — a typed reply is not taken as an answer. Unlike a question, nothing typed maps
+   * cleanly onto "allow once" or "always allow", and a sentence like "no, use the other file"
+   * belongs to the agent as the user's next message, not to this bubble as a guess at an option.
+   * A platform that cannot show buttons cannot ask at all, and says so (`unavailable`) rather than
+   * approving.
+   *
+   * The timeout is the `ask` one (an hour, with the half-hour reminder): a permission request is the
+   * same "the agent is blocked until you answer" as a question, and two clocks for one kind of wait
+   * would be a difference nobody could see the reason for.
+   */
+  private async onPermissionRequest(
+    conversationId: ConversationId,
+    platform: PlatformAdapter,
+    address: ConversationAddress,
+    request: AgentPermissionRequest
+  ): Promise<PermissionAnswer> {
+    if (!platform.capabilities.buttons) {
+      return { kind: 'unavailable', why: `${platform.platformType} cannot show buttons` };
+    }
+    const answer = await this.askButtons(
+      platform,
+      address,
+      composePermissionPrompt(request.title, DEFAULT_ASK_TIMEOUT_MS),
+      request.options.map((o) => o.label),
+      DEFAULT_ASK_TIMEOUT_MS,
+      conversationId,
+      {
+        acceptsText: false,
+        timeoutNote: '⏱ Nobody answered — declined. The agent was told no one answered, not that you refused.',
+      }
+    );
+    if (answer === null) return { kind: 'cancelled' };
+    if (answer.kind === 'timeout') return { kind: 'unanswered', waitedMs: DEFAULT_ASK_TIMEOUT_MS };
+    if (answer.kind !== 'option') return { kind: 'cancelled' }; // unreachable: acceptsText is false
+    const picked = request.options.find((o) => o.label === answer.labels[0]);
+    return picked ? { kind: 'selected', optionId: picked.optionId } : { kind: 'cancelled' };
+  }
+
+  /**
    * The agent stopped mid-turn to ask the user something (ACP elicitation) — put each question to
    * them as buttons, in order, and hand back what they picked.
    *
@@ -1432,7 +1504,7 @@ export class Daemon {
         conversationId,
         { acceptsText: q.customKey !== undefined, multi }
       );
-      if (answer === null) {
+      if (answer === null || answer.kind === 'timeout') {
         console.log(`[elicit] ${conversationId}: question ${i + 1} went unanswered; cancelling`);
         return { action: 'cancel' };
       }

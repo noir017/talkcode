@@ -62,13 +62,6 @@ export const AgentDefSchema = z
      * Unset = trust the harness's number.
      */
     contextWindow: z.number().int().positive().optional(),
-    /**
-     * NOTE: there is no per-call permission policy here. As the ACP client, the daemon
-     * auto-approves every tool request (session/request_permission) — agents run with full
-     * tool access. Tightening tool permissions, if wanted, is delegated to the harness itself
-     * (via this agent's args/env); the daemon's only access control is access.allowFrom (who
-     * may trigger the agent at all).
-     */
     /** Env vars injected into the subprocess (credentials etc.); supports ${VAR} expansion. */
     env: z.record(z.string()).default({}),
     /**
@@ -88,10 +81,26 @@ export const AgentDefSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * How the daemon answers when the agent asks leave to run a tool (ACP
+     * `session/request_permission`). `auto`, the default, approves — what every agent has always
+     * had, with access.allowFrom as the only gate. `ask` puts the request to the user as buttons in
+     * the chat, and one nobody answers is declined with the agent told so (see agent-acp.ts
+     * answerPermission). Only matters for a harness that asks at all — measured 2026-10-28:
+     * claude-agent-acp 0.81.2 does in its default mode; codex-acp 2.3.0 (mode `agent`) and
+     * opencode 2.2.0 ran a file-writing command without asking.
+     */
+    permissions: z.enum(['auto', 'ask']).default('auto'),
   })
   .refine((a) => a.harness !== 'custom' || (a.command && a.command.length > 0), {
     message: 'command is required when harness=custom',
     path: ['command'],
+  })
+  // agy speaks no ACP and is launched with --dangerously-skip-permissions (agent-agy.ts): there is
+  // no request for the gateway to put to anyone, so `ask` would be a promise silently not kept.
+  .refine((a) => a.harness !== 'agy' || a.permissions !== 'ask', {
+    message: 'permissions: ask is not available for agy — it has no permission requests the gateway can answer',
+    path: ['permissions'],
   });
 export type AgentDef = z.infer<typeof AgentDefSchema>;
 

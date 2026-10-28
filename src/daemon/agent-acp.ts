@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Readable, Writable } from 'node:stream';
-import { client, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { client, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type {
   ActiveSession,
   ClientConnection,
@@ -19,7 +19,14 @@ import type {
   SessionConfigOption,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentElicitation, ElicitOption, ElicitQuestion, SteerOutcome } from '../types.js';
+import type {
+  AgentElicitation,
+  AgentPermissionRequest,
+  ElicitOption,
+  ElicitQuestion,
+  PermissionAnswer,
+  SteerOutcome,
+} from '../types.js';
 import type { AgentDef, Config } from '../config/schema.js';
 import { findAgent } from '../config/schema.js';
 import type {
@@ -841,6 +848,35 @@ function createAcpSession(
       awaitingUser--;
     }
   }
+
+  /**
+   * Answer an ACP `session/request_permission`: approve under `permissions: auto` (the default,
+   * see decidePermission), or put it to the user under `permissions: ask`.
+   *
+   * Asked through the running turn's handlers, so it lands in the lane the turn is answering in;
+   * with no turn open (background work the agent left running), through a follow-up burst's, which
+   * ask in the conversation's own lane. Counted in `awaitingUser` like an elicitation, so the
+   * silence watchdog does not fail a turn whose user is reading the request. What comes back is
+   * translated by permissionResponse, which is where "nobody answered" becomes something the agent
+   * can tell apart from a refusal.
+   */
+  async function answerPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    if (def.permissions !== 'ask') return decidePermission(params);
+    const ask = (turnState ?? followUp(false))?.handlers.onPermission;
+    let answer: PermissionAnswer;
+    if (!ask) {
+      answer = { kind: 'unavailable', why: 'no chat to ask in' };
+    } else {
+      awaitingUser++;
+      try {
+        answer = await ask(permissionRequestOf(params));
+      } finally {
+        awaitingUser--;
+      }
+    }
+    console.log(`[acp] ${conversationId}: permission for ${JSON.stringify(permissionRequestOf(params).title)} → ${answer.kind}`);
+    return permissionResponse(params, answer);
+  }
   /**
    * Tool ids that were still open when the last cancel landed.
    *
@@ -1206,7 +1242,7 @@ function createAcpSession(
     const app = client()
       .onRequest(
         'session/request_permission',
-        ({ params }): RequestPermissionResponse => decidePermission(params)
+        ({ params }): Promise<RequestPermissionResponse> => answerPermission(params)
       )
       .onRequest(
         'elicitation/create',
@@ -2262,13 +2298,11 @@ function isAuthRequired(err: unknown): boolean {
 }
 
 /**
- * Permission decision (client side answering session/request_permission).
- *
- * The daemon is a headless ACP client and does NOT impose a per-call permission policy: every tool
- * request is auto-approved (agents run with full tool access). Restricting tools, if wanted, is the
- * harness's job (via the agent's args/env); the daemon's only access control is access.allowFrom
- * (who may trigger the agent at all). Picks allow_once when offered, else any allow_*; if the agent
- * somehow offers no allow option, falls back to cancelled (can't fabricate an option id).
+ * The `permissions: auto` answer to session/request_permission — the default, and what every
+ * agent got before `ask` existed: approve, so agents run with full tool access and the only gate
+ * is access.allowFrom (who may trigger the agent at all). Also how a scheduled run is answered
+ * under `ask`, since nobody is there to be asked. Picks allow_once when offered, else any allow_*;
+ * if the agent somehow offers no allow option, falls back to cancelled (can't fabricate an id).
  */
 export function decidePermission(req: RequestPermissionRequest): RequestPermissionResponse {
   const opts = req.options;
@@ -2276,6 +2310,71 @@ export function decidePermission(req: RequestPermissionRequest): RequestPermissi
     opts.find(pred)?.optionId;
   const allow = pick((o) => o.kind === 'allow_once') ?? pick((o) => o.kind.startsWith('allow'));
   return allow ? { outcome: { outcome: 'selected', optionId: allow } } : { outcome: { outcome: 'cancelled' } };
+}
+
+/**
+ * The JSON-RPC error code a declined-without-an-answer permission request is returned with. In the
+ * range JSON-RPC leaves to implementations, and not one ACP itself uses (-32000 is auth_required,
+ * -32002 resource_not_found).
+ */
+export const PERMISSION_DECLINED_CODE = -32001;
+
+/** A permission request as the user is shown it: the tool call's title, and the agent's options. */
+export function permissionRequestOf(req: RequestPermissionRequest): AgentPermissionRequest {
+  const title = stripCode(req.toolCall.title ?? '') || buildInputPreview(req.toolCall.rawInput) || 'a tool call';
+  return { title, options: req.options.map((o) => ({ optionId: o.optionId, label: o.name || o.optionId })) };
+}
+
+/**
+ * Turn what became of a permission request into the ACP response.
+ *
+ * ── Why "declined" is an ERROR here, not the agent's reject option ───────────────────────────
+ * A request nobody answered has to reach the agent as exactly that — never as the user refusing
+ * (asked for in so many words, 2026-10-28). ACP's response carries no reason: it is an option id or
+ * `cancelled`, and the harness turns each into fixed words. Measured against claude-agent-acp
+ * 0.81.2 the same day: the reject option becomes "User refused permission to run tool", which here
+ * would be a lie, and `cancelled` becomes "Tool use aborted", which says nothing. A JSON-RPC error
+ * is the one channel that carries text — the adapter rethrows it (requestPermissionFromClient) and
+ * the model read ours: "nobody answered the request within 10 minutes, so it was declined
+ * automatically (not refused)". The tool does not run, and the turn goes on.
+ *
+ * Hyrum's Law: rethrowing the error is the adapter's internal behaviour, not the protocol's.
+ * agent-acp-permission.test.ts pins it against the installed adapter. And the error must be a
+ * RequestError: the SDK replaces any other exception's message with "Internal error".
+ */
+export function permissionResponse(
+  req: RequestPermissionRequest,
+  answer: PermissionAnswer
+): RequestPermissionResponse {
+  switch (answer.kind) {
+    case 'selected':
+      return { outcome: { outcome: 'selected', optionId: answer.optionId } };
+    case 'unattended':
+      return decidePermission(req);
+    case 'cancelled':
+      // ACP's own meaning: the turn was cancelled before anyone answered.
+      return { outcome: { outcome: 'cancelled' } };
+    case 'unanswered': {
+      const minutes = Math.round(answer.waitedMs / 60_000);
+      throw new RequestError(
+        PERMISSION_DECLINED_CODE,
+        `No one answered this permission request within ${minutes} minutes, so it was declined automatically. ` +
+          'This is not a refusal: the user did not respond to the request.',
+        { reason: 'unanswered' }
+      );
+    }
+    case 'unavailable':
+      throw new RequestError(
+        PERMISSION_DECLINED_CODE,
+        `This permission request could not be shown to the user (${answer.why}), so it was declined automatically. ` +
+          'This is not a refusal by the user.',
+        { reason: 'unavailable' }
+      );
+    default: {
+      const _exhaustive: never = answer;
+      throw new Error(`unknown permission answer: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
 }
 
 // ───────────────────────── session/update → handlers translation (core) ─────────────────────────

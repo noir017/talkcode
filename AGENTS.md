@@ -169,10 +169,14 @@ code, no unused vars (`_`-prefix to opt out), `complexity ≤ 18`,
 
 Do not weaken these without saying so explicitly in the PR:
 
-1. **Agents run with full tool access.** The daemon auto-approves every ACP
-   `session/request_permission`. The only access gate is `access.allowFrom`; an empty
-   allowlist means anyone who can message the bot can run commands on the operator's
-   machine. `loadConfig` and `doctor` warn loudly about this; keep the warning.
+1. **Agents run with full tool access by default.** Under `permissions: auto` (the default)
+   the daemon approves every ACP `session/request_permission`, and the only access gate is
+   `access.allowFrom`; an empty allowlist means anyone who can message the bot can run
+   commands on the operator's machine. `loadConfig` and `doctor` warn loudly about this; keep
+   the warning. An agent set to `permissions: ask` puts each request to the user instead, and
+   a request that cannot be put to anyone — or that nobody answers — is declined, never
+   approved (`daemon/agent-acp.ts` answerPermission). Keep that direction: a failure to ask
+   must never turn into a yes.
 2. **The IPC socket is the trust boundary.** Peer JSON is untrusted — it is validated
    with the zod schema in `ipc/protocol.ts` (`.strict()`, never `as IpcRequest`). The
    socket is created under umask `0o077` and chmod'd `0600`. Tokens are compared with

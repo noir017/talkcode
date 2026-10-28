@@ -5,8 +5,10 @@ import { addressOf, sameAddress, type ConversationAddress } from '../core/conver
 import type {
   AgentCommand,
   AgentElicitation,
+  AgentPermissionRequest,
   ConversationId,
   ElicitAnswer,
+  PermissionAnswer,
   InboundMessage,
   QuotaPool,
   SteerOutcome,
@@ -20,6 +22,23 @@ import { outboundLane } from './paced-adapter.js';
 import { formatRuntimeFooter } from '../core/runtime-footer.js';
 import { ingestAttachments, type AttachmentInput } from '../core/attachment-ingest.js';
 import { createAttachmentIngestDeps } from './attachment-io.js';
+
+/**
+ * The sender a scheduled run's message carries (ConversationRegistry.runScheduledPrompt). Exported
+ * so the one place that writes it and the one that reads it — a scheduled turn is unattended, see
+ * runTurn — cannot drift apart.
+ */
+export const SCHEDULED_SENDER = 'schedule';
+
+/**
+ * The handlers a turn hands the agent. A scheduled run has nobody watching for a permission
+ * request, so it is answered as `permissions: auto` would — asking would only hold the run for the
+ * ask timeout and then decline it.
+ */
+function turnHandlers(batch: InboundMessage[], handlers: AgentStreamHandlers): AgentStreamHandlers {
+  const unattended = batch.every((m) => m.conversation.user === SCHEDULED_SENDER);
+  return unattended ? { ...handlers, onPermission: async () => ({ kind: 'unattended' }) } : handlers;
+}
 
 /**
  * Introduces a message that was NOT asked for in the moment — the agent reporting back on work
@@ -285,6 +304,16 @@ export class TurnRunner {
         address: ConversationAddress,
         request: AgentElicitation
       ): Promise<ElicitAnswer>;
+      /**
+       * An agent configured `permissions: ask` asks leave to run a tool. Same lane rule as
+       * onElicitRequest; the answer says what became of it (see PermissionAnswer).
+       */
+      onPermissionRequest?(
+        id: ConversationId,
+        platform: PlatformAdapter,
+        address: ConversationAddress,
+        request: AgentPermissionRequest
+      ): Promise<PermissionAnswer>;
     }
   ) {}
 
@@ -361,7 +390,7 @@ export class TurnRunner {
     try {
       await agent.runTurn(
         { prompt, ...(images.length > 0 ? { images } : {}), sessionToken, model: this.deps.getModelOverride(conversationId) },
-        render.handlers
+        turnHandlers(batch, render.handlers)
       );
       if (signal?.aborted) {
         // Stopped (`/stop`): finalize the partial reply cleanly — drop the streaming reply with no
@@ -568,6 +597,8 @@ export class TurnRunner {
           return { action: 'cancel' };
         }
       },
+      // Off the effects chain for the reason onElicit is: the wait can be an hour.
+      onPermission: (request) => this.askPermission(conversationId, platform, address, request),
     };
   }
 
@@ -858,7 +889,35 @@ export class TurnRunner {
           .sendMessage(target.address, text)
           .catch((e) => console.warn('[follow-up] failed to deliver a notice:', e instanceof Error ? e.message : e));
       },
+      // Background work asking leave (a task the agent left running after its turn): asked in the
+      // conversation's lane like a notice, and — like a notice — without opening the burst's message.
+      onPermission: (request) => {
+        const target = this.deps.followUpTarget?.(conversationId);
+        const platform = target && this.platforms.get(target.platformId);
+        if (!target || !platform) {
+          return Promise.resolve({ kind: 'unavailable', why: 'no chat is known for this conversation' });
+        }
+        return this.askPermission(conversationId, platform, target.address, request);
+      },
     };
+  }
+
+  /** Put a permission request to the user through the daemon; any failure to ask is an answer too. */
+  private async askPermission(
+    conversationId: ConversationId,
+    platform: PlatformAdapter,
+    address: ConversationAddress,
+    request: AgentPermissionRequest
+  ): Promise<PermissionAnswer> {
+    const ask = this.hooks?.onPermissionRequest;
+    if (!ask) return { kind: 'unavailable', why: 'this gateway has no way to ask' };
+    try {
+      return await ask(conversationId, platform, address, request);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      console.error(`[turn] ${conversationId}: could not put a permission request to the user: ${why}`);
+      return { kind: 'unavailable', why };
+    }
   }
 
   /** Adapter for a platform instance id; a clear error beats an undefined-method crash mid-turn. */

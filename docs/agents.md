@@ -10,8 +10,8 @@ English | [简体中文](zh-CN/agents.md)
 | `agy` | `agy --input-format stream-json` | Antigravity CLI | `agy` Google sign-in (OS keyring) |
 | `custom` | your `command` + `args` | any ACP executable | your agent's |
 
-Each agent takes `cwd`, `env`, `args`, a best-effort `model`, and a
-[pre-launch hook](#pre-launch-hook). Sessions
+Each agent takes `cwd`, `env`, `args`, a best-effort `model`, a
+[pre-launch hook](#pre-launch-hook), and a [permission policy](#permission-requests). Sessions
 persist where the agent supports it; the commands an agent advertises are
 reachable through its own `/<agent>` menu rather than registered globally (see
 [Chat commands](chat-commands.md#agent-commands)). `doctor` verifies every configured harness.
@@ -47,6 +47,32 @@ agents:
 
 The hook cannot be changed from chat (`/setting`). Doing that would be the same as
 running a shell command on your machine from chat.
+
+## Permission requests
+
+Some agents ask before running a tool: Claude Code does for commands and file edits in its
+default mode. By default (`permissions: auto`) the daemon approves every such request, so the
+agent runs with full tool access and `access.allowFrom` is the only gate. Set `permissions: ask`
+to be asked instead:
+
+```yaml
+agents:
+  - id: cc
+    harness: claude
+    permissions: ask
+```
+
+- Each request appears in the chat as a message with the command and the agent's own options as
+  buttons ("Allow", "Reject", …). Answer by tapping; a typed reply goes to the agent as your next
+  message instead.
+- Nobody answering within an hour declines the request. The agent is told nobody answered, not
+  that you refused, and the turn continues. A reminder is posted after half an hour.
+- `/stop` cancels a pending request together with the turn.
+- Scheduled runs are always approved: nobody is there to answer.
+- A platform without buttons (DingTalk, WeCom) cannot ask, so requests there are declined, again
+  with the agent told why.
+- Only agents that ask are affected. Codex (mode `agent`) and OpenCode ran a file-writing command
+  without asking when measured; `agy` cannot be set to `ask`.
 
 ## Antigravity (`agy`)
 

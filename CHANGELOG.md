@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **An agent can ask you before it runs a tool: `permissions: ask`.** Claude Code asks for permission
+  before commands and file edits in its default mode, and the daemon has always answered every one
+  of those requests with "allow" on your behalf. That is still the default (`permissions: auto`).
+  An agent set to `ask` puts each request in the chat instead, as a message showing the command,
+  with the agent's own options as buttons. A request nobody answers within the hour (the same clock
+  as the agent's questions, with the same half-hour reminder) is declined. The agent is told it went
+  unanswered, not that you refused. The protocol has no field for that, and Claude Code's adapter
+  turns a plain "reject" into "User refused permission to run tool", so the decline travels as an
+  error message the adapter hands to the model verbatim. A contract test pins that behaviour of the
+  adapter. A request that cannot be put to anyone, for example on a platform without buttons, is
+  declined the same way with the reason given. It is never approved. Scheduled runs are approved as
+  before, since nobody is there to answer, and `/stop` cancels a pending request with its turn.
+  When measured, Codex (in its `agent` mode) and OpenCode ran a file-writing command without asking,
+  so this changes nothing for them, and `agy`, which has no such requests, cannot be set to `ask`.
+
 ## [2.7.0] - 2026-10-28
 
 ### Added

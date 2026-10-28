@@ -30,8 +30,10 @@ import {
 import type {
   AgentCommand,
   AgentElicitation,
+  AgentPermissionRequest,
   ConversationId,
   ElicitAnswer,
+  PermissionAnswer,
   InboundMessage,
 } from '../types.js';
 import type { PlatformAdapter } from '../platform/adapter.js';
@@ -96,7 +98,7 @@ import { busyNote, formatUsageSnapshot } from '../core/busy-snapshot.js';
 import { InboundMerger, type SoloOutcome } from '../core/inbound-merger.js';
 import { fallbackTitle, generateTitle } from '../core/title-namer.js';
 import { shouldRespond, type GateConfig } from '../core/inbound-gate.js';
-import { TurnRunner } from './turn-runner.js';
+import { SCHEDULED_SENDER, TurnRunner } from './turn-runner.js';
 import { StatusBoard } from './status-board.js';
 import type { RespawnCounts } from './config-reload.js';
 import { claudeProjectsDir, readCacheExpiry, type CacheReading } from './claude-transcript.js';
@@ -481,6 +483,13 @@ export class ConversationRegistry {
         address: ConversationAddress,
         request: AgentElicitation
       ): Promise<ElicitAnswer>;
+      /** A `permissions: ask` agent asking leave to run a tool; carried through like onElicitRequest. */
+      onPermissionRequest?(
+        id: ConversationId,
+        platform: PlatformAdapter,
+        address: ConversationAddress,
+        request: AgentPermissionRequest
+      ): Promise<PermissionAnswer>;
       onPickerRequest?(id: ConversationId, agentId: string, msg: InboundMessage): void;
       onSkillsRequest?(id: ConversationId, agentId: string, msg: InboundMessage): void;
       onModelMenuRequest?(
@@ -2892,7 +2901,7 @@ ${formatTokens(left)} left before compaction — ${name}`;
         channel: opts.address.channel,
         ...(opts.address.thread ? { thread: opts.address.thread } : {}),
         kind: 'direct',
-        user: 'schedule',
+        user: SCHEDULED_SENDER,
       },
       // No platform message behind it: the merger puts no reactions on a solo turn.
       messageId: '',

@@ -1,9 +1,11 @@
 import type {
   AgentCommand,
   AgentElicitation,
+  AgentPermissionRequest,
   EffortSelector,
   ElicitAnswer,
   ModelSelector,
+  PermissionAnswer,
   QuotaPool,
   SteerOutcome,
   ToolEvent,
@@ -78,6 +80,15 @@ export interface AgentStreamHandlers {
    * as unanswered instead of proceeding on a guess.
    */
   onElicit?(request: AgentElicitation): Promise<ElicitAnswer>;
+  /**
+   * The agent asks leave to run a tool, and its agent is configured `permissions: ask`: put it to
+   * the user and resolve with what became of it (see PermissionAnswer). Same lane and same
+   * blocking contract as onElicit.
+   *
+   * Absent means nobody can be asked, and the runtime declines with the agent told why — never
+   * approves, since `ask` is a promise that nothing runs unseen.
+   */
+  onPermission?(request: AgentPermissionRequest): Promise<PermissionAnswer>;
   /**
    * Something worth saying about this turn that is not part of the agent's reply: the harness
    * logged an error and is retrying (see harness-log.ts), or reported a retry, an advisory or a

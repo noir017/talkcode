@@ -25,9 +25,18 @@ describe('accessUnrestricted', () => {
   });
 });
 
-describe('AgentDefSchema', () => {
-  it('no longer carries a permission field (daemon auto-approves all tool calls)', () => {
+describe('AgentDefSchema permissions', () => {
+  it('defaults to auto: tool calls are approved unless the operator asks otherwise', () => {
     const c = cfg({ agents: [{ id: 'default', harness: 'claude' }] });
-    expect('permission' in c.agents[0]!).toBe(false);
+    expect(c.agents[0]!.permissions).toBe('auto');
+  });
+
+  it('takes ask for an ACP agent', () => {
+    const c = cfg({ agents: [{ id: 'default', harness: 'claude', permissions: 'ask' }] });
+    expect(c.agents[0]!.permissions).toBe('ask');
+  });
+
+  it('refuses ask for agy, which has no request to put to anyone', () => {
+    expect(() => cfg({ agents: [{ id: 'default', harness: 'agy', permissions: 'ask' }] })).toThrow(/not available for agy/);
   });
 });

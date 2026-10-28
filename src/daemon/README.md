@@ -21,7 +21,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `paced-adapter.ts` | Wraps every `PlatformAdapter` in the shared per-chat write budget |
 | `agent.ts` | `AgentFactory` / `AgentSession` / `AgentStreamHandlers` interfaces. Dependency-free. |
 | `agent-factory.ts` | Dispatch: which runtime serves which agent |
-| `agent-acp.ts` | ACP runtime (claude, codex, opencode, gemini, custom) |
+| `agent-acp.ts` | ACP runtime (claude, codex, opencode, gemini, custom). Also answers `session/request_permission`: approve under `permissions: auto`, ask through the turn's (or a background burst's) `onPermission` under `ask` — see answerPermission / permissionResponse for why an unanswered request goes back as an error |
 | `session-failure.ts` | claude-agent-acp's typed failure records: the capability that asks for them, and reading one off the wire |
 | `acp-steering.ts` | How an ACP harness takes a message into a running turn (a second prompt, `_session/steering`, or not at all), read off `initialize` |
 | `agent-agy.ts` | Antigravity CLI runtime — its own stream-json protocol |
