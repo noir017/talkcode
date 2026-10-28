@@ -162,6 +162,14 @@ describe('resolving what the user typed', () => {
     }
   });
 
+  it('refuses a pre-launch hook BY NAME: it is a shell command', () => {
+    for (const key of ['hooks', 'hooks.preLaunch', 'preLaunch']) {
+      const resolved = resolveSettingKey(key, cfg, ctx);
+      expect(resolved.kind).toBe('refused');
+      if (resolved.kind === 'refused') expect(resolved.text).toContain('shell command');
+    }
+  });
+
   it('refuses credentials without echoing anything about them', () => {
     const resolved = resolveSettingKey('platforms.tg.token', cfg, ctx);
     expect(resolved.kind).toBe('refused');

@@ -10,10 +10,40 @@
 | `agy` | `agy --input-format stream-json` | Antigravity CLI | `agy` 的 Google 登录态（系统钥匙串） |
 | `custom` | 你的 `command` + `args` | 任意 ACP 可执行文件 | 由智能体自身决定 |
 
-每个智能体可设 `cwd`、`env`、`args` 及尽力传递的 `model`。支持会话恢复
+每个智能体可设 `cwd`、`env`、`args`、尽力传递的 `model`，以及[启动前钩子](#启动前钩子)。支持会话恢复
 的智能体，上下文可跨重启保留；智能体自己声明的斜杠命令不会全局注册，而是通过
 它的 `/<agent>` 菜单调出（见[聊天命令](chat-commands.md#智能体命令)）。
 `doctor` 会逐一校验已配置的 harness。
+
+## 启动前钩子
+
+`hooks.preLaunch` 是一条命令。每次启动智能体进程之前，守护进程都会先跑它，
+等它结束再启动。这包括会话的第一条消息、`/new`，以及空闲回收或崩溃后的重启。
+智能体启动前必须就位的东西可以放在这里：
+
+```yaml
+agents:
+  - id: boxed
+    harness: custom
+    command: docker
+    args: [exec, -i, my-agent, my-agent, --acp]
+    hooks:
+      preLaunch: docker start my-agent >/dev/null
+```
+
+- 用 `bash -lc` 执行，工作目录是会话的目录，环境变量用智能体的 `env`。所有 harness
+  都能用，不限于 `custom`。
+- 每个智能体进程启动前跑一次。每个会话有自己的进程，所以钩子会跑很多次，
+  要能重复执行。
+- 非 0 退出或超过 60 秒没结束，这一轮就会失败，并附上它最后的输出，智能体也不会启动。
+  下一条消息会重新尝试。
+- 钩子运行期间发 `/stop` 会取消它。
+- 它留在后台的进程（`ssh -fN`、`cmd &`）会继续运行，守护进程不会等它们。
+- 最近 20 次的完整输出保存在 `~/.config/talkcode/hooks/<agent-id>/`。
+- `${VAR}` 和其他配置字符串一样，在加载配置时展开。想让 shell 在运行钩子时再展开，
+  就写 `$VAR`。
+
+钩子不能在聊天里（`/setting`）修改，否则就等于允许从聊天里在你的机器上执行任意命令。
 
 ## Antigravity（`agy`）
 

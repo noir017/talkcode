@@ -13,9 +13,13 @@ import path from 'node:path';
  * runtimes use for harness children.
  *
  * ── What the command gets ─────────────────────────────────────────────────────────────────────
- * The daemon's environment, minus the reverse-command token: a bash task is not inside any
- * conversation, and a token in the environment of something that cannot use it is a secret spent
- * for nothing (the same reasoning buildHarnessEnv records for agy's one-shot CLI runs).
+ * The daemon's environment (or the caller's, when it passes one), minus the reverse-command token:
+ * a bash task is not inside any conversation, and a token in the environment of something that
+ * cannot use it is a secret spent for nothing (the same reasoning buildHarnessEnv records for agy's
+ * one-shot CLI runs).
+ *
+ * Also the runner behind an agent's pre-launch hook (agent-hooks.ts), which is why the environment
+ * and the moment of settling are options rather than fixed.
  */
 
 export interface BashRunResult {
@@ -36,6 +40,8 @@ const TAIL_BYTES = 16 * 1024;
 const KILL_GRACE_MS = 3_000;
 /** Log files kept per task; older ones are deleted when a new run starts. */
 const KEEP_LOGS = 20;
+/** With settleOnExit: how long output already in the pipes gets to arrive after the shell exits. */
+const EXIT_DRAIN_MS = 200;
 
 export function runBashCommand(opts: {
   command: string;
@@ -46,6 +52,16 @@ export function runBashCommand(opts: {
   /** Used in the log file's name. */
   stamp: string;
   signal: AbortSignal;
+  /** Base environment instead of the daemon's own; the reverse-command token is removed either way. */
+  env?: Record<string, string | undefined>;
+  /**
+   * Settle when the shell exits rather than when its output pipes close. Those are the same moment
+   * unless the command left something running in the background — `ssh -fN`, `foo &` — which
+   * inherits the pipes and holds them open for as long as it lives. A scheduled task waits for that
+   * (its output is the deliverable); a hook that started a tunnel must not, or it would sit out its
+   * timeout and then kill the very tunnel it was asked to start.
+   */
+  settleOnExit?: boolean;
 }): Promise<BashRunResult> {
   // Checked up front: spawn reports a missing cwd as `spawn bash ENOENT`, which names the wrong thing.
   if (opts.cwd && !isDirectory(opts.cwd)) {
@@ -60,7 +76,7 @@ export function runBashCommand(opts: {
   }
   const logFile = openLog(opts.logDir, opts.stamp);
   const log = logFile ? fs.createWriteStream(logFile, { mode: 0o600 }) : undefined;
-  const env: Record<string, string | undefined> = { ...process.env };
+  const env: Record<string, string | undefined> = { ...(opts.env ?? process.env) };
   delete env.TALKCODE_TURN_TOKEN;
 
   return new Promise((resolve) => {
@@ -125,6 +141,9 @@ export function runBashCommand(opts: {
     }
 
     const take = (chunk: Buffer): void => {
+      // Still read after settling (settleOnExit), so a background writer never blocks on a full
+      // pipe — but not kept: the log is closed by then, and a write after end throws.
+      if (settled) return;
       bytes += chunk.length;
       log?.write(chunk);
       tail = Buffer.concat([tail, chunk]);
@@ -134,6 +153,14 @@ export function runBashCommand(opts: {
     child.stderr?.on('data', take);
     child.on('error', (e) => finish({ exitCode: null, spawnError: e.message }));
     child.on('close', (code) => finish({ exitCode: code }));
+    if (opts.settleOnExit) {
+      child.on('exit', (code) => {
+        // Not settled on the spot: what the shell wrote just before exiting can still be in transit,
+        // and on a failure that last line is the reason. `close` wins when nothing holds the pipes.
+        const drain = setTimeout(() => finish({ exitCode: code }), EXIT_DRAIN_MS);
+        cleanups.push(() => clearTimeout(drain));
+      });
+    }
   });
 }
 

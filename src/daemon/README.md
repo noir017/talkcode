@@ -29,6 +29,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `status-board.ts` | Each conversation's live agent status, pushed (deduped, throttled) to a platform that can show one — the web UI's strip |
 | `claude-transcript.ts` | claude's prompt-cache expiry, read off Claude Code's own transcript (headless Claude Code runs no status line) |
 | `agent-common.ts` | Protocol-agnostic helpers shared by both runtimes |
+| `agent-hooks.ts` | The operator's `agents[].hooks`: `preLaunch`, run to completion before every spawn of an agent's child, by both runtimes |
 | `conversation-store.ts` | Persisted per conversation: the bound agent, each agent's own session id, and the directory it works in |
 | `workdir-scan.ts` | The `/cd` option list: an agent's configured root plus the projects one level inside it |
 | `workdir-usage.ts` | How often each directory has been chosen with `/cd`, so the menu leads with the ones in use |
@@ -39,7 +40,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `scheduler.ts` | Scheduled tasks' timing: one re-armed timer, what is due, the bookkeeping that keeps a restart from repeating or losing a run |
 | `schedule-store.ts` | `<configDir>/schedules.json`: 0600, atomic writes, a bad entry dropped loudly |
 | `schedule-service.ts` | Scheduled tasks wired to the rest: a run as a bash process or a turn, the agent's `schedule` commands, the cards |
-| `schedule-bash.ts` | One `--bash` run: its own process group, a bounded output tail, the full log on disk |
+| `schedule-bash.ts` | One `--bash` run: its own process group, a bounded output tail, the full log on disk. Also runs `preLaunch` hooks |
 | `reverse-cli-shim.ts` | Guarantees `talkcode` is on the agent's PATH; `selfInvocation` — how to re-run this CLI, shared with the tool server entry |
 | `skill-link.ts` | Links the bundled skill into the skill directories the harnesses read (`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/config/skills`) |
 

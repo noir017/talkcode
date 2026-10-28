@@ -164,6 +164,8 @@ const NOT_EDITABLE: Record<string, string> = {
   args: 'an agent definition beyond its model',
   env: 'an agent definition beyond its model',
   cwd: 'an agent definition beyond its model',
+  hooks: "an agent's pre-launch hook",
+  prelaunch: "an agent's pre-launch hook",
   routing: 'the routing pipeline',
   pipeline: 'the routing pipeline',
   display: 'reply decoration (header / footer / reactions)',
@@ -198,6 +200,8 @@ const REFUSAL_REASON: Record<string, string> = {
     'they need a restart, and a credential has no business in a chat log',
   'an agent definition beyond its model':
     'changing how an agent is launched needs a restart',
+  "an agent's pre-launch hook":
+    'it is a shell command this machine runs, and setting one from chat would be running commands on it remotely',
   'the routing pipeline': 'a routing rule is a structure, not a single value to pick',
   'reply decoration (header / footer / reactions)': 'it is not wired into /setting',
   'per-platform response gating': 'it is not wired into /setting',

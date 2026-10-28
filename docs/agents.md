@@ -10,10 +10,43 @@ English | [简体中文](zh-CN/agents.md)
 | `agy` | `agy --input-format stream-json` | Antigravity CLI | `agy` Google sign-in (OS keyring) |
 | `custom` | your `command` + `args` | any ACP executable | your agent's |
 
-Each agent takes `cwd`, `env`, `args`, and a best-effort `model`. Sessions
+Each agent takes `cwd`, `env`, `args`, a best-effort `model`, and a
+[pre-launch hook](#pre-launch-hook). Sessions
 persist where the agent supports it; the commands an agent advertises are
 reachable through its own `/<agent>` menu rather than registered globally (see
 [Chat commands](chat-commands.md#agent-commands)). `doctor` verifies every configured harness.
+
+## Pre-launch hook
+
+`hooks.preLaunch` is a command the daemon runs, and waits for, before every start
+of the agent's process: the first message of a conversation, `/new`, and a respawn
+after an idle stop or a crash. Use it for whatever has to be in place first:
+
+```yaml
+agents:
+  - id: boxed
+    harness: custom
+    command: docker
+    args: [exec, -i, my-agent, my-agent, --acp]
+    hooks:
+      preLaunch: docker start my-agent >/dev/null
+```
+
+- It runs under `bash -lc`, in the conversation's working directory, with the
+  agent's `env`. It works with every harness, not only `custom`.
+- It runs once for every agent process. Each conversation has its own process, so the
+  hook runs many times. Make it safe to run again.
+- If it exits non-zero, or is still running after 60 seconds, the turn fails with
+  the last of its output and the agent is not started. The next message tries again.
+- `/stop` while it runs cancels it.
+- Anything it leaves running in the background (`ssh -fN`, `cmd &`) keeps running.
+  The daemon does not wait for it.
+- The full output of the last 20 runs is kept in `~/.config/talkcode/hooks/<agent-id>/`.
+- `${VAR}` is expanded when the config loads, like every other string. Write `$VAR`
+  for the shell to expand when the hook runs.
+
+The hook cannot be changed from chat (`/setting`). Doing that would be the same as
+running a shell command on your machine from chat.
 
 ## Antigravity (`agy`)
 

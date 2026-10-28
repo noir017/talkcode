@@ -52,6 +52,7 @@ import {
   trimReason,
   truncateToolName,
 } from './agent-common.js';
+import { PreLaunchCancelled, runPreLaunchHook } from './agent-hooks.js';
 import { selfInvocation } from './reverse-cli-shim.js';
 
 /**
@@ -784,6 +785,13 @@ function createAcpSession(
    * per session (see ensureStarted). Undefined whenever no startup is running.
    */
   let starting: Promise<void> | undefined;
+  /**
+   * Cancels the preLaunch hook while one is running ahead of a spawn (see agent-hooks.ts), on dispose
+   * and on `/stop`. The hook is the one stretch of a startup with no child yet, so killing `proc`
+   * cannot stop it: without this, a session disposed mid-hook would go on to spawn a child nobody
+   * holds any more, and a stopped turn would sit out the hook and then run anyway.
+   */
+  let launchHook: AbortController | undefined;
   /** Intentional-abort flag: set by abort(); used to return silently when prompt ends as cancelled. */
   let aborting = false;
   /**
@@ -1090,6 +1098,7 @@ function createAcpSession(
    * exited, handles were reset by 'exit', and resetting again here is idempotent.
    */
   function teardown(): void {
+    launchHook?.abort();
     const child = proc; // capture the process to kill (the 'exit' callback compares by reference)
     try {
       active?.dispose();
@@ -1155,6 +1164,18 @@ function createAcpSession(
     // Re-read the conversation's directory: between the last child and this one the user may have
     // moved the conversation with `/cd`, and this is the only point at which that can be honored.
     cwd = resolveConversationCwd(def, conversationId, store);
+
+    // The operator's preLaunch hook, inside the shared startup so concurrent callers run it once. A
+    // failure throws from here, before there is a child or a connection to roll back.
+    if (def.hooks?.preLaunch) {
+      const hook = new AbortController();
+      launchHook = hook;
+      try {
+        await runPreLaunchHook(def, { cwd, signal: hook.signal });
+      } finally {
+        if (launchHook === hook) launchHook = undefined;
+      }
+    }
 
     const { command, args } = resolveHarness(def);
 
@@ -1837,6 +1858,8 @@ function createAcpSession(
         await closeFollowUp();
       } catch (err) {
         closePromptWindow();
+        // Stopped (or disposed) while the preLaunch hook ran: nothing failed, so nothing to report.
+        if (err instanceof PreLaunchCancelled) return;
         throw err;
       }
 
@@ -2091,6 +2114,7 @@ function createAcpSession(
 
     abort(): void {
       aborting = true;
+      launchHook?.abort();
       // A joined message the harness has not taken up yet would outlive the cancel (see
       // endChildAfterStop); the turn ends the child on its way out.
       if (joinedStillQueued?.()) endChildAfterStop = true;

@@ -23,6 +23,7 @@ import {
   trimReason,
   truncateToolName,
 } from './agent-common.js';
+import { PreLaunchCancelled, runPreLaunchHook } from './agent-hooks.js';
 import {
   AGY_STATUS_FD,
   AGY_STATUS_FD_ENV,
@@ -655,6 +656,12 @@ function createAgySession(
   let modelPreference: string | undefined;
   /** Intentional-abort flag: set by abort()/dispose() so a killed turn resolves silently. */
   let aborting = false;
+  /**
+   * Cancels the preLaunch hook while one runs ahead of a spawn (see agent-hooks.ts) — from teardown,
+   * which both dispose() and abort() go through. Before the child exists there is nothing else for
+   * them to kill, and a hook left running would spawn agy for a session already stopped or gone.
+   */
+  let launchHook: AbortController | undefined;
 
   /** The in-flight turn's sink for parsed events; undefined between turns. */
   let currentTurn: TurnSink | undefined;
@@ -889,6 +896,7 @@ function createAgySession(
    */
   function teardown(reason: string): void {
     aborting = true;
+    launchHook?.abort();
     const child = proc;
     const pending = currentTurn;
     resetHandles();
@@ -908,6 +916,18 @@ function createAgySession(
     // Re-read the conversation's directory: a `/cd` since the last child disposed it, and this is
     // the only point at which the new one can be honored (agy takes its cwd at spawn).
     cwd = resolveConversationCwd(def, conversationId, store);
+    // The operator's preLaunch hook, before anything of the child's exists: a failure throws from
+    // here with nothing to roll back. Only runTurn calls this, one turn at a time, so unlike the ACP
+    // runtime there is no concurrent caller to share the run with.
+    if (def.hooks?.preLaunch) {
+      const hook = new AbortController();
+      launchHook = hook;
+      try {
+        await runPreLaunchHook(def, { cwd, signal: hook.signal });
+      } finally {
+        if (launchHook === hook) launchHook = undefined;
+      }
+    }
     // Before the spawn, because agy reads its settings at startup: a status line wired after this
     // line would not be drawn by this child at all.
     onStatusSilence = statusLineAtSpawn?.();
@@ -1053,7 +1073,13 @@ function createAgySession(
         modelPreference = input.model;
         if (proc) teardown('model changed');
       }
-      await ensureStarted(input.sessionToken);
+      try {
+        await ensureStarted(input.sessionToken);
+      } catch (err) {
+        // Stopped (or disposed) while the preLaunch hook ran: nothing failed, so nothing to report.
+        if (err instanceof PreLaunchCancelled) return;
+        throw err;
+      }
       // Nothing renders from this; it only records which model to name in this turn's footer.
       const known = servingModel();
       if (known) handlers.onModel?.(known);

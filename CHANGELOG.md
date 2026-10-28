@@ -5,6 +5,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **An agent can run a command of yours before it starts: `hooks.preLaunch`.** Some agents need
+  something in place before their process can start: a container started, a tunnel opened, a checkout
+  pulled. Until now the only way to do that was to point a `custom` harness at a wrapper script,
+  which gave up the presets' own handling and had to keep its own output off the protocol pipe. The
+  daemon now runs the command itself, under `bash -lc` in the conversation's directory with the
+  agent's `env`, before every start of the agent's process: the first message, `/new`, a respawn after
+  an idle stop or a crash. It works for every harness. It blocks. A non-zero exit, or a hook still
+  running after 60 seconds, fails the turn with the last of its output and the agent is not started,
+  because an agent on a half-prepared machine is worse than none. `/stop` cancels it quietly, and a
+  session closed mid-hook spawns nothing. Something the hook leaves running in the background (`ssh
+  -fN`, `cmd &`) is not waited for and keeps running. Full output goes to
+  `<configDir>/hooks/<agent>/`. The field is deliberately not in `/setting`: editing it from chat
+  would be remote shell execution. Only this one hook exists for now. Events inside a session already
+  have the harness's own hooks, and the gateway-only events (a failed turn, a platform reconnect) are
+  waiting for a concrete use.
+
 ## [2.5.2] - 2026-10-27
 
 ### Fixed

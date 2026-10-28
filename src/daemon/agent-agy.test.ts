@@ -1,8 +1,10 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   agyModelId,
   buildAgyArgs,
@@ -1127,5 +1129,55 @@ describe('translateAgyEvent — usage on a model step (agy 1.4.7)', () => {
     st.onContextTokens = (n) => tokens.push(n);
     expect(feed(st, { event: 'result', result: { status: 'SUCCESS', usage: { input_tokens: 15126 } } })).toBe(true);
     expect(tokens).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('agy session — the preLaunch hook', () => {
+  // The hook runs through the real `bash`; only agy itself is refused, so any spawn of it fails the
+  // test loudly. Hook logs go to a scratch config dir, never the operator's.
+  const spawned: string[] = [];
+  let savedConfigDir: string | undefined;
+  beforeEach(async () => {
+    savedConfigDir = process.env.TALKCODE_CONFIG_DIR;
+    process.env.TALKCODE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'tc-agy-hook-'));
+    spawned.length = 0;
+    const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    vi.mocked(spawn).mockImplementation(((command: string, args: string[], opts: object) => {
+      spawned.push(command);
+      if (command === 'bash') return actual.spawn(command, args, opts);
+      throw new Error(`${command} must not be spawned`);
+    }) as unknown as typeof spawn);
+  });
+  afterEach(() => {
+    vi.mocked(spawn).mockReset();
+    if (savedConfigDir === undefined) delete process.env.TALKCODE_CONFIG_DIR;
+    else process.env.TALKCODE_CONFIG_DIR = savedConfigDir;
+  });
+
+  function hookedSession(preLaunch: string) {
+    const cfg = { agents: [def({ id: 'ag', cwd: tmpdir(), hooks: { preLaunch } })] } as unknown as Config;
+    const noCli: AgyCliRunner = async () => ({ ok: false, error: 'no agy in tests' });
+    const factory = createAgyAgentFactory(cfg, '/tmp/test.sock', undefined, async () => [], noCli);
+    return { factory, session: factory.getOrCreate('conv-1', 'ag') };
+  }
+
+  const quiet: AgentStreamHandlers = { onText: () => {}, onToolStart: () => {}, onToolFinish: () => {}, onSegmentBreak: () => {} };
+
+  it('fails the turn on a failing hook, and never starts agy', async () => {
+    const { factory, session } = hookedSession('echo "no route to host" >&2; exit 2');
+    await expect(session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, quiet)).rejects.toThrow(
+      /agent "ag" pre-launch hook failed \(exit 2\): no route to host/
+    );
+    expect(spawned).toEqual(['bash']);
+    factory.dispose('conv-1');
+  });
+
+  it('ends a turn stopped during its hook quietly, and never starts agy', async () => {
+    const { factory, session } = hookedSession('sleep 5');
+    const turn = session.runTurn({ prompt: 'hi', sessionToken: 'sess_x' }, quiet);
+    setTimeout(() => session.abort(), 200);
+    await expect(turn).resolves.toBeUndefined();
+    expect(spawned).toEqual(['bash']);
+    factory.dispose('conv-1');
   });
 });

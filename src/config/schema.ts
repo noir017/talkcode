@@ -71,6 +71,23 @@ export const AgentDefSchema = z
      */
     /** Env vars injected into the subprocess (credentials etc.); supports ${VAR} expansion. */
     env: z.record(z.string()).default({}),
+    /**
+     * Operator commands run at points in this agent's life that its harness cannot see (see
+     * daemon/agent-hooks.ts). Strict, so a misspelled hook name fails the load instead of silently
+     * never running. Deliberately absent from the `/setting` table: a chat-side edit here would be
+     * remote shell execution.
+     */
+    hooks: z
+      .object({
+        /**
+         * A `bash -lc` command run to completion before every spawn of this agent's child —
+         * first message, `/new`, a respawn after idle reclaim or a crash. Non-zero exit or
+         * timeout fails the startup, so the agent never starts on a half-prepared machine.
+         */
+        preLaunch: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .refine((a) => a.harness !== 'custom' || (a.command && a.command.length > 0), {
     message: 'command is required when harness=custom',
