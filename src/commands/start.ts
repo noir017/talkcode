@@ -7,6 +7,7 @@ import { ConversationStore, migrateLegacySessions } from '../daemon/conversation
 import { WorkdirUsageStore } from '../daemon/workdir-usage.js';
 import { ScheduleStore } from '../daemon/schedule-store.js';
 import { ensureReverseCliShim } from '../daemon/reverse-cli-shim.js';
+import { remoteHosts } from '../daemon/remote-hosts.js';
 import { conversationKey } from '../core/conversation.js';
 
 /**
@@ -41,6 +42,10 @@ export async function runStart(): Promise<void> {
   // machine actually works in. Separate from the conversation store because it is a fact about the
   // MACHINE, not about one topic — a brand-new conversation gets the benefit of it immediately.
   const workdirUsage = new WorkdirUsageStore(path.join(configDir(), 'workdir-usage.json'));
+  // The hosts before the factories: the agy factory asks for its model list as it is built, and
+  // for an agy on a host that question goes to the host. The Daemon configures them again; that
+  // keeps every live connection (RemoteHosts.configure).
+  remoteHosts.configure(cfg, socket);
   // Dispatches per agent to the ACP runtime or the agy runtime (see agent-factory).
   const agents = createAgentFactory(cfg, socket, store);
   // Scheduled tasks: their own file (a task is not a property of a conversation), and a directory

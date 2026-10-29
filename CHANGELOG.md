@@ -14,6 +14,31 @@ All notable changes to this project are documented here. The format is based on
   Claude Code binary that a local `harness: claude` would run, about 220 MB per architecture. Each
   release now publishes `X.Y.Z` and moves `latest`, for amd64 and arm64. See
   [Running in a container](docs/docker.md).
+- **`talkcode update` on the machine that runs that container** (`docker/talkcode-host`, installed
+  as the host's `talkcode` command). Updating the container restarts the gateway, and a restarting
+  gateway stops the agents it started on its hosts. So before anything else, `update` and `restart`
+  read the gateway's log for turns and scheduled runs still in progress, and refuse while there are
+  any. `--force` goes ahead anyway; `--dry-run` only reports. After the restart they wait until
+  every host is connected again, then remove the image that was replaced. Anything else, such as
+  `talkcode doctor`, runs the talkcode CLI inside the container.
+
+### Fixed
+
+- **A host that presents a host certificate can be reached.** The gateway pins a host's key, but
+  OpenSSH negotiates a host certificate first when the server has one. It then checks the key inside
+  the certificate, which need not be the host key. A Teleport agentless node is such a host: its
+  sshd carries a second key with a Teleport-signed certificate. So the key the docs tell you to
+  check never matched, and every connection failed with "Host key verification failed". The gateway
+  now leaves certificates out, and the server presents its plain host key.
+- **`talkcode doctor` checks a remote agent where it will run.** It looked for the harness command
+  on the host's login `PATH`, even for an agent whose `env` sets its own `PATH`, and failed a host
+  that worked. It now looks in that `PATH`. Its agy status-line and Claude transcript checks also
+  read this machine's disk for agents that run on a host; those agents now say they are checked
+  there.
+- **No more `spawn agy ENOENT` when the gateway starts.** For an agy on a host, the model list was
+  first asked for on the gateway's own machine. That happened before the hosts were registered, so a
+  gateway without agy logged an error at every start. The list still arrived later from the host.
+  The hosts are now registered first, and an agy on a host is never asked for here.
 
 ## [2.9.0] - 2026-10-29
 

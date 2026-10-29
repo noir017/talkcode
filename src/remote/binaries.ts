@@ -59,6 +59,16 @@ export function parseDestination(dest: string): { userHost: string; port?: numbe
  * ssh config file (`-F none`): the gateway's own key and known_hosts, strict host key checking — a
  * changed host key fails the connection instead of being learned — and keepalives, so a dead route
  * is noticed by ssh itself as well as by the link's own heartbeat.
+ *
+ * Host certificates are refused (`HostKeyAlgorithms=-*-cert-v01@openssh.com`): the gateway pins a
+ * host's KEY, and a host that also presents a certificate otherwise never gets checked against it.
+ * OpenSSH offers the certificate form of a key type first, the server answers with its certificate,
+ * and with no `@cert-authority` line to verify it the client compares the certificate's own key —
+ * which need not be the host key at all. A Teleport agentless node is exactly that: its sshd
+ * carries a second ed25519 key with a Teleport-signed certificate (`HostCertificate`), so the key
+ * `ssh-keyscan` returns and docs/remote-hosts.md tells the operator to compare is not the one
+ * presented, and every connection failed "Host key verification failed" (armbox, 2026-10-29).
+ * Without the certificate algorithms the server presents its plain host key.
  */
 export function sshArgs(target: SshTarget, script: string): string[] {
   const { userHost, port } = parseDestination(target.destination);
@@ -70,6 +80,7 @@ export function sshArgs(target: SshTarget, script: string): string[] {
     '-o', `IdentityFile=${target.identityFile}`,
     '-o', `UserKnownHostsFile=${target.knownHostsFile}`,
     '-o', 'StrictHostKeyChecking=yes',
+    '-o', 'HostKeyAlgorithms=-*-cert-v01@openssh.com',
     '-o', 'ConnectTimeout=15',
     '-o', 'ServerAliveInterval=10',
     '-o', 'ServerAliveCountMax=3',

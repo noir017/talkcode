@@ -293,6 +293,11 @@ export function runAgyCliFor(def: AgentDef, name: string, cwd: string, local: Ag
 export async function fetchAgyModelsFor(cfg: Pick<Config, 'agents'>): Promise<Array<{ value: string; name: string }>> {
   const def = cfg.agents.find((a) => a.harness === 'agy');
   const host = remoteHosts.hostFor(def);
+  // An agy with `host:` whose host is not registered (yet) must not be asked for here: that ran
+  // `agy models` on the gateway's machine, which in a gateway-only container has no agy at all
+  // ("spawn agy ENOENT" at every start, 2026-10-29). Thrown rather than answered with `[]`, so the
+  // factory leaves its cache unfilled and the next read asks again (createAgyAgentFactory).
+  if (def?.host && !host) throw new Error(`host "${def.host}" is not registered yet`);
   if (!def || !host) return defaultFetchAgyModels();
   const r = await runAgyOnHost(host, def, ['models']);
   if (!r.ok) {

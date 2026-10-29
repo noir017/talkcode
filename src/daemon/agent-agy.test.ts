@@ -10,6 +10,7 @@ import {
   buildAgyArgs,
   consumeNdJsonLines,
   createAgyAgentFactory,
+  fetchAgyModelsFor,
   formatAgyCliOutput,
   formatAgyQuota,
   parseAgyModelsOutput,
@@ -429,6 +430,15 @@ describe('consumeNdJsonLines', () => {
     const seen: string[] = [];
     consumeNdJsonLines('\n\n{"a":1}\n\n', (l) => seen.push(l));
     expect(seen).toEqual(['{"a":1}']);
+  });
+});
+
+describe('fetchAgyModelsFor', () => {
+  it('never asks this machine for an agy that runs on a host not registered yet', async () => {
+    // It used to fall back to a local `agy models`: in a gateway-only container, "spawn agy
+    // ENOENT" at every start. Throwing keeps the factory's cache unfilled, so the next read asks
+    // the host instead of settling on an empty list.
+    await expect(fetchAgyModelsFor({ agents: [def({ host: 'box' })] })).rejects.toThrow('host "box" is not registered yet');
   });
 });
 

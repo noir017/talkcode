@@ -48,6 +48,9 @@ agents:
    ssh-keyscan -p 22 10.0.0.5 >> ~/.config/talkcode/ssh/known_hosts   # [10.0.0.5]:2222 for another port
    ```
 
+   It is the host's plain key that is checked. Host certificates (a Teleport node's, for one) are
+   not used, so a `@cert-authority` line does not help.
+
 4. **Install and sign in to the agent on the host**, as you would to use it there in a terminal:
    `npm i -g @agentclientprotocol/claude-agent-acp` for `claude` (the gateway's own copy is for
    its own machine), `npm i -g @agentclientprotocol/codex-acp` for `codex`, the OpenCode or

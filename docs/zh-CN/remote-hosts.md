@@ -44,6 +44,8 @@ agents:
    ssh-keyscan -p 22 10.0.0.5 >> ~/.config/talkcode/ssh/known_hosts   # 其他端口写成 [10.0.0.5]:2222
    ```
 
+   校验的是主机的普通密钥。主机证书（比如 Teleport 节点的）不会被使用，所以写 `@cert-authority` 行没有用。
+
 4. **在主机上安装并登录智能体**，和你在那台机器的终端里使用它时一样：`claude` 要
    `npm i -g @agentclientprotocol/claude-agent-acp`（网关自带的那份只给网关本机用），`codex` 要
    `npm i -g @agentclientprotocol/codex-acp`，`opencode` 和 `agy` 要装 OpenCode 或 Antigravity 的 CLI。

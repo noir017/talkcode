@@ -88,6 +88,8 @@ describe('ssh', () => {
     const args = sshArgs({ destination: 'u@h:2200', identityFile: '/k', knownHostsFile: '/kh' }, 'echo hi');
     expect(args.slice(0, 2)).toEqual(['-F', 'none']);
     expect(args).toContain('StrictHostKeyChecking=yes');
+    // Pins the host KEY: a host certificate would otherwise be negotiated first (see sshArgs).
+    expect(args).toContain('HostKeyAlgorithms=-*-cert-v01@openssh.com');
     expect(args).toContain('IdentityFile=/k');
     expect(args).toContain('UserKnownHostsFile=/kh');
     expect(args.slice(-5)).toEqual(['-p', '2200', '--', 'u@h', `sh -c 'echo hi'`]);

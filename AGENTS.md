@@ -204,7 +204,8 @@ Do not weaken these without saying so explicitly in the PR:
    object. Proxy URLs are redacted before logging.
 5. **A remote host is reached only as configured, and reaches back only through the reverse
    commands.** ssh is pinned (`remote/binaries.ts` sshArgs: `-F none`, the gateway's own key and
-   known_hosts, strict host key checking — a changed host key fails the connection). talkcode-remote
+   known_hosts, strict host key checking with host certificates refused — a changed host key fails
+   the connection). talkcode-remote
    opens no network port: ssh in, an owner-only unix socket out. An agent on a host can run back
    here only the reverse commands, `mcp` and `help` (`daemon/remote-hosts.ts` isBridgedCommand),
    never `start`, `setup` or any other part of the gateway's administration — and what it runs

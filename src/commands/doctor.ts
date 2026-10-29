@@ -11,6 +11,8 @@ import { isLegacyConfig, migrateLegacyConfig } from '../config/migrate.js';
 import { resolveClaudeAdapterEntry } from '../daemon/agent-acp.js';
 import { AGY_COMMAND } from '../daemon/agent-agy.js';
 import { claudeProjectsDir } from '../daemon/claude-transcript.js';
+import { remoteAgentEnv } from '../daemon/agent-common.js';
+import { hostProbeScript, readHostProbe, type HostProbe } from './doctor-hosts.js';
 import { agentHome } from '../daemon/skills-scan.js';
 import { OWNER } from '../platform/webui/room.js';
 import { loadJwks } from '../platform/webui/sso.js';
@@ -53,18 +55,14 @@ function locateCommand(cmd: string): string | null {
 
 /** Agent definition -> its harness's main executable name (doctor only checks reachability, same convention as agent-acp's resolveHarness / agent-agy's AGY_COMMAND). claude is handled separately (a local dependency, not PATH). */
 /** One `hosts:` entry, checked the way the daemon will use it (see the check's own comment). */
-async function checkRemoteHost(def: HostDef, commands: string[]): Promise<{ ok: boolean; detail: string }> {
+async function checkRemoteHost(def: HostDef, probes: HostProbe[]): Promise<{ ok: boolean; detail: string }> {
   const key = expandLocal(def.identityFile ?? defaultIdentityFile());
   const known = expandLocal(def.knownHostsFile ?? defaultKnownHostsFile());
   if (!fs.existsSync(key)) return { ok: false, detail: `no private key at ${key}` };
   if (!fs.existsSync(known)) {
     return { ok: false, detail: `no known_hosts at ${known} — add the host's key (ssh-keyscan, checked by hand) before the daemon can connect` };
   }
-  // The script travels inside single quotes (sshArgs) and the probe inside double quotes within it,
-  // so: plain command names only, and `\$c` so the outer shell leaves the loop variable alone.
-  const names = commands.filter((c) => /^[\w.~/+-]+$/.test(c));
-  const probe = `for c in ${names.join(' ')}; do command -v \\$c >/dev/null 2>&1 && echo TCR-HAS \\$c || echo TCR-MISSING \\$c; done`;
-  const script = `uname -sm; exec "\${SHELL:-/bin/sh}" -ilc "${probe}" </dev/null 2>/dev/null`;
+  const script = `uname -sm; exec "\${SHELL:-/bin/sh}" -ilc "${hostProbeScript(probes)}" </dev/null 2>/dev/null`;
   const r = spawnSync('ssh', sshArgs({ destination: def.ssh, identityFile: key, knownHostsFile: known }, script), {
     encoding: 'utf8',
     timeout: 30_000,
@@ -74,11 +72,12 @@ async function checkRemoteHost(def: HostDef, commands: string[]): Promise<{ ok: 
     return { ok: false, detail: `ssh failed (exit ${r.status}): ${r.stderr.trim().split('\n').slice(-1)[0] ?? ''}` };
   }
   const system = r.stdout.split('\n')[0]?.trim() ?? '';
-  const missing = [...r.stdout.matchAll(/^TCR-MISSING (\S+)/gm)].map((m) => m[1]);
+  const { missing, unchecked } = readHostProbe(probes, r.stdout);
   const supported = /^Linux (x86_64|amd64|aarch64|arm64)$/.test(system);
   const parts = [`connected (${system})`];
   if (!supported) parts.push('✗ talkcode-remote runs on Linux x86_64/arm64 only');
-  if (missing.length) parts.push(`✗ not on the login PATH there: ${missing.join(', ')}`);
+  if (missing.length) parts.push(`✗ not found there: ${missing.join(', ')}`);
+  if (unchecked.length) parts.push(`not checked: ${unchecked.join(', ')}`);
   return { ok: supported && missing.length === 0, detail: parts.join(', ') };
 }
 
@@ -460,7 +459,8 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
        * Each `hosts:` entry: the key and known_hosts the gateway pins, a real connection, and the
        * harness commands of the agents placed there — looked up on the host's LOGIN PATH, which is
        * the environment talkcode-remote starts agents in (remote/shellenv.go), not the bare one a
-       * non-interactive ssh command gets.
+       * non-interactive ssh command gets; or in the agent's own PATH when its `env` sets one
+       * (doctor-hosts.ts).
        */
       name: 'Remote hosts reachable',
       run: async () => {
@@ -470,8 +470,12 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
         const lines: string[] = [];
         let failed = false;
         for (const [id, def] of hosts) {
-          const commands = [...new Set(cfg.agents.filter((a) => a.host === id).map((a) => harnessCommand(a)))];
-          const r = await checkRemoteHost(def, commands);
+          const probes = new Map<string, HostProbe>();
+          for (const a of cfg.agents.filter((x) => x.host === id)) {
+            const p: HostProbe = { command: harnessCommand(a), path: remoteAgentEnv(a).PATH };
+            probes.set(`${p.command}\0${p.path ?? ''}`, p);
+          }
+          const r = await checkRemoteHost(def, [...probes.values()]);
           failed ||= !r.ok;
           lines.push(`${id} (${def.ssh}): ${r.detail}`);
         }
@@ -489,8 +493,13 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
       name: 'agy status line wired for context usage',
       run: async () => {
         if (!cfg) return { ok: false, detail: 'config unavailable, cannot check agents' };
-        const agyAgents = cfg.agents.filter((a) => a.harness === 'agy');
-        if (agyAgents.length === 0) return { ok: true, detail: 'no agy agent configured' };
+        // Only the agy agents that run here: the daemon wires the status line of a local home only
+        // (createAgyAgentFactory), and on a host agy reports context through its stream (1.4.7+).
+        // Checking a remote agent's home on THIS disk warned about a file nothing would ever read.
+        const allAgy = cfg.agents.filter((a) => a.harness === 'agy');
+        const agyAgents = allAgy.filter((a) => !a.host);
+        if (allAgy.length === 0) return { ok: true, detail: 'no agy agent configured' };
+        if (agyAgents.length === 0) return { ok: true, detail: 'every agy agent runs on a host (context comes from its stream there)' };
         if (process.env.TALKCODE_NO_AGY_STATUSLINE) {
           return { ok: true, level: 'warn', detail: 'TALKCODE_NO_AGY_STATUSLINE is set — agy will report no context usage' };
         }
@@ -527,9 +536,13 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
       name: 'claude transcripts readable for the cache countdown',
       run: async () => {
         if (!cfg) return { ok: false, detail: 'config unavailable, cannot check agents' };
-        const claudeAgents = cfg.agents.filter((a) => a.harness === 'claude');
-        if (claudeAgents.length === 0) return { ok: true, detail: 'no claude agent configured' };
-        const lines: string[] = [];
+        const allClaude = cfg.agents.filter((a) => a.harness === 'claude');
+        if (allClaude.length === 0) return { ok: true, detail: 'no claude agent configured' };
+        // A claude agent on a host writes its transcripts there, and the daemon reads them there
+        // (remoteClaudeProjectsDir). Looking on this disk warned "missing" for every remote agent.
+        const claudeAgents = allClaude.filter((a) => !a.host);
+        const remote = allClaude.filter((a) => a.host).map((a) => `${a.id} on ${a.host}: read there, not checked here`);
+        const lines: string[] = [...remote];
         let anyMissing = false;
         for (const dir of new Set(claudeAgents.map((a) => claudeProjectsDir(a)))) {
           if (fs.existsSync(dir)) {

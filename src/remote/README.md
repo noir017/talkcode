@@ -32,8 +32,10 @@ skill); the runtimes reach a host through `daemon/agent-common.ts`.
 - **The gateway's environment never crosses.** Spawn and run take an overlay; the base is the
   host's login environment.
 - **ssh is pinned** (`sshArgs`): `-F none`, the gateway's own key and known_hosts, strict host key
-  checking, BatchMode. A connection never depends on an ssh config the gateway did not write, and a
-  changed host key fails it.
+  checking, BatchMode, and no host certificates. A connection never depends on an ssh config the
+  gateway did not write, and a changed host key fails it. Certificates are refused because the pin
+  is a KEY: a host that also has one (a Teleport agentless node) would otherwise answer with the
+  certificate's key, which is not the one known_hosts holds.
 
 ## Testing
 
