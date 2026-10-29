@@ -126,3 +126,23 @@ jobs:
             --title "${{ steps.tag.outputs.name }}" \
             --verify-tag \
             "${notes[@]}"
+
+      - name: Version for the image
+        id: version
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  # The container image (docs/docker.md), built from the Release just published. Called rather
+  # than triggered: a Release created with GITHUB_TOKEN starts no other workflow, so a
+  # `release: published` trigger would never fire.
+  image:
+    needs: release
+    uses: ./.github/workflows/image.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    permissions:
+      contents: read
+      packages: write

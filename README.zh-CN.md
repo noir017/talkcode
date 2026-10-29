@@ -116,6 +116,7 @@ access:
 | [网页端](docs/zh-CN/web-ui.md) | 话题、终端、安全地对外暴露、单点登录 |
 | [聊天命令](docs/zh-CN/chat-commands.md) | `/new` `/stop` `/kill`、智能体命令、`/model`、`/effort` |
 | [远程主机](docs/zh-CN/remote-hosts.md) | 经 ssh 跑在别的机器上的智能体、`/agent`、断网时会怎样 |
+| [在容器里运行](docs/zh-CN/docker.md) | 只含网关的镜像，智能体全在主机上 |
 | [工作目录](docs/zh-CN/working-directory.md) | `/cd`：一个话题一个项目 |
 | [话题命名](docs/zh-CN/topic-names.md) | `/title` 与自动命名 |
 | [在聊天里改配置](docs/zh-CN/settings.md) | `/setting`：不重启就改 config.yaml |

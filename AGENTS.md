@@ -23,7 +23,9 @@ live-edited message.
 
 Node ≥ 20, TypeScript ESM (`"type": "module"`, `module: NodeNext`), strict mode with
 `noUncheckedIndexedAccess`. Not published to npm: a release is a GitHub Release carrying
-`talkcode-X.Y.Z.tgz` and its `SHA256SUMS`, which is what the deployment image installs.
+`talkcode-X.Y.Z.tgz` and its `SHA256SUMS`, which is what the deployment images install —
+uniagent's, and `ghcr.io/noir017/talkcode` (`docker/Dockerfile`, built by `image.yml` from
+`release.yml`), the gateway alone for a container of its own.
 
 The project was called `agent-anywhere` — a fork of
 [l0ng-ai/agent-anywhere](https://github.com/l0ng-ai/agent-anywhere), whose maintainer asked

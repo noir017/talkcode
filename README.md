@@ -119,6 +119,7 @@ is in [Configuration](docs/configuration.md).
 | [Web UI](docs/web-ui.md) | topics, the terminal, exposing it safely, single sign-on |
 | [Chat commands](docs/chat-commands.md) | `/new` `/stop` `/kill`, agent commands, `/model`, `/effort` |
 | [Remote hosts](docs/remote-hosts.md) | agents on other machines over ssh, `/agent`, what happens when the network drops |
+| [Running in a container](docs/docker.md) | the gateway-only image, with every agent on a host |
 | [Working directory](docs/working-directory.md) | `/cd`: one topic per project |
 | [Topic names](docs/topic-names.md) | `/title` and automatic naming |
 | [Settings from chat](docs/settings.md) | `/setting`: editing config.yaml without a restart |

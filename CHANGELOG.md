@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **A container image of the gateway alone: `ghcr.io/noir017/talkcode`.** Since 2.9.0 every
+  agent can run on a remote host, so the gateway itself needs only Node and an ssh client, and can
+  live in a small container of its own. The image installs the Release tarball, pinned by its
+  `SHA256SUMS` line, so it holds the same bytes as `npm i -g <release URL>`. It leaves out the
+  Claude Code binary that a local `harness: claude` would run, about 220 MB per architecture. Each
+  release now publishes `X.Y.Z` and moves `latest`, for amd64 and arm64. See
+  [Running in a container](docs/docker.md).
+
 ## [2.9.0] - 2026-10-29
 
 ### Added
