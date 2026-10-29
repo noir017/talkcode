@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-29
+
 ### Added
 
 - **Agents on other machines: `hosts:` and `agents[].host`.** An agent can now run on any Linux host
