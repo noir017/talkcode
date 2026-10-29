@@ -79,3 +79,17 @@ docker compose up -d
 ```bash
 docker compose pull && docker compose up -d
 ```
+
+也可以把 `docker/talkcode-host` 装成宿主机上的 `talkcode` 命令
+（`sudo install -m 755 docker/talkcode-host /usr/local/bin/talkcode`）。它知道重启会切断正在跑的东西：
+
+```bash
+talkcode update        # 拉镜像；镜像变了就重建容器、等各主机连回来、清掉旧镜像
+talkcode update --dry-run
+talkcode status        # 版本，以及正在跑的轮次和定时任务
+talkcode logs          # docker logs -t --tail 200
+talkcode doctor        # 其余参数都交给容器里的 talkcode CLI
+```
+
+有轮次或定时任务正在跑时，`update` 和 `restart` 会拒绝执行并列出它们；加 `--force` 照样执行。
+compose 文件默认读 `~/apps/talkcode` 里的（`TALKCODE_APP_DIR` 可以改）。

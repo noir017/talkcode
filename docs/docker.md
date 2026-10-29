@@ -84,3 +84,19 @@ docker compose up -d
 ```bash
 docker compose pull && docker compose up -d
 ```
+
+Or install `docker/talkcode-host` as the host's `talkcode` command
+(`sudo install -m 755 docker/talkcode-host /usr/local/bin/talkcode`), which knows that a restart
+cuts off what is running:
+
+```bash
+talkcode update        # pull; if the image changed, recreate, wait for the hosts, prune the old image
+talkcode update --dry-run
+talkcode status        # version, and the turns and scheduled runs in progress
+talkcode logs          # docker logs -t --tail 200
+talkcode doctor        # anything else runs the talkcode CLI inside the container
+```
+
+`update` and `restart` refuse while a turn or a scheduled run is in progress, and list them;
+`--force` goes ahead anyway. It reads the compose file from `~/apps/talkcode`
+(`TALKCODE_APP_DIR` changes it).

@@ -260,16 +260,21 @@ you did before they can finish it.
 
 Deployment spans two repositories and three steps. **Do steps 1 and 2. Never do step 3.**
 
+Since 2026-10-29 the gateway runs in a container of its own (`talkcode`, from
+`ghcr.io/noir017/talkcode`) on the gateway host, and every agent runs in the `uniagent` container
+beside it as a [remote host](docs/remote-hosts.md). The operator's notes for that pair are in
+`~/apps/talkcode/README.md` on the host.
+
 | # | step | who |
 |---|---|---|
-| 1 | `npm run release -- X.Y.Z --push` → pushes `main` + the tag → `release.yml` publishes a GitHub Release (tarball + `SHA256SUMS`) | **you** |
-| 2 | in the `uniagent` repo: `gh workflow run bump-talkcode.yml -f version=X.Y.Z` → multi-arch image to GHCR | **you** |
-| 3 | on the gateway host: `uniagent update` | **the operator, by hand** |
+| 1 | `npm run release -- X.Y.Z --push` → pushes `main` + the tag → `release.yml` publishes a GitHub Release (tarball + `SHA256SUMS`) and calls `image.yml`, which publishes `ghcr.io/noir017/talkcode:X.Y.Z` and `:latest` | **you** |
+| 2 | in the `uniagent` repo: `gh workflow run bump-talkcode.yml -f version=X.Y.Z` → multi-arch image to GHCR. The gateway no longer runs there, but the `claude-agent-acp` on that host's `PATH` is the one bundled in this package, so the bump keeps the adapter in step with the gateway's contract tests | **you** |
+| 3 | on the gateway host: `talkcode update` | **the operator, by hand** |
 
-**Step 3 is not yours, and not because of caution.** The daemon running in that container is
-the process serving the conversation that asked for the change, and the supervisor's `stop`
-reaps orphaned agent children too — so restarting it kills the session issuing the restart,
-mid-command. You cannot verify your own deploy; you can only report that it is ready.
+**Step 3 is not yours, and not because of caution.** The gateway in that container serves the
+conversation that asked for the change, and a restarting gateway stops the agents it started on
+its hosts — so updating it kills the session issuing the update, mid-command. You cannot verify
+your own deploy; you can only report that it is ready.
 
 Notes that decide whether steps 1–2 are even correct:
 
@@ -290,11 +295,14 @@ Notes that decide whether steps 1–2 are even correct:
   was checked.
 
 Report what you did in the order it happened, with the version, and end with the exact
-command the operator needs for step 3 — which is `uniagent update`, run on the gateway
-host, verbatim. It is a wrapper the operator maintains; do not expand it into the
-`docker compose pull && up -d` it happens to run today, and do not reconstruct some other
-invocation from memory. If this line ever stops being true, fix it here rather than
-guessing at the call site.
+command the operator needs for step 3 — which is `talkcode update`, run on the gateway
+host, verbatim. It is the host-side wrapper in `docker/talkcode-host`, installed as
+`/usr/local/bin/talkcode`; do not expand it into the `docker compose pull && up -d` it runs,
+and do not reconstruct some other invocation from memory. `uniagent update` is a separate
+command for the agents' container, which the operator runs on their own schedule; a release
+needs it only when it changed the `@agentclientprotocol/claude-agent-acp` dependency (step 2's
+note) — say so in the report when it did. If this line ever stops being true, fix it here
+rather than guessing at the call site.
 
 > **Running the test suite touches this machine's live daemon.** `ensureReverseCliShim()`
 > writes `~/.config/talkcode/bin/talkcode`, a path shared with whatever daemon
