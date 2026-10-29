@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-10-29
+
 ### Added
 
 - **A container image of the gateway alone: `ghcr.io/noir017/talkcode`.** Since 2.9.0 every
