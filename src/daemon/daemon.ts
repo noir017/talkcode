@@ -902,6 +902,8 @@ export class Daemon {
     // The registered set is fixed and derived from config (see buildRegisteredSpecs), so it is
     // registered once here rather than re-derived whenever an agent reports its commands.
     await this.registerCommands();
+    // Each remote agent's directory list, read now so the first bare `/cc` has a menu to offer.
+    this.registry.warmRemoteScans();
     await this.ipc.start();
     // After the platforms and IPC are up: a run that is due right away (a catch-up after the update
     // that restarted us) needs somewhere to post, and an agent run needs its reverse commands.
@@ -1189,6 +1191,8 @@ export class Daemon {
     read.commitEnv();
     applyConfig(this.config, next);
     remoteHosts.configure(this.config, this.socketPath);
+    // A new host or a moved `cwd` has no directory list yet; already-listed ones are just reread.
+    this.registry.warmRemoteScans();
 
     if (diff.sections.includes('session')) this.registry.idleTimeoutChanged();
     const respawn = this.registry.respawnAgents(new Set([...diff.agentsChanged, ...diff.agentsRemoved]));

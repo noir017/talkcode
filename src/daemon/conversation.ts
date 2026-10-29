@@ -148,6 +148,14 @@ const SETTING_NAMES = new Set(['setting', 'settings', 'config']);
  */
 const WORKDIR_NAMES = new Set(['cd', 'dir', 'workdir']);
 
+/**
+ * How long a directory menu offered on the side (a bare `/cc`, `/new`) waits for a remote agent's
+ * root to be listed for the first time (afterRemoteListing). A listing over a live link takes well
+ * under a second (armbox and uniagent, 2026-10-29); the bound is for a host that is down or
+ * reconnecting, where waiting longer would only delay the answer the user gets anyway.
+ */
+export const REMOTE_LISTING_WAIT_MS = 5_000;
+
 /** `/agent` — choose the agent that answers this topic, by id, from a menu grouped by machine. */
 const AGENT_NAMES = new Set(['agent', 'agents']);
 
@@ -1643,7 +1651,7 @@ export class ConversationRegistry {
       // question costs nothing: there is no context to strand, and the previous topic's directory
       // is the least likely answer to still be right. Declined silently when there is nothing to
       // choose between (see offerWorkdirMenu) — a menu of one is not a question.
-      this.offerWorkdirMenu(key, agentId, msg);
+      this.afterRemoteListing(findAgent(this.config, agentId), () => this.offerWorkdirMenu(key, agentId, msg));
       return true;
     }
 
@@ -1975,7 +1983,25 @@ export class ConversationRegistry {
     // No store means no place to record a directory, so `/cd` cannot work at all here — fall
     // straight through to the behaviour this command has always had.
     const started = this.store?.agentSession(key, state.agentId) !== undefined;
-    if (!started && this.offerWorkdirMenu(key, state.agentId, msg)) return;
+    if (started) {
+      this.answerBareCommandNow(key, state, platformId, address, msg, false);
+      return;
+    }
+    this.afterRemoteListing(findAgent(this.config, state.agentId), () =>
+      this.answerBareCommandNow(key, state, platformId, address, msg, true)
+    );
+  }
+
+  /** answerBareCommand once any remote listing it needed is in: the menu, else the picker, else the ack. */
+  private answerBareCommandNow(
+    key: ConversationId,
+    state: ConversationState,
+    platformId: string,
+    address: ConversationAddress,
+    msg: InboundMessage,
+    offerMenu: boolean
+  ): void {
+    if (offerMenu && this.offerWorkdirMenu(key, state.agentId, msg)) return;
 
     const def = findAgent(this.config, state.agentId);
     if (harnessHasPicker(def?.harness) && this.hooks?.onPickerRequest) {
@@ -2637,7 +2663,8 @@ ${formatTokens(left)} left before compaction — ${name}`;
    * Kept because the menu code is synchronous — it decides on the spot whether a menu goes out —
    * while a remote directory can only be listed asynchronously. An explicit `/cd` refreshes it first
    * (and so always shows what is there now); the menus offered on the side of `/new` or a bare agent
-   * command use what is known, and read ahead when nothing is.
+   * command wait for it when nothing is known yet (afterRemoteListing), and it is read for every
+   * remote agent as the daemon starts and after a `/reload` (warmRemoteScans).
    */
   private readonly remoteScans = new Map<string, WorkdirScan>();
 
@@ -2645,6 +2672,56 @@ ${formatTokens(left)} left before compaction — ${name}`;
     return (
       this.remoteScans.get(`${def.host}\0${root}`) ?? { ok: false, reason: `the directory list on host "${def.host}" has not been read yet` }
     );
+  }
+
+  /**
+   * Read every remote agent's root into remoteScans, without waiting for any of it.
+   *
+   * So that the first bare `/cc` after a start finds the list already there. Before this, the menus
+   * on the side read ahead only when asked and declined meanwhile — and since this cache lives in the
+   * process, every restart left each host's first new conversation answering `/cc` with Claude's
+   * own command list instead of the directory menu (2026-10-29, the first day all agents ran on
+   * hosts). The daemon calls it at start and after a `/reload`; a host that is down simply leaves
+   * its entry as a failed scan, which the next menu refreshes.
+   */
+  warmRemoteScans(): void {
+    const seen = new Set<string>();
+    for (const def of this.config.agents) {
+      if (!def.host) continue;
+      const k = `${def.host}\0${resolveAgentCwd(def)}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      void this.refreshRemoteScan(def);
+    }
+  }
+
+  /**
+   * Run `then` — which offers a directory menu from what is known — once a remote agent's listing
+   * is in. A local agent, or one already listed, goes straight on; one never listed waits for its
+   * host, but at most REMOTE_LISTING_WAIT_MS, after which `then` runs anyway and answers the way it
+   * would without a list (the picker, or nothing). An already-listed one is read again behind the
+   * menu, so a project created since shows up next time without waiting on anyone now.
+   */
+  private afterRemoteListing(def: AgentDef | undefined, then: () => void): void {
+    if (!def?.host) {
+      then();
+      return;
+    }
+    if (this.remoteScans.has(`${def.host}\0${resolveAgentCwd(def)}`)) {
+      then();
+      void this.refreshRemoteScan(def);
+      return;
+    }
+    let done = false;
+    let cancel: () => void = () => {};
+    const go = (): void => {
+      if (done) return;
+      done = true;
+      cancel();
+      then();
+    };
+    cancel = this.clock.schedule(go, REMOTE_LISTING_WAIT_MS);
+    void this.refreshRemoteScan(def).then(go);
   }
 
   /** List a remote agent's root on its host into remoteScans. Never rejects: a failure is the scan. */

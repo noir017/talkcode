@@ -1,8 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConversationRegistry } from './conversation.js';
+import { ConversationRegistry, REMOTE_LISTING_WAIT_MS } from './conversation.js';
+import { remoteHosts } from './remote-hosts.js';
+import type { RemoteHost } from '../remote/host.js';
 import { ConversationStore } from './conversation-store.js';
 import { WorkdirUsageStore } from './workdir-usage.js';
 import { resolveConversationCwd } from './agent-common.js';
@@ -74,7 +76,7 @@ interface WorkdirMenuCall {
   current: string;
 }
 
-function rig(opts: { buttons?: boolean; usage?: WorkdirUsageStore } = {}) {
+function rig(opts: { buttons?: boolean; usage?: WorkdirUsageStore; config?: Config; clock?: typeof clock } = {}) {
   const buttons = opts.buttons ?? true;
   const sent: string[] = [];
   const prompts: string[] = [];
@@ -126,10 +128,10 @@ function rig(opts: { buttons?: boolean; usage?: WorkdirUsageStore } = {}) {
   const store = new ConversationStore(file);
   const usage = opts.usage;
   const reg = new ConversationRegistry(
-    cfg,
+    opts.config ?? cfg,
     new Map([['discord', platform]]),
     factory,
-    clock,
+    opts.clock ?? clock,
     {
       onPickerRequest: (_id, agentId) => void pickers.push(agentId),
       onWorkdirMenuRequest: (id, agentId, _msg, menu) =>
@@ -489,5 +491,79 @@ describe('workdirForRef (what a platform is told to display)', () => {
     // them would make the feature look broken rather than empty.
     const { reg } = rig();
     expect(reg.workdirForRef(ref({ channel: 'never-used', thread: 'nor-this' }))).toBe(root);
+  });
+});
+
+/**
+ * An agent on a host (talkcode 2.9.0): its directories can only be listed over the link, which is
+ * asynchronous, while the menu decides on the spot. Until 2.9.2 the menus on the side read ahead and
+ * declined when nothing was listed yet — and the list lives in the process, so after every restart
+ * a host's first new conversation got Claude's command list for `/cc` instead of the directory menu
+ * (2026-10-29, the first day every agent ran on a host).
+ */
+describe('the directory question for an agent on a host', () => {
+  const remoteCfg = parseConfig({
+    platforms: { discord: { type: 'discord', token: 't' } },
+    hosts: { box: { ssh: 'u@box' } },
+    agents: [
+      { id: 'rc', harness: 'claude', host: 'box', cwd: '/srv/work' },
+      { id: 'ro', harness: 'opencode', host: 'box', cwd: '/srv/work' },
+      { id: 'rg', harness: 'agy', host: 'box', cwd: '/srv/other' },
+    ],
+    routing: { default: 'rc' },
+  });
+  const config: Config = { ...remoteCfg, inbound: { ...remoteCfg.inbound, mergeWindowMs: 1, maxMergeWindowMs: 1 } };
+
+  let listDir: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    listDir = vi.fn(async () => [
+      { name: 'proj', dir: true },
+      { name: 'notes.txt', dir: false },
+    ]);
+    const host = { conn: { welcome: { home: '/home/u' } }, ready: async () => ({}), listDir } as unknown as RemoteHost;
+    vi.spyOn(remoteHosts, 'hostFor').mockImplementation((def) => (def?.host ? host : undefined));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('waits for the first listing instead of answering a bare /cc with the command list', async () => {
+    const { send, menus, pickers } = rig({ config });
+    await send('/cc');
+    expect(listDir).toHaveBeenCalledWith('/srv/work', 15_000);
+    expect(pickers).toEqual([]);
+    expect(menus).toHaveLength(1);
+    expect(menus[0]!.agentId).toBe('rc');
+    expect(menus[0]!.options.map((o) => o.path)).toEqual(['/srv/work', '/srv/work/proj']);
+  });
+
+  it('reads every remote root ahead when asked to warm up, once per host and directory', async () => {
+    const { reg, send, menus } = rig({ config });
+    reg.warmRemoteScans();
+    await drain();
+    // rc and ro share /srv/work on box; rg has a root of its own.
+    expect(listDir.mock.calls.map((c) => c[0]).sort()).toEqual(['/srv/other', '/srv/work']);
+
+    await send('/cc');
+    expect(menus).toHaveLength(1);
+    // Offered from what was read, and read again behind it so a new project shows up next time.
+    expect(listDir).toHaveBeenCalledTimes(3);
+  });
+
+  it('answers the way it would without a list when the host does not answer in time', async () => {
+    listDir.mockImplementation(() => new Promise(() => {}));
+    // The same clock, with the listing wait cut short so the test does not sit through it.
+    const quick = { ...clock, schedule: (fn: () => void, ms: number) => clock.schedule(fn, ms === REMOTE_LISTING_WAIT_MS ? 1 : ms) };
+    const { send, menus, pickers } = rig({ config, clock: quick });
+    await send('/cc');
+    expect(menus).toHaveLength(0);
+    expect(pickers).toEqual(['rc']);
+  });
+
+  it('waits after /new too', async () => {
+    const { send, menus, replies } = rig({ config });
+    await send('/cc hello');
+    await send('/new');
+    expect(replies().at(-1)).toContain('Context cleared');
+    expect(menus).toHaveLength(1);
+    expect(menus[0]!.options.map((o) => o.name)).toContain('proj');
   });
 });

@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bare `/cc` offers the directory menu for an agent on a host from the first time.** In a new
+  conversation, `/cc` alone asks which directory to work in. For an agent on a host, the gateway
+  has to list that directory over the link first, and it kept the list only in memory. So after
+  every restart, the first new conversation per host got Claude's own command list instead, and
+  the menu came back only on the next try. The same happened to the menu that follows `/new`.
+  This went unnoticed while agents ran beside the gateway, and showed up the day every agent moved
+  to a host. The gateway now reads every remote agent's directory as it starts and after `/reload`.
+  If a list is still missing, it waits for it, up to five seconds, before it answers.
+
 ## [2.9.1] - 2026-10-29
 
 ### Added
