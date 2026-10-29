@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.9.2] - 2026-10-29
+
 ### Fixed
 
 - **A bare `/cc` offers the directory menu for an agent on a host from the first time.** In a new
