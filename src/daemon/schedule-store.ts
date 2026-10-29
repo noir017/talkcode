@@ -42,6 +42,7 @@ const RunSchema = z.discriminatedUnion('kind', [
       command: z.string().min(1),
       cwd: z.string().min(1).optional(),
       timeoutMs: z.number().int().positive(),
+      host: z.string().min(1).optional(),
     })
     .strict(),
 ]);

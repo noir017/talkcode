@@ -43,7 +43,11 @@ export type ScheduleWhen = { cron: string; tz: string } | { at: number; tz: stri
 
 export type ScheduleRun =
   | { kind: 'agent'; agent: string; prompt: string; session: 'fixed' | 'new'; cwd?: string }
-  | { kind: 'bash'; command: string; cwd?: string; timeoutMs: number };
+  /**
+   * `host`: the `hosts:` entry the registering agent ran on. A command an agent wrote names that
+   * agent's machine — its paths, its tools — so it runs there, not on the gateway.
+   */
+  | { kind: 'bash'; command: string; cwd?: string; timeoutMs: number; host?: string };
 
 /** Where a task's output goes: a platform instance and an address on it. */
 export interface ScheduleTarget {
@@ -268,7 +272,7 @@ export interface NewTaskContext {
   /** Configured agent ids. */
   agents: readonly string[];
   /** The registering conversation: its key, the agent answering it, and the directory it works in. */
-  from: { key: string; platform: string; agent: string; cwd?: string };
+  from: { key: string; platform: string; agent: string; cwd?: string; host?: string };
   /** Where output goes (`--channel`, else the registering conversation's own lane). */
   target: { platform: string; address: ConversationAddress };
   /**
@@ -361,7 +365,11 @@ function buildBashTask(input: NewTaskInput, command: string, ctx: NewTaskContext
   }
   const cwd = input.cwd ?? ctx.from.cwd;
   return firstRunCheck(
-    { ...base, name: input.name?.trim() || defaultName(command), run: { kind: 'bash', command, timeoutMs, ...(cwd ? { cwd } : {}) } },
+    {
+      ...base,
+      name: input.name?.trim() || defaultName(command),
+      run: { kind: 'bash', command, timeoutMs, ...(cwd ? { cwd } : {}), ...(ctx.from.host ? { host: ctx.from.host } : {}) },
+    },
     ctx.now
   );
 }

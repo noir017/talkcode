@@ -24,3 +24,6 @@ npm-debug.log*
 # Runtime / data
 *.tsbuildinfo
 .brooks-lint-history.json
+
+# talkcode-remote built in place by `go build` in remote/ (the real builds go to dist/remote-bin/)
+remote/remote

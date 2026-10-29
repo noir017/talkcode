@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { RemoteHost } from '../remote/host.js';
 
 /**
  * The daemon running a scheduled `--bash` task: one `bash -lc`, its combined output captured twice —
@@ -162,6 +163,53 @@ export function runBashCommand(opts: {
       });
     }
   });
+}
+
+/** How much output a remote run brings back: the log file keeps it, so more than the tail. */
+const REMOTE_OUTPUT_MAX = 4 << 20;
+
+/**
+ * The same run on a remote host (a task or hook belonging to an agent that runs there): `bash -lc`
+ * in its own process group on the host, killed whole on timeout or abort, by talkcode-remote
+ * (remote/ops.go opRun) rather than here. The output comes back when the command ends — up to
+ * REMOTE_OUTPUT_MAX of its end — and is written to the same local log a local run would write.
+ *
+ * `env` is an OVERLAY on the host's login environment, not a whole environment: this daemon's own
+ * would describe the wrong machine. A remote command that leaves something running in the
+ * background never holds its answer — the host bounds the wait for its output after it exits — so
+ * `settleOnExit` has nothing to change here.
+ */
+export async function runRemoteBashCommand(
+  host: RemoteHost,
+  opts: Omit<Parameters<typeof runBashCommand>[0], 'env' | 'settleOnExit'> & { env?: Record<string, string> }
+): Promise<BashRunResult> {
+  const env = { ...opts.env };
+  delete env.TALKCODE_TURN_TOKEN;
+  let r;
+  try {
+    r = await host.run({ bash: opts.command, cwd: opts.cwd, env, timeoutMs: opts.timeoutMs, merge: true, max: REMOTE_OUTPUT_MAX }, opts.signal);
+  } catch (e) {
+    const aborted = opts.signal.aborted;
+    return { exitCode: null, timedOut: false, aborted, tail: '', bytes: 0, ...(aborted ? {} : { spawnError: e instanceof Error ? e.message : String(e) }) };
+  }
+  const logFile = openLog(opts.logDir, opts.stamp);
+  if (logFile) {
+    try {
+      fs.writeFileSync(logFile, r.output, { mode: 0o600 });
+    } catch (e) {
+      console.warn(`[schedule] cannot write ${logFile}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  const tail = r.output.subarray(Math.max(0, r.output.length - TAIL_BYTES)).toString('utf8');
+  return {
+    exitCode: r.code,
+    timedOut: r.timedOut === true,
+    aborted: r.cancelled === true,
+    tail,
+    bytes: r.output.length,
+    ...(logFile ? { logFile } : {}),
+    ...(r.spawnError ? { spawnError: r.spawnError } : {}),
+  };
 }
 
 function isDirectory(p: string): boolean {

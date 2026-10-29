@@ -11,7 +11,8 @@ English | [简体中文](zh-CN/agents.md)
 | `custom` | your `command` + `args` | any ACP executable | your agent's |
 
 Each agent takes `cwd`, `env`, `args`, a best-effort `model`, a
-[pre-launch hook](#pre-launch-hook), and a [permission policy](#permission-requests). Sessions
+[pre-launch hook](#pre-launch-hook), and a [permission policy](#permission-requests). With
+`host:` it runs on another machine, reached over ssh — see [Remote hosts](remote-hosts.md). Sessions
 persist where the agent supports it; the commands an agent advertises are
 reachable through its own `/<agent>` menu rather than registered globally (see
 [Chat commands](chat-commands.md#agent-commands)). `doctor` verifies every configured harness.

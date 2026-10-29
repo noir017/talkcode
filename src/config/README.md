@@ -17,7 +17,7 @@ nothing else from the project.
 ## The central design decision: a small user surface
 
 The config file has exactly five sections — `platforms`, `agents`, `routing`,
-`session`, `access` — plus the optional `display`, `stream`, `title` and `voice`. Everything else that
+`session`, `access` — plus the optional `display`, `stream`, `title`, `voice` and `hosts`. Everything else that
 *looks* like config (stream throttling, tool-bubble rendering, inbound merge windows,
 attachment limits, reaction emoji, the IPC socket) is **not** user-configurable. It lives
 in the frozen `EXPERIENCE` constant in `schema.ts` and is merged into every loaded
@@ -36,6 +36,10 @@ They were removed because nobody tuned them and exposing them only bloated the f
 **So before adding a config field, ask which side of that line it falls on.** A
 per-deployment decision (a credential, which agent answers where, who is allowed) goes
 in `ConfigSchema`. A tuning knob for the streaming experience goes in `EXPERIENCE`.
+
+`hosts` is on the user side for the same reason `voice` is: an address and a credential (an ssh
+destination, a key, a known_hosts file). The link's tuning — heartbeat, back-off, buffer cap,
+orphan timeout — is constants in `src/remote/` and `remote/`, not config.
 
 `voice` is on the user side because it is a credential and an endpoint (the transcriber), plus
 one decision — `confirm`, whether a transcript waits for a tap. Everything that tunes it (the

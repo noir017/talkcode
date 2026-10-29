@@ -92,9 +92,9 @@ if (!(next < 0 ? rest : rest.slice(0, next)).trim()) {
   die('the Unreleased section is empty — nothing to release');
 }
 
-// ---- gates: the same four release.yml runs, but before the tag exists ----
+// ---- gates: the same ones release.yml runs (talkcode-remote's Go tests among them), before the tag exists ----
 if (verify) {
-  for (const step of ['typecheck', 'lint', 'test', 'build']) {
+  for (const step of ['typecheck', 'lint', 'test', 'test:remote', 'build']) {
     console.log(`release: npm run ${step}`);
     try {
       npm(['run', step], { inherit: true });

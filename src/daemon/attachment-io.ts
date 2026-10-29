@@ -6,6 +6,7 @@ import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { Config } from '../config/schema.js';
 import type { AttachmentIngestDeps } from '../core/attachment-ingest.js';
+import type { RemoteHost } from '../remote/host.js';
 
 /**
  * Build attachment IO deps (daemon layer does real IO; core's attachment-ingest stays pure).
@@ -119,6 +120,21 @@ export function createAttachmentIngestDeps(
       await writeFile(dest, bytes);
       return dest;
     },
+  };
+}
+
+/**
+ * `save` for an agent on a remote host: the file goes to THAT host — `~/.talkcode/attachments`,
+ * owner-only, named the same way as a local save — and the path the prompt names is the one the
+ * agent can open there. The download itself still happens here, behind the same SSRF guards.
+ */
+export function remoteAttachmentSave(host: RemoteHost): AttachmentIngestDeps['save'] {
+  return async (name, bytes) => {
+    const w = await host.ready();
+    const hash = createHash('sha1').update(bytes).digest('hex').slice(0, 8);
+    const dest = `${w.home}/.talkcode/attachments/${hash}-${sanitizeFilename(name)}`;
+    await host.writeFile(dest, bytes, 0o600);
+    return dest;
   };
 }
 

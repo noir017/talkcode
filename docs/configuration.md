@@ -25,6 +25,16 @@ agents:                       # at least one; routing picks by id
     cwd: ~/projects/main
   - id: codex
     harness: codex
+  - id: claude-devbox
+    harness: claude
+    host: devbox              # runs on another machine — see Remote hosts
+    group: build machines     # how /agent groups it (default: its host)
+
+hosts:                        # optional; machines agents run on, reached over ssh
+  devbox:
+    ssh: me@10.0.0.5:22
+    # identityFile: ~/.config/talkcode/ssh/id_ed25519   (default)
+    # knownHostsFile: ~/.config/talkcode/ssh/known_hosts (default)
 
 routing:
   default: claude
@@ -53,7 +63,8 @@ the YAML can be committed.
 
 The rest is described where it is used: each harness's options in [Agents](agents.md), the web
 UI's `terminal:` and `sso:` in [Web UI](web-ui.md), `title:` in [Topic names](topic-names.md),
-and `voice:` in [Voice messages](voice.md). A handful of fields can also be changed from chat,
+`voice:` in [Voice messages](voice.md), and `hosts:` with `agents[].host` in
+[Remote hosts](remote-hosts.md). A handful of fields can also be changed from chat,
 without a restart — see [Settings from chat](settings.md).
 
 ## Changing it while the daemon runs

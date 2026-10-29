@@ -1,4 +1,4 @@
-import type { Config } from '../config/schema.js';
+import type { AgentDef, Config } from '../config/schema.js';
 import { agentDisplayName, findAgent } from '../config/schema.js';
 import { SessionTokenRegistry } from './conversation-token-registry.js';
 import {
@@ -88,11 +88,12 @@ import {
   type WorkdirChoiceResult,
   type WorkdirOption,
 } from '../core/workdir-menu.js';
-import { scanWorkdirs, isDirectory, type WorkdirScan } from './workdir-scan.js';
+import { scanWorkdirs, isDirectory, workdirScanFrom, type WorkdirScan } from './workdir-scan.js';
+import { agentGroups, agentListText, matchAgent, type AgentGroup } from '../core/agent-menu.js';
 import { rankByFrecency } from '../core/frecency.js';
 import type { WorkdirUsageStore } from './workdir-usage.js';
-import { resolveAgentCwd, resolveConversationCwd, buildHarnessEnv } from './agent-common.js';
-import { formatAgyCliOutput, runAgyCliCommand } from './agent-agy.js';
+import { expandRemoteHome, resolveAgentCwd, resolveConversationCwd } from './agent-common.js';
+import { formatAgyCliOutput, runAgyCliCommand, runAgyCliFor } from './agent-agy.js';
 import { formatRuntimeFooter, formatTokens } from '../core/runtime-footer.js';
 import { busyNote, formatUsageSnapshot } from '../core/busy-snapshot.js';
 import { InboundMerger, type SoloOutcome } from '../core/inbound-merger.js';
@@ -101,7 +102,14 @@ import { shouldRespond, type GateConfig } from '../core/inbound-gate.js';
 import { SCHEDULED_SENDER, TurnRunner } from './turn-runner.js';
 import { StatusBoard } from './status-board.js';
 import type { RespawnCounts } from './config-reload.js';
-import { claudeProjectsDir, readCacheExpiry, type CacheReading } from './claude-transcript.js';
+import {
+  claudeProjectsDir,
+  readCacheExpiry,
+  readRemoteCacheExpiry,
+  remoteClaudeProjectsDir,
+  type CacheReading,
+} from './claude-transcript.js';
+import { remoteHosts } from './remote-hosts.js';
 import type { ConversationStore } from './conversation-store.js';
 import { buildChannelList } from '../core/channel-list.js';
 import type { ListChannelsResult } from '../ipc/protocol.js';
@@ -139,6 +147,9 @@ const SETTING_NAMES = new Set(['setting', 'settings', 'config']);
  * what anyone who has used a shell types, `dir` is what it is called on the button that offers it.
  */
 const WORKDIR_NAMES = new Set(['cd', 'dir', 'workdir']);
+
+/** `/agent` — choose the agent that answers this topic, by id, from a menu grouped by machine. */
+const AGENT_NAMES = new Set(['agent', 'agents']);
 
 /**
  * `/title` — rename the chat lane this conversation lives in.
@@ -541,6 +552,12 @@ export class ConversationRegistry {
         msg: InboundMessage,
         menu: { options: WorkdirOption[]; current: string; truncated: number }
       ): void;
+      /**
+       * An agent menu is wanted here (`/agent` with no argument). The registry says what is on
+       * offer — every configured agent, grouped (core/agent-menu.ts) — and the daemon posts the
+       * buttons and hands a pick back through chooseAgent.
+       */
+      onAgentMenuRequest?(id: ConversationId, msg: InboundMessage, menu: { groups: AgentGroup[]; current: string | undefined }): void;
       /**
        * Whether the daemon is holding work for this conversation that lives OUTSIDE a turn — today,
        * a pending `ask` whose IPC caller is blocked on a button click. The idle sweeper asks before
@@ -1380,6 +1397,28 @@ export class ConversationRegistry {
     return true;
   }
 
+  /**
+   * Why an explicit switch to `agentId` is refused here — the topic already has a session with
+   * another agent — or undefined when it is not. `wantedCommand` is how the user would ask for that
+   * agent in a new topic: its harness command, or `/agent <id>` where that is how they asked.
+   */
+  private switchRefusal(key: ConversationId, agentId: string, wantedCommand?: string): string | undefined {
+    const bound = this.conversations.get(key)?.agentId ?? this.store?.boundAgent(key);
+    if (!bound || bound === agentId) return undefined;
+    // Removed from config since: its session cannot be resumed any more, so there is nothing to lose.
+    if (!findAgent(this.config, bound)) return undefined;
+    const sessionId = this.store?.agentSession(key, bound);
+    if (sessionId === undefined) return undefined;
+    console.log(`[conversation] ${key} is bound to "${bound}" with a session; refused a switch to "${agentId}"`);
+    return agentSwitchRefusalText({
+      bound: agentDisplayName(findAgent(this.config, bound), bound),
+      wanted: agentDisplayName(findAgent(this.config, agentId), agentId),
+      wantedCommand: wantedCommand ?? `/${harnessCommandName(findAgent(this.config, agentId)?.harness) ?? agentId}`,
+      sessionId,
+      workdir: this.workdirOf(key, bound),
+    });
+  }
+
   private refuseAgentSwitch(
     key: ConversationId,
     choice: AgentChoice,
@@ -1387,20 +1426,8 @@ export class ConversationRegistry {
     msg: InboundMessage
   ): boolean {
     if (!choice.explicit) return false;
-    const bound = this.conversations.get(key)?.agentId ?? this.store?.boundAgent(key);
-    if (!bound || bound === choice.agentId) return false;
-    // Removed from config since: its session cannot be resumed any more, so there is nothing to lose.
-    if (!findAgent(this.config, bound)) return false;
-    const sessionId = this.store?.agentSession(key, bound);
-    if (sessionId === undefined) return false;
-    console.log(`[conversation] ${key} is bound to "${bound}" with a session; refused a switch to "${choice.agentId}"`);
-    const text = agentSwitchRefusalText({
-      bound: agentDisplayName(findAgent(this.config, bound), bound),
-      wanted: agentDisplayName(findAgent(this.config, choice.agentId), choice.agentId),
-      wantedCommand: `/${harnessCommandName(findAgent(this.config, choice.agentId)?.harness) ?? choice.agentId}`,
-      sessionId,
-      workdir: this.workdirOf(key, bound),
-    });
+    const text = this.switchRefusal(key, choice.agentId);
+    if (text === undefined) return false;
     void this.platforms
       .get(msg.conversation.platform)
       ?.sendMessage(address, text)
@@ -1425,8 +1452,10 @@ export class ConversationRegistry {
     state: ConversationState,
     agentId: string,
     platformId: string,
-    address: ConversationAddress
-  ): void {
+    address: ConversationAddress,
+    /** Say it here (the default), or leave the announcement to the caller, which gets it back. */
+    announce = true
+  ): string {
     const previous = state.agentId;
     this.agents.dispose(key);
     state.agentId = agentId;
@@ -1444,15 +1473,95 @@ export class ConversationRegistry {
     console.log(
       `[conversation] ${key} rebound ${previous} → ${agentId}${resuming ? ' (resuming its existing session)' : ''}`
     );
-    void this.platforms
-      .get(platformId)
-      ?.sendMessage(
-        address,
-        resuming
-          ? `▸ back to ${name} — resuming where you left off`
-          : `▸ ${name} is answering this conversation now`
-      )
-      .catch((e) => console.warn('[conversation] failed to ack the rebind:', e instanceof Error ? e.message : e));
+    const text = resuming ? `▸ back to ${name} — resuming where you left off` : `▸ ${name} is answering this conversation now`;
+    if (announce) {
+      void this.platforms
+        .get(platformId)
+        ?.sendMessage(address, text)
+        .catch((e) => console.warn('[conversation] failed to ack the rebind:', e instanceof Error ? e.message : e));
+    }
+    return text;
+  }
+
+  /**
+   * `/agent <id>`, typed or picked from the menu: bind this conversation to that agent — by id, so
+   * any agent is reachable, including a second one of the same harness on another machine, which
+   * the harness commands (`/cc`) cannot name. The same rules as `/cc`: a topic with a session keeps
+   * its agent (switchRefusal says what to do instead), and one without simply moves.
+   *
+   * Returns what to tell the user; the caller decides where (a reply, or the menu edited in place).
+   */
+  chooseAgent(key: ConversationId, agentId: string, conv: ConversationRef): string {
+    const def = findAgent(this.config, agentId);
+    if (!def) return `No agent "${agentId}" is configured.`;
+    const refused = this.switchRefusal(key, agentId, `/agent ${agentId}`);
+    if (refused !== undefined) return refused;
+    const name = agentDisplayName(def, agentId);
+    const state = this.conversations.get(key);
+    if (state?.agentId === agentId) return `${name} is already answering this topic.`;
+    if (state) return this.rebind(key, state, agentId, conv.platform, addressOf(conv), false);
+    // First sight of this conversation: bind it now, so the next message is answered by the choice.
+    this.conversations.set(key, { merger: this.buildMerger(key), agentId, platform: conv.platform, lastActivityAt: this.clock.now() });
+    this.store?.bind(key, agentId);
+    console.log(`[conversation] ${key} bound to agent "${agentId}" (chosen with /agent)`);
+    return `▸ ${name} is answering this conversation now`;
+  }
+
+  /**
+   * `/agent` (which agent answers, chosen by id rather than by harness — see chooseAgent) and `/cd`
+   * (where the agent works, as opposed to `/setting`, which is how it is configured). Answered here
+   * for the same reason `/new` is: each is the gateway's own decision, recorded per conversation,
+   * and neither asks the agent anything. True when `setting` was one of them.
+   */
+  private answerPlacementCommand(
+    key: ConversationId,
+    setting: { name: string; rest?: string },
+    fallbackAgent: string,
+    msg: InboundMessage,
+    ack: (what: string, text: string) => void
+  ): boolean {
+    const name = setting.name.toLowerCase();
+    if (AGENT_NAMES.has(name)) {
+      const answer = this.applyAgentCommand(key, setting.rest, fallbackAgent, msg);
+      if (answer !== undefined) ack('/agent', answer);
+      return true;
+    }
+    if (!WORKDIR_NAMES.has(name)) return false;
+    const agentId = this.boundAgentFor(key, fallbackAgent);
+    const answer = (): void => {
+      const text = this.applyWorkdirCommand(key, agentId, setting.rest, msg);
+      // undefined = answered on another surface (the daemon posted a menu), the same
+      // "already answered, say nothing" idiom applyCommandTranslation uses.
+      if (text !== undefined) ack('/cd', text);
+    };
+    // An agent on a remote host: list its directory over there first — an asked-for `/cd` should
+    // show what is there now, not what was there the last time somebody looked.
+    const def = findAgent(this.config, agentId);
+    if (def?.host) void this.refreshRemoteScan(def).then(answer);
+    else answer();
+    return true;
+  }
+
+  /**
+   * `/agent`: the grouped menu where buttons exist, the grouped list otherwise, or — with an
+   * argument — the agent it names. Returns the text to send, or undefined when a menu went out.
+   */
+  private applyAgentCommand(key: ConversationId, rest: string | undefined, fallbackAgent: string, msg: InboundMessage): string | undefined {
+    const groups = agentGroups(this.config.agents);
+    const current = this.boundAgentFor(key, fallbackAgent);
+    const query = rest?.trim();
+    if (!query) {
+      const caps = this.platforms.get(msg.conversation.platform)?.capabilities;
+      if (caps?.buttons && this.hooks?.onAgentMenuRequest && this.config.agents.length > 1) {
+        this.hooks.onAgentMenuRequest(key, msg, { groups, current });
+        return undefined;
+      }
+      return agentListText(groups, current);
+    }
+    const match = matchAgent(this.config.agents, query);
+    if (match.kind === 'none') return `No agent matches "${query}".\n${agentListText(groups, current)}`;
+    if (match.kind === 'many') return `"${query}" matches ${match.ids.join(', ')} — which one?`;
+    return this.chooseAgent(key, match.def.id, msg.conversation);
   }
 
   /**
@@ -1565,18 +1674,8 @@ export class ConversationRegistry {
       return true;
     }
 
-    // `/cd` — where the agent works, as opposed to `/setting`, which is how it is configured.
-    // Answered here for the same reason `/new` is: it is the gateway's own decision (the directory
-    // is recorded per conversation, not per agent) and it resets the agent rather than asking it
-    // anything.
-    if (setting && WORKDIR_NAMES.has(setting.name.toLowerCase())) {
-      const agentId = this.boundAgentFor(key, fallbackAgent);
-      const answer = this.applyWorkdirCommand(key, agentId, setting.rest, msg);
-      // undefined = answered on another surface (the daemon posted a menu), the same
-      // "already answered, say nothing" idiom applyCommandTranslation uses.
-      if (answer !== undefined) ack('/cd', answer);
-      return true;
-    }
+    // `/agent` and `/cd`: who answers and where it works — both the gateway's own decisions.
+    if (setting && this.answerPlacementCommand(key, setting, fallbackAgent, msg, ack)) return true;
 
     // `/title` — the manual counterpart to the automatic rename. Answered here because the lane
     // and the record of what it was last called both belong to the gateway; the harness has no
@@ -2105,7 +2204,7 @@ export class ConversationRegistry {
       return;
     }
     console.log(`[command] /${name} run as a one-shot agy process for ${key} (${state.agentId})`);
-    const result = await this.runHarnessCli(name, resolveConversationCwd(def, key, this.store), buildHarnessEnv(def));
+    const result = await runAgyCliFor(def, name, resolveConversationCwd(def, key, this.store), this.runHarnessCli);
     if (!result.ok) {
       reply(`Could not ask ${label} for /${name}: ${result.error}`);
       return;
@@ -2137,6 +2236,9 @@ export class ConversationRegistry {
     const sessionId = this.store?.agentSession(id, agentId);
     const cwd = this.workdirOf(id, agentId);
     if (!sessionId || !cwd) return undefined;
+    const host = remoteHosts.hostFor(def);
+    const w = host?.conn.welcome;
+    if (host) return w ? readRemoteCacheExpiry(host, remoteClaudeProjectsDir(def, w), expandRemoteHome(cwd, w.home), sessionId) : undefined;
     return readCacheExpiry(claudeProjectsDir(def), cwd, sessionId);
   }
 
@@ -2529,8 +2631,40 @@ ${formatTokens(left)} left before compaction — ${name}`;
    * is ordered by frecency, which for a never-used workspace is exactly the scan's alphabetical
    * order.
    */
-  private rankedWorkdirs(root: string): WorkdirScan {
-    const scan = scanWorkdirs(root);
+  /**
+   * The `/cd` listing of a remote agent's root, as last read from its host.
+   *
+   * Kept because the menu code is synchronous — it decides on the spot whether a menu goes out —
+   * while a remote directory can only be listed asynchronously. An explicit `/cd` refreshes it first
+   * (and so always shows what is there now); the menus offered on the side of `/new` or a bare agent
+   * command use what is known, and read ahead when nothing is.
+   */
+  private readonly remoteScans = new Map<string, WorkdirScan>();
+
+  private remoteScanOf(def: AgentDef, root: string): WorkdirScan {
+    return (
+      this.remoteScans.get(`${def.host}\0${root}`) ?? { ok: false, reason: `the directory list on host "${def.host}" has not been read yet` }
+    );
+  }
+
+  /** List a remote agent's root on its host into remoteScans. Never rejects: a failure is the scan. */
+  private async refreshRemoteScan(def: AgentDef): Promise<void> {
+    const host = remoteHosts.hostFor(def);
+    if (!host) return;
+    let scan: WorkdirScan;
+    let root = resolveAgentCwd(def);
+    try {
+      await host.ready();
+      root = resolveAgentCwd(def); // `~` resolves once the host has been reached
+      scan = workdirScanFrom(root, await host.listDir(root, 15_000), true);
+    } catch (e) {
+      scan = { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+    this.remoteScans.set(`${def.host}\0${root}`, scan);
+  }
+
+  private rankedWorkdirs(def: AgentDef, root: string): WorkdirScan {
+    const scan = def.host ? this.remoteScanOf(def, root) : scanWorkdirs(root);
     if (!scan.ok || !this.workdirUsage) return scan;
     const [first, ...rest] = scan.options;
     if (!first) return scan;
@@ -2557,7 +2691,14 @@ ${formatTokens(left)} left before compaction — ${name}`;
     const def = findAgent(this.config, agentId);
     if (!this.store || !this.hooks?.onWorkdirMenuRequest || !caps || !def) return false;
 
-    const scan = this.rankedWorkdirs(resolveAgentCwd(def));
+    const root = resolveAgentCwd(def);
+    if (def.host && !this.remoteScans.has(`${def.host}\0${root}`)) {
+      // Never listed yet: read it now for next time, and stay quiet this time rather than hold up
+      // whatever the caller says instead (see the remoteScans field).
+      void this.refreshRemoteScan(def);
+      return false;
+    }
+    const scan = this.rankedWorkdirs(def, root);
     if (!scan.ok || workdirMenuSurface(caps, scan.options.length) !== 'menu') return false;
 
     this.hooks.onWorkdirMenuRequest(id, agentId, msg, {
@@ -2588,7 +2729,7 @@ ${formatTokens(left)} left before compaction — ${name}`;
     const def = findAgent(this.config, agentId);
     if (!def) return `No agent "${agentId}" is configured, so there is no directory to change.`;
     const root = resolveAgentCwd(def);
-    const scan = this.rankedWorkdirs(root);
+    const scan = this.rankedWorkdirs(def, root);
     // Reported rather than swallowed: an unreadable root means `agents[].cwd` names something that
     // is not there, and that is a config bug the operator can only fix if they hear about it.
     if (!scan.ok) return workdirUnreadableText(root, scan.reason);
@@ -2641,8 +2782,9 @@ ${formatTokens(left)} left before compaction — ${name}`;
     const root = def ? resolveAgentCwd(def) : undefined;
     if ((this.workdirOf(id, agentId) ?? root) === path) return { kind: 'unchanged', path };
     // Re-checked against the filesystem rather than trusted from the menu that offered it: a menu
-    // is a snapshot, and a directory can be renamed between opening one and tapping it.
-    if (!isDirectory(path)) return { kind: 'missing', path };
+    // is a snapshot, and a directory can be renamed between opening one and tapping it. A remote
+    // directory is checked by the spawn instead (prepareRemoteSpawn), with the same fallback.
+    if (!def?.host && !isDirectory(path)) return { kind: 'missing', path };
 
     // Recorded as an override only while it differs from the agent's own root: going back to the
     // root clears the field instead of pinning it, so a later edit to `agents[].cwd` still moves

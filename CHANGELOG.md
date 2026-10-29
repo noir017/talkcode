@@ -5,6 +5,55 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Agents on other machines: `hosts:` and `agents[].host`.** An agent can now run on any Linux host
+  the gateway reaches over ssh, and the chat cannot tell the difference: replies stream, files go
+  both ways, and `/cd`, `/skills`, `/usage`, the model, effort, context and cache countdown all
+  work. Running `ssh host claude-agent-acp` as a `custom` agent was tried first (2026-10-28). The
+  agent answered, but everything the gateway does besides piping its stdio broke: native tools,
+  reverse commands, attachments, the cache countdown, agy's `/stop`. A dropped connection also took
+  the agent down with it. So the gateway now installs a small helper on the host by itself,
+  talkcode-remote: one static Go binary of about 4 MiB per architecture, carried inside the release
+  tarball. The helper owns the agents and does the filesystem and command work locally, over one
+  connection per host. It is deliberately simple. Reverse commands, MCP and the command table stay
+  in TypeScript and are not copied: the `talkcode` command on a host hands its argument list back
+  to the gateway, which runs its own CLI with it. Hooks and an agent's scheduled `--bash` tasks run
+  on the agent's host. Files you send are placed there, and files it sends are fetched from there.
+  The agent's environment is the host account's login environment, so the model keys in its
+  `.bashrc` are there; nothing from the gateway's own environment is sent. ssh is pinned to the
+  gateway's own key and known_hosts with strict checking, and the helper opens no network port. See
+  [Remote hosts](docs/remote-hosts.md).
+- **Agents keep working through a dropped connection.** The helper is a resident process on the
+  host, not part of the ssh session. While the link is down the agent keeps running, and what it
+  writes waits on the host (up to 64 MiB) until the connection is back. Messages and `/stop` sent
+  meanwhile wait on the gateway the same way. Both sides number what they send and resend what the
+  other has not acknowledged, so nothing is lost or delivered twice. The gateway's heartbeat
+  notices a dead route within about 15 seconds and reconnects with a growing pause, from 1 to 30
+  seconds. The silence is not counted against the agent, and an outage longer than 10 seconds is
+  announced in the conversation, as is its end. Measured end to end with a real Claude Code: a
+  30-second command, a route black-holed for 35 seconds in the middle of it, and the reply arrived
+  a second after the route came back.
+- **A gateway upgrade retires the old helper.** Each version installs its own helper on a host,
+  named by the package version plus the binary's hash. The first connection from an upgraded
+  gateway stops the previous version's helper and its agents, and removes its directory once no
+  gateway uses it. A restarted gateway stops the agents its previous run had started. If that run
+  died without stopping them, the restart stops them on its first connection, made at startup. A
+  host that hears from no gateway for a day stops that gateway's agents.
+- **`/agent`: choose any agent, grouped by machine.** `/cc` and the other agent commands name a
+  harness, so with Claude Code on two machines they could only reach the first. `/agent` shows the
+  machines, then the agents on the one you pick. `/agent <id>` chooses one directly. Agents are
+  grouped by the new `agents[].group`, else by their host. A topic with a session keeps its agent,
+  as with `/cc`.
+- **`talkcode doctor` checks each host**: the key and known_hosts, a real connection, and the agents'
+  commands on the host's login `PATH`.
+
+### Fixed
+
+- **An agent that cannot be started now says why.** A harness command missing from `PATH` used to
+  fail the turn as "ACP connection closed", with the real reason only in the daemon log. The chat
+  now gets that reason.
+
 ## [2.8.0] - 2026-10-28
 
 ### Added

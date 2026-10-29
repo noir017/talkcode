@@ -12,6 +12,7 @@
 | `/stop` | 停掉当前这一轮（或一轮结束后回来汇报的后台工作），会话本身保留 |
 | `/kill` | 结束智能体进程，会话本身保留，下一条消息接着原来的继续 |
 | `/cd` | 选这个会话的工作目录，见[工作目录](working-directory.md) |
+| `/agent` | 按 id 选择由哪个智能体回答这个话题，按机器分组，见[远程主机](remote-hosts.md#选择智能体agent) |
 | `/title` | 给这个话题起名字；不起则自动命名，见[话题命名](topic-names.md) |
 | `/setting` | 改 config.yaml 里的设置，见[在聊天里改配置](settings.md) |
 | `/reload` | 改完 config.yaml 后不重启直接生效，见[配置](configuration.md#守护进程运行时改配置) |

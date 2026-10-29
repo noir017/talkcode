@@ -12,6 +12,7 @@ Discord, Slack), and equally usable as plain text everywhere else.
 | `/stop` | stop the current turn — or background work reporting in after one — keeping the conversation |
 | `/kill` | end the agent process, keeping the conversation — the next message resumes it |
 | `/cd` | choose the directory this conversation works in — see [Working directory](working-directory.md) |
+| `/agent` | choose which agent answers this topic, by id, grouped by machine — see [Remote hosts](remote-hosts.md#choosing-an-agent-agent) |
 | `/title` | name this topic; it is named automatically otherwise — see [Topic names](topic-names.md) |
 | `/setting` | change a saved setting in config.yaml — see [Settings from chat](settings.md) |
 | `/reload` | apply an edited config.yaml without restarting — see [Configuration](configuration.md#changing-it-while-the-daemon-runs) |

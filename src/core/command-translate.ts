@@ -81,6 +81,7 @@ export const DAEMON_COMMANDS: SlashCommandSpec[] = [
   { name: 'stop', description: 'Stop the current turn or background work (keeps the conversation)' },
   { name: 'kill', description: 'End the agent process (keeps the conversation; the next message resumes it)' },
   { name: 'cd', description: 'Choose the working directory (starts a fresh session there)' },
+  { name: 'agent', description: 'Choose which agent answers this topic (grouped by machine)' },
   { name: 'setting', description: 'Change a saved setting (default agent, model, session)' },
   { name: 'reload', description: 'Apply an edited config.yaml without restarting the daemon' },
   { name: 'title', description: 'Name this topic (it is named automatically otherwise)' },

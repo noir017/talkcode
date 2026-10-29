@@ -1,0 +1,450 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// One-shot operations (`rpc` frames): the filesystem and command access the gateway used to have
+// for free when its agents ran on its own disk — reading the tail of a Claude Code transcript,
+// placing an inbound attachment, listing a workspace for `/cd`, linking the bundled skill, running a
+// preLaunch hook. Each answers with `rpc-ok` (a JSON `res`, plus a body for file contents and
+// command output) or `rpc-err`.
+
+const (
+	defaultReadMax = 8 << 20
+	// A frame body is capped at maxBodyBytes; the gateway reads bigger files in chunks (`offset`).
+	readChunkCap  = maxBodyBytes - (64 << 10)
+	defaultRunMax = 1 << 20
+	runMaxCap     = 8 << 20
+)
+
+func (d *daemon) handleRPC(gen uint64, h *Header, body []byte) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.rpcs[h.Rid] = cancel
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		delete(d.rpcs, h.Rid)
+		d.mu.Unlock()
+		cancel()
+	}()
+
+	res, out, err := d.op(ctx, h, body)
+	if err != nil {
+		d.link.send(gen, &Header{T: "rpc-err", Rid: h.Rid, Error: err.Error()}, nil, false)
+		return
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		d.link.send(gen, &Header{T: "rpc-err", Rid: h.Rid, Error: err.Error()}, nil, false)
+		return
+	}
+	d.link.send(gen, &Header{T: "rpc-ok", Rid: h.Rid, Res: raw}, out, false)
+}
+
+func (d *daemon) op(ctx context.Context, h *Header, body []byte) (any, []byte, error) {
+	path := expandHome(h.Path)
+	switch h.Op {
+	case "stat":
+		return opStat(path)
+	case "listDir":
+		return opListDir(path)
+	case "mkdirp":
+		mode := fs.FileMode(0o755)
+		if h.Mode != 0 {
+			mode = fs.FileMode(h.Mode)
+		}
+		return map[string]any{}, nil, os.MkdirAll(path, mode)
+	case "readFile":
+		return opReadFile(path, h.Max, h.Offset)
+	case "readTail":
+		return opReadTail(path, h.Max, h.Grep, h.Fields)
+	case "writeFile":
+		return opWriteFile(path, body, h.Mode, h.Append)
+	case "ensureLink":
+		return opEnsureLink(expandHome(h.Target), path, expandHome(h.Requires))
+	case "run":
+		return d.opRun(ctx, h)
+	}
+	return nil, nil, fmt.Errorf("unknown operation %q", h.Op)
+}
+
+func opStat(path string) (any, []byte, error) {
+	st, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]any{"exists": false}, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{
+		"exists": true, "dir": st.IsDir(), "size": st.Size(), "mtimeMs": st.ModTime().UnixMilli(),
+	}, nil, nil
+}
+
+// opListDir lists a directory with each entry's type AFTER following symlinks — what the gateway's
+// `/cd` scan asks of stat (workdir-scan.ts): a workspace of links into mounted volumes is normal.
+func opListDir(path string) (any, []byte, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	type entry struct {
+		Name string `json:"name"`
+		Dir  bool   `json:"dir"`
+	}
+	out := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		st, err := os.Stat(filepath.Join(path, e.Name()))
+		if err != nil {
+			continue // a broken link, or gone since the listing
+		}
+		out = append(out, entry{Name: e.Name(), Dir: st.IsDir()})
+	}
+	return map[string]any{"entries": out}, nil, nil
+}
+
+// opReadFile reads up to `max` bytes from `offset`, so a file larger than one frame
+// comes over in pieces. `size` lets the caller know when it has all of it.
+func opReadFile(path string, max int64, offset uint64) (any, []byte, error) {
+	if max <= 0 {
+		max = defaultReadMax
+	}
+	if max > readChunkCap {
+		max = readChunkCap
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if st.IsDir() {
+		return nil, nil, fmt.Errorf("%s is a directory", path)
+	}
+	size := st.Size()
+	if int64(offset) >= size {
+		return map[string]any{"size": size}, nil, nil
+	}
+	n := size - int64(offset)
+	if n > max {
+		n = max
+	}
+	buf := make([]byte, n)
+	read, err := f.ReadAt(buf, int64(offset))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, nil, err
+	}
+	return map[string]any{"size": size}, buf[:read], nil
+}
+
+// opReadTail returns the last `max` bytes as whole lines (the first is dropped when the window cut
+// it), optionally only those containing one of `grep`, and optionally with each JSON line cut down
+// to `fields` (dotted paths; a line that is not a JSON object is dropped). The projection is what
+// keeps the Claude Code cache reading cheap: the gateway needs each entry's type, timestamp and
+// usage from a window that is a megabyte of tool output, so only those few fields cross the network.
+func opReadTail(path string, max int64, grep, fields []string) (any, []byte, error) {
+	if max <= 0 {
+		max = defaultReadMax
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	start := st.Size() - max
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, st.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+		return nil, nil, err
+	}
+	lines := bytes.Split(buf, []byte{'\n'})
+	if start > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	if len(grep) > 0 {
+		kept := lines[:0]
+		for _, ln := range lines {
+			for _, g := range grep {
+				if bytes.Contains(ln, []byte(g)) {
+					kept = append(kept, ln)
+					break
+				}
+			}
+		}
+		lines = kept
+	}
+	if len(fields) > 0 {
+		kept := lines[:0]
+		for _, ln := range lines {
+			if p := projectJSON(ln, fields); p != nil {
+				kept = append(kept, p)
+			}
+		}
+		lines = kept
+	}
+	out := bytes.Join(lines, []byte{'\n'})
+	if len(out) > readChunkCap {
+		out = out[len(out)-readChunkCap:]
+	}
+	return map[string]any{"size": st.Size(), "truncated": start > 0}, out, nil
+}
+
+// projectJSON keeps only `fields` (dotted paths) of one JSON object line; nil for anything else.
+func projectJSON(line []byte, fields []string) []byte {
+	var m map[string]any
+	if json.Unmarshal(line, &m) != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for _, f := range fields {
+		copyPath(m, out, strings.Split(f, "."))
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func copyPath(src, dst map[string]any, parts []string) {
+	v, ok := src[parts[0]]
+	if !ok {
+		return
+	}
+	if len(parts) == 1 {
+		dst[parts[0]] = v
+		return
+	}
+	sub, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	next, _ := dst[parts[0]].(map[string]any)
+	if next == nil {
+		next = map[string]any{}
+	}
+	copyPath(sub, next, parts[1:])
+	if len(next) > 0 { // no empty objects for paths that were not there
+		dst[parts[0]] = next
+	}
+}
+
+// opWriteFile writes (or with `appendMode`, appends) one piece of a file, creating its directory
+// owner-only. Inbound attachments are the user's files: nobody else on the host needs to read them.
+func opWriteFile(path string, body []byte, mode uint32, appendMode bool) (any, []byte, error) {
+	perm := fs.FileMode(0o600)
+	if mode != 0 {
+		perm = fs.FileMode(mode)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, nil, err
+	}
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, perm)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{"path": path}, nil, nil
+}
+
+// opEnsureLink makes `link` a symlink to `target`, with the same rules as the gateway's local
+// skill-link.ts — only where `requires` exists (the harness has been run here), never over a real
+// file or directory (that is the operator's own copy), repointing a link that points elsewhere.
+func opEnsureLink(target, link, requires string) (any, []byte, error) {
+	result := func(outcome, detail string) (any, []byte, error) {
+		return map[string]any{"outcome": outcome, "detail": detail, "link": link}, nil, nil
+	}
+	if requires != "" {
+		if _, err := os.Stat(requires); err != nil {
+			return result("skipped", requires+" does not exist")
+		}
+	}
+	previous := ""
+	if st, err := os.Lstat(link); err == nil {
+		if st.Mode()&fs.ModeSymlink == 0 {
+			if st.IsDir() {
+				return result("occupied", "a directory")
+			}
+			return result("occupied", "a file")
+		}
+		previous, _ = os.Readlink(link)
+		if previous == target {
+			return result("current", "")
+		}
+		if err := os.Remove(link); err != nil {
+			return result("failed", err.Error())
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return result("failed", err.Error())
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return result("failed", err.Error())
+	}
+	if err := os.Symlink(target, link); err != nil {
+		return result("failed", err.Error())
+	}
+	if previous != "" {
+		return result("relinked", previous)
+	}
+	return result("linked", "")
+}
+
+// ── run ───────────────────────────────────────────────────────────────────────────────────────
+
+type runResult struct {
+	Code       *int   `json:"code"`
+	Signal     string `json:"signal,omitempty"`
+	TimedOut   bool   `json:"timedOut,omitempty"`
+	Cancelled  bool   `json:"cancelled,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	SpawnError string `json:"spawnError,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+}
+
+// opRun runs a command to completion: `argv` directly, or `bash` as `bash -lc` — the gateway's own
+// runner for preLaunch hooks and scheduled `--bash` tasks (schedule-bash.ts), moved to the host the
+// agent is on. Its own process group, killed whole (SIGTERM, then SIGKILL) on timeout or on an
+// `rpc-cancel`. Output beyond `max` keeps its END, which is where a failing script says why.
+func (d *daemon) opRun(ctx context.Context, h *Header) (any, []byte, error) {
+	argv := h.Argv
+	if h.Bash != "" {
+		argv = []string{"bash", "-lc", h.Bash}
+	}
+	if len(argv) == 0 {
+		return nil, nil, errors.New("run: no command")
+	}
+	max := h.Max
+	if max <= 0 {
+		max = defaultRunMax
+	}
+	if max > runMaxCap {
+		max = runMaxCap
+	}
+	env := d.agentEnv(h.Env, h.Unset)
+	cwd := expandHome(h.Cwd)
+	if cwd == "" {
+		cwd = homeDir()
+	}
+	path, err := lookPathIn(argv[0], envGet(env, "PATH"), cwd)
+	if err != nil {
+		return runResult{SpawnError: err.Error()}, nil, nil
+	}
+	cmd := &exec.Cmd{Path: path, Args: argv, Env: env, Dir: cwd, SysProcAttr: groupAttr()}
+	// Bounded wait for output after exit: a script that left `ssh -fN` or `foo &` running would
+	// otherwise hold its pipes, and this answer, forever.
+	cmd.WaitDelay = time.Second
+	stdout := &ring{max: int(max)}
+	stderr := &ring{max: 64 << 10}
+	cmd.Stdout = stdout
+	if h.Merge {
+		cmd.Stderr = stdout
+	} else {
+		cmd.Stderr = stderr
+	}
+	if err := startLocked(cmd); err != nil {
+		return runResult{SpawnError: err.Error()}, nil, nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	var timeout <-chan time.Time
+	if h.TimeoutMs > 0 {
+		t := time.NewTimer(time.Duration(h.TimeoutMs) * time.Millisecond)
+		defer t.Stop()
+		timeout = t.C
+	}
+	res := runResult{}
+	select {
+	case err = <-done:
+	case <-timeout:
+		res.TimedOut = true
+		err = killGroupAndWait(cmd, done)
+	case <-ctx.Done():
+		res.Cancelled = true
+		err = killGroupAndWait(cmd, done)
+	}
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		res.Signal = signalName(ws.Signal())
+	} else if cmd.ProcessState != nil {
+		res.Code = intPtr(cmd.ProcessState.ExitCode())
+	}
+	_ = err // the exit status above says everything Wait's error would
+	res.Truncated = stdout.cut
+	if !h.Merge {
+		res.Stderr = strings.TrimSpace(string(stderr.bytes()))
+	}
+	return res, stdout.bytes(), nil
+}
+
+func killGroupAndWait(cmd *exec.Cmd, done <-chan error) error {
+	pgid := cmd.Process.Pid
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(killGrace):
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return <-done
+	}
+}
+
+// ring keeps the last `max` bytes written to it.
+type ring struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+	cut bool
+}
+
+func (r *ring) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = append(r.buf, p...)
+	if over := len(r.buf) - r.max; over > 0 {
+		r.buf = append([]byte(nil), r.buf[over:]...)
+		r.cut = true
+	}
+	return len(p), nil
+}
+
+func (r *ring) bytes() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]byte(nil), r.buf...)
+}

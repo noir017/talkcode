@@ -1,8 +1,12 @@
 import { homedir } from 'node:os';
-import { join, resolve, delimiter } from 'node:path';
+import { join, posix, resolve, delimiter } from 'node:path';
 import { mkdirSync, statSync } from 'node:fs';
-import type { ChildProcess } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 import type { AgentDef } from '../config/schema.js';
+import type { Welcome } from '../remote/connection.js';
+import type { RemoteHost } from '../remote/host.js';
+import type { AgentStreamHandlers } from './agent.js';
+import { remoteHosts } from './remote-hosts.js';
 import { ensureReverseCliShim } from './reverse-cli-shim.js';
 import { ensureSkillLink } from './skill-link.js';
 
@@ -48,6 +52,10 @@ export function expandHome(p: string): string {
  *   per-agent home that's stable across this agent's sessions.
  */
 export function resolveAgentCwd(def: AgentDef): string {
+  // On a remote host the directory is that host's, and is not made here: the spawn makes it there
+  // (prepareRemoteSpawn). Until the host has been reached once, a `~` in it stays a `~`.
+  const host = remoteHosts.hostFor(def);
+  if (host) return remoteAgentRoot(def, host.conn.welcome?.home);
   if (def.cwd) return resolve(expandHome(def.cwd));
   const dir = join(homedir(), '.talkcode', 'agents', def.id);
   mkdirSync(dir, { recursive: true });
@@ -76,6 +84,9 @@ export function resolveConversationCwd(
   const root = resolveAgentCwd(def);
   const chosen = store?.conversationCwd(conversationId);
   if (!chosen || chosen === root) return root;
+  // A remote directory cannot be checked synchronously from here; prepareRemoteSpawn checks it on
+  // the host, with the same fallback to the root.
+  if (def.host) return chosen;
   try {
     if (statSync(chosen).isDirectory()) return chosen;
     console.warn(`[agent] recorded working dir "${chosen}" is not a directory; using ${root}`);
@@ -136,11 +147,133 @@ export function buildAgentEnv(
 }
 
 /**
+ * What the runtimes need of an agent's process — met by a local child_process and by a process on
+ * a remote host (remote/host.ts RemoteChild) alike, so neither runtime has to know which it holds.
+ */
+export interface AgentChild {
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  on(event: 'error', listener: (err: Error) => void): this;
+}
+
+// ───────────────────────── agents on a remote host ─────────────────────────
+
+/** `~` and `~/…` resolved against a remote host's home (POSIX paths: hosts are Linux). */
+export function expandRemoteHome(p: string, home: string | undefined): string {
+  if (!home) return p;
+  if (p === '~') return home;
+  return p.startsWith('~/') ? posix.join(home, p.slice(2)) : p;
+}
+
+/** A remote agent's own directory: its `cwd`, or a workspace of its own like a local agent gets. */
+export function remoteAgentRoot(def: AgentDef, home: string | undefined): string {
+  return expandRemoteHome(def.cwd ?? `~/.talkcode/agents/${def.id}`, home);
+}
+
+/** The home a remote agent runs as: an `env.HOME` override, else the account's own. */
+export function remoteAgentHome(def: AgentDef, w: Welcome): string {
+  const override = def.env['HOME'];
+  return override ? expandRemoteHome(expandEnv(override), w.home) : w.home;
+}
+
+/**
+ * A remote agent's environment, as an overlay: its `env` block and, for a session, the turn token
+ * its `talkcode` command identifies itself with. The rest is the HOST's login environment
+ * (remote/shellenv.go) — never this daemon's, which describes the wrong machine.
+ */
+export function remoteAgentEnv(def: AgentDef, sessionToken?: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(def.env)) env[k] = expandEnv(v);
+  if (sessionToken) env.TALKCODE_TURN_TOKEN = sessionToken;
+  return env;
+}
+
+/**
+ * Everything a remote spawn needs before the process can start: the host reached (or the reason it
+ * cannot be), the directory resolved and present on it, and the bundled skill placed for the
+ * harness. Mirrors what the local path does — an agent's own workspace is created, a configured
+ * directory is not (a typo should say so), and a `/cd` choice that has since disappeared falls back
+ * to the root rather than failing the turn.
+ */
+export async function prepareRemoteSpawn(
+  def: AgentDef,
+  host: RemoteHost,
+  cwd: string
+): Promise<{ welcome: Welcome; cwd: string }> {
+  const welcome = await host.ready();
+  const root = remoteAgentRoot(def, welcome.home);
+  let dir = expandRemoteHome(cwd, welcome.home);
+  if (dir !== root) {
+    const st = await host.stat(dir);
+    if (!st.exists || !st.dir) {
+      console.warn(`[agent] recorded working dir "${dir}" is gone on ${host.id}; using ${root}`);
+      dir = root;
+    }
+  }
+  if (dir === root) {
+    if (def.cwd === undefined) await host.mkdirp(root);
+    else {
+      const st = await host.stat(root);
+      if (!st.exists || !st.dir) throw new Error(`agent "${def.id}": working directory ${root} does not exist on host "${host.id}"`);
+    }
+  }
+  await remoteHosts.placeSkill(host, def.harness, remoteAgentHome(def, welcome), welcome);
+  return { welcome, cwd: dir };
+}
+
+/** How long a lost connection is waited out before the chat is told about it. */
+const LINK_NOTICE_AFTER_MS = 10_000;
+
+/**
+ * For one turn of an agent on a remote host: tell the chat when the connection to the host is lost
+ * for longer than a blip, and when it is back — the agent keeps working through it (remote/README.md),
+ * so silence would otherwise read as a hang. `onUp` lets the runtime restart its silence watchdog,
+ * which must not count the outage against the agent. Returns the disposer; a no-op for a local agent.
+ */
+export function watchRemoteLink(
+  host: RemoteHost | undefined,
+  handlers: Pick<AgentStreamHandlers, 'onNotice'>,
+  onUp: () => void
+): () => void {
+  if (!host) return () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let told = false;
+  const down = (): void => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      told = true;
+      handlers.onNotice?.(`⚠️ Lost the connection to ${host.id}. The agent keeps working there; its reply follows once the connection is back.`);
+    }, LINK_NOTICE_AFTER_MS);
+    timer.unref?.();
+  };
+  const up = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (told) handlers.onNotice?.(`✅ Reconnected to ${host.id}.`);
+    told = false;
+    onUp();
+  };
+  host.on('down', down);
+  host.on('up', up);
+  if (!host.isUp && host.conn.welcome) down();
+  return () => {
+    host.off('down', down);
+    host.off('up', up);
+    if (timer) clearTimeout(timer);
+  };
+}
+
+/**
  * Terminate a child process: SIGTERM, then a delayed SIGKILL fallback if it ignored it.
  * Best-effort and non-blocking; a process that already exited is left alone (killing a reaped
  * pid could hit a pid-reused stranger).
  */
-export function killChildProcess(child: ChildProcess, graceMs = KILL_GRACE_MS): void {
+export function killChildProcess(child: AgentChild, graceMs = KILL_GRACE_MS): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
   // Considered detached+kill(-pid) to kill the whole group, but detached changes
   // stdio/process-group semantics and children would survive a daemon crash — risk over reward.

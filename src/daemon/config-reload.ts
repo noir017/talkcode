@@ -35,6 +35,9 @@ const RELOAD_KIND = {
   display: 'live',
   title: 'live',
   voice: 'live',
+  // Live: the daemon rebuilds its host table from it after a reload (remoteHosts.configure), and an
+  // agent on a host whose entry changed counts as changed itself (diffConfig), so it is respawned.
+  hosts: 'live',
 } as const satisfies Record<keyof UserConfig, 'ignore' | 'restart' | 'agents' | 'live'>;
 
 type LiveSection = { [K in keyof typeof RELOAD_KIND]: (typeof RELOAD_KIND)[K] extends 'live' ? K : never }[keyof typeof RELOAD_KIND];
@@ -62,7 +65,11 @@ export function diffConfig(live: Config, next: Config): ConfigDiff {
   return {
     agentsAdded: ids(after, before),
     agentsRemoved: ids(before, after),
-    agentsChanged: [...after.keys()].filter((id) => before.has(id) && !same(before.get(id), after.get(id))),
+    agentsChanged: [...after.keys()].filter(
+      (id) =>
+        before.has(id) &&
+        (!same(before.get(id), after.get(id)) || !same(hostOf(live, before.get(id)), hostOf(next, after.get(id))))
+    ),
     sections: LIVE_SECTIONS.filter((k) => !same(live[k], next[k])),
     restartNeeded: diffKeys(live.platforms, next.platforms).map((id) => `platforms.${id}`),
   };
@@ -123,6 +130,11 @@ export function describeReload(
   if (d.restartNeeded.length) lines.push(`- needs a daemon restart to take effect: ${d.restartNeeded.join(', ')}`);
   for (const w of warnings) lines.push(`- ⚠️ ${w}`);
   return lines.join('\n');
+}
+
+/** The `hosts:` entry an agent runs on, for comparing two configs. */
+function hostOf(cfg: Config, def: Config['agents'][number] | undefined): unknown {
+  return def?.host ? cfg.hosts?.[def.host] : undefined;
 }
 
 /** Keys added, removed or changed between two records. */

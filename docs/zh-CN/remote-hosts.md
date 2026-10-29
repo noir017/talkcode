@@ -1,0 +1,108 @@
+# 远程主机
+
+[English](../remote-hosts.md) | 简体中文
+
+智能体可以跑在另一台机器上。网关通过 ssh 连到那台机器，自己在上面装好一个小服务，再经由它驱动智能体。
+在聊天里看起来和本机的智能体一样：回复流式输出，文件可以双向收发，`/cd`、`/skills` 和页脚都照常可用。
+两台机器之间断网时，智能体会继续干活；它的输出先留在那台主机上，连接恢复后再送达。
+
+```yaml
+hosts:
+  devbox:
+    ssh: me@10.0.0.5:22           # user@host[:port]
+agents:
+  - id: cc-dev
+    harness: claude
+    host: devbox                  # 跑在 devbox 上
+    cwd: ~/work                   # devbox 上的路径
+  - id: cc
+    harness: claude               # 跑在本机，和以前一样
+```
+
+## 配置一台主机
+
+1. **给网关一把密钥。** 默认用 `~/.config/talkcode/ssh/id_ed25519`（用 `identityFile` 改）：
+
+   ```bash
+   mkdir -p ~/.config/talkcode/ssh && chmod 700 ~/.config/talkcode/ssh
+   ssh-keygen -t ed25519 -N '' -f ~/.config/talkcode/ssh/id_ed25519 -C talkcode
+   ```
+
+2. **在主机上放行它**，写进 `~/.ssh/authorized_keys`，并限定网关的地址：
+
+   ```
+   restrict,from="203.0.113.7" ssh-ed25519 AAAA… talkcode
+   ```
+
+   `restrict` 会关掉端口转发、agent 转发和终端。网关一样都用不上：所有东西都走它执行的那一条命令。
+
+3. **信任主机的密钥**，写进 `~/.config/talkcode/ssh/known_hosts`（用 `knownHostsFile` 改）。
+   网关严格校验，从不自己记住新密钥。加之前先和主机上的指纹核对一下
+   （`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`）：
+
+   ```bash
+   ssh-keyscan -p 22 10.0.0.5 >> ~/.config/talkcode/ssh/known_hosts   # 其他端口写成 [10.0.0.5]:2222
+   ```
+
+4. **在主机上安装并登录智能体**，和你在那台机器的终端里使用它时一样：`claude` 要
+   `npm i -g @agentclientprotocol/claude-agent-acp`（网关自带的那份只给网关本机用），`codex` 要
+   `npm i -g @agentclientprotocol/codex-acp`，`opencode` 和 `agy` 要装 OpenCode 或 Antigravity 的 CLI。
+
+5. **检查：** `talkcode doctor` 会连上每台主机，并在那边查找各智能体的命令。
+
+主机必须是 x86-64 或 arm64 的 Linux，并且有 POSIX `sh`。其他什么都不用装。
+
+## 各件事在哪里发生
+
+| | 对配了 `host:` 的智能体 |
+|---|---|
+| 智能体进程 | 在主机上，在它的 `cwd` 里（默认是那边的 `~/.talkcode/agents/<id>`） |
+| 它的环境变量 | 主机账号的**登录**环境（`bash -il` 会设置的内容，包括 `.bashrc`），再叠加智能体的 `env`。网关自己的环境变量一个都不传过去。 |
+| `hooks.preLaunch` | 在主机上 |
+| 你发给它的文件 | 复制到主机的 `~/.talkcode/attachments/`，告诉它的也是这个路径 |
+| 它发给你的文件（`send_file`、`talkcode send-file`） | 从主机取回 |
+| 它执行的 `talkcode …` 命令 | 在主机的 `PATH` 上，再转回网关 |
+| 它添加的 `--bash` 定时任务 | 在主机上执行 |
+| `/cd`、`/skills` | 列出主机上的目录和 skill |
+| `talkcode` skill | 放进主机上对应 harness 的 skill 目录 |
+
+## 断网时
+
+- 智能体在主机上继续干活。它的输出留在主机上（每个网关最多 64 MiB，远超一轮长对话），连接恢复后按顺序送达。
+  断网期间你发的消息和 `/stop` 也一样，恢复后送达。
+- 断线大约 15 秒内会被发现，然后反复重连，间隔从 1 秒逐步拉长到 30 秒。断线超过 10 秒，对话里会说一声，
+  恢复后再说一声。这段沉默不会让这一轮失败。
+- 重启网关会停掉它在各主机上启动的智能体。网关如果没来得及停掉它们就挂了，再次启动时会立刻停掉。
+- 主机 24 小时收不到某个网关的消息，就会停掉这个网关的智能体。
+
+## 版本
+
+每个版本的网关都会在主机上安装自己的小服务，放在 `~/.talkcode/remote/<版本>/`。升级后的网关连上时，
+上一个版本的小服务会被停掉；等没有网关再用它，它的目录也会被删除。小服务大约 4 MiB；网关自带两种架构的构建，
+不会从别处下载任何东西。
+
+## 选择智能体：`/agent`
+
+`/cc`、`/oc` 这些智能体命令按 harness 命名，所以两台机器上各有一个 Claude Code 时，它们只能选到第一个。
+`/agent` 能按 id 选到任何一个：先列出机器，再列出你选中的那台机器上的智能体。`/agent cc-dev` 可以直接选。
+和 `/cc` 一样，已经有会话的话题会留在原来的智能体上。
+
+智能体按 `group:` 分组；没设的按所在主机分组，本机的归到「this machine」：
+
+```yaml
+agents:
+  - { id: cc-dev, harness: claude, host: devbox, group: 构建机 }
+```
+
+## 限制
+
+- 如果主机上的 systemd-logind 会在用户登出时结束其进程（`KillUserProcesses=yes`），最后一个 ssh 连接关闭时
+  小服务也会被结束。在那台机器上执行 `loginctl enable-linger <用户>`。
+- 主机 shell 配置里设置的 `CLAUDE_CONFIG_DIR` 网关看不到。用到的话请写在智能体的 `env` 里，否则这个智能体的页脚没有缓存倒计时。
+- 低于 1.4.7 的 `agy` 在远程主机上不显示上下文数字。
+
+## 安全
+
+`~/.config/talkcode/ssh/` 里的密钥能在它被授权的每台主机上打开 shell。这和那台主机上的智能体能替
+`access.allowFrom` 里任何人做的事是一回事，所以按你本来就必须做的那样保护好网关即可。小服务不开任何网络端口：
+它只走 ssh，以及 `~/.talkcode/remote/run/` 下一个仅属主可访问的 socket。

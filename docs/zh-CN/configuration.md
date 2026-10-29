@@ -24,6 +24,16 @@ agents:                       # 至少一个；路由按 id 选取
     cwd: ~/projects/main
   - id: codex
     harness: codex
+  - id: claude-devbox
+    harness: claude
+    host: devbox              # 跑在另一台机器上，见远程主机
+    group: 构建机              # /agent 按它分组（默认按主机）
+
+hosts:                        # 可选；智能体所在的机器，经 ssh 连接
+  devbox:
+    ssh: me@10.0.0.5:22
+    # identityFile: ~/.config/talkcode/ssh/id_ed25519   （默认）
+    # knownHostsFile: ~/.config/talkcode/ssh/known_hosts （默认）
 
 routing:
   default: claude
@@ -48,7 +58,8 @@ access:
 > 都能在你的机器上执行命令——共享部署务必填写白名单。
 
 其余配置在用到它的地方讲：各 harness 的选项见[智能体](agents.md)，网页端的 `terminal:`、`sso:`
-见[网页端](web-ui.md)，`title:` 见[话题命名](topic-names.md)，`voice:` 见[语音消息](voice.md)。
+见[网页端](web-ui.md)，`title:` 见[话题命名](topic-names.md)，`voice:` 见[语音消息](voice.md)，`hosts:` 和
+`agents[].host` 见[远程主机](remote-hosts.md)。
 其中几项也能在聊天里直接改、不用重启——见[在聊天里改配置](settings.md)。
 
 ## 守护进程运行时改配置

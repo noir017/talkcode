@@ -10,7 +10,8 @@
 | `agy` | `agy --input-format stream-json` | Antigravity CLI | `agy` 的 Google 登录态（系统钥匙串） |
 | `custom` | 你的 `command` + `args` | 任意 ACP 可执行文件 | 由智能体自身决定 |
 
-每个智能体可设 `cwd`、`env`、`args`、尽力传递的 `model`、[启动前钩子](#启动前钩子)，以及[权限策略](#权限请求)。支持会话恢复
+每个智能体可设 `cwd`、`env`、`args`、尽力传递的 `model`、[启动前钩子](#启动前钩子)，以及[权限策略](#权限请求)。
+设了 `host:` 就跑在另一台机器上、经 ssh 连接，见[远程主机](remote-hosts.md)。支持会话恢复
 的智能体，上下文可跨重启保留；智能体自己声明的斜杠命令不会全局注册，而是通过
 它的 `/<agent>` 菜单调出（见[聊天命令](chat-commands.md#智能体命令)）。
 `doctor` 会逐一校验已配置的 harness。

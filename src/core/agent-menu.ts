@@ -1,0 +1,167 @@
+import type { AgentDef } from '../config/schema.js';
+import { parseButtonId, formatButtonId } from './button-id.js';
+import { pageCount, pageSlice, truncateLabel, wrapPage } from './paging.js';
+
+/**
+ * `/agent` as data: which agents there are, grouped, as a two-level button menu and as text.
+ *
+ * ── Why a menu of agents at all ───────────────────────────────────────────────
+ * The agent commands (`/cc`, `/oc`) are keyed by HARNESS (core/command-translate.ts), which was
+ * enough while every agent ran on this machine: one Claude Code was all there was. With agents on
+ * other machines (`agents[].host`) a deployment has two of the same harness as a matter of course —
+ * Claude Code here and Claude Code on the build box — and `/cc` can only ever name the first. This
+ * menu names agents by id, so every one of them is reachable from a phone.
+ *
+ * ── Why grouped ───────────────────────────────────────────────────────────────
+ * A flat list of N machines × M harnesses is unreadable at a glance, and the question a user is
+ * answering is two questions anyway: which machine, then which agent on it. So the first level
+ * lists groups and the second their agents. A group is `agents[].group`, else the agent's host,
+ * else the gateway's own machine. With one group the first level is skipped: a question with one
+ * answer is not a question.
+ *
+ * Pure, like the other menus here (workdir-menu.ts, model-menu.ts): the posting, the pending-menu
+ * state and the binding itself live in daemon/.
+ */
+
+/** The group of agents that run on the gateway's own machine and name no group of their own. */
+export const LOCAL_GROUP = 'this machine';
+
+export interface AgentGroup {
+  name: string;
+  agents: AgentDef[];
+}
+
+/** What an agent is grouped under (see the header). */
+export function agentGroupOf(def: AgentDef): string {
+  return def.group ?? def.host ?? LOCAL_GROUP;
+}
+
+/** Agents by group, groups in the order their first agent appears in config.yaml. */
+export function agentGroups(agents: readonly AgentDef[]): AgentGroup[] {
+  const groups = new Map<string, AgentDef[]>();
+  for (const def of agents) {
+    const name = agentGroupOf(def);
+    groups.set(name, [...(groups.get(name) ?? []), def]);
+  }
+  return [...groups].map(([name, list]) => ({ name, agents: list }));
+}
+
+/** Choose a group: `agg:<reqId>:<group index>`. */
+export const AGENT_GROUP_PREFIX = 'agg:';
+/** Choose an agent: `aga:<reqId>:<index into the flat agent list>`. */
+export const AGENT_PICK_PREFIX = 'aga:';
+/** Back to the groups: `agb:<reqId>:0`. */
+export const AGENT_BACK_PREFIX = 'agb:';
+/** Turn the page within a group: `agp:<reqId>:<group index * 1000 + page>`. */
+export const AGENT_PAGE_PREFIX = 'agp:';
+
+export type AgentButtonClick =
+  | { kind: 'group'; reqId: string; group: number }
+  | { kind: 'pick'; reqId: string; index: number }
+  | { kind: 'back'; reqId: string }
+  | { kind: 'page'; reqId: string; group: number; page: number };
+
+export function parseAgentButtonId(id: string): AgentButtonClick | null {
+  const group = parseButtonId(id, AGENT_GROUP_PREFIX);
+  if (group) return { kind: 'group', reqId: group.reqId, group: group.n };
+  const pick = parseButtonId(id, AGENT_PICK_PREFIX);
+  if (pick) return { kind: 'pick', reqId: pick.reqId, index: pick.n };
+  const back = parseButtonId(id, AGENT_BACK_PREFIX);
+  if (back) return { kind: 'back', reqId: back.reqId };
+  const page = parseButtonId(id, AGENT_PAGE_PREFIX);
+  if (page) return { kind: 'page', reqId: page.reqId, group: Math.floor(page.n / 1000), page: page.n % 1000 };
+  return null;
+}
+
+/** Marks the agent answering this conversation now. */
+const CURRENT_MARK = '● ';
+
+export interface AgentMenuView {
+  text: string;
+  buttons: Array<{ id: string; label: string }>;
+}
+
+function agentLabel(def: AgentDef, current: string | undefined): string {
+  const harness = def.harness === 'custom' ? '' : ` · ${def.harness}`;
+  return truncateLabel(`${def.id === current ? CURRENT_MARK : ''}${def.id}${harness}`);
+}
+
+/**
+ * One screen of the menu: the groups (`group` undefined, and more than one group), or one group's
+ * agents. `flat` is every agent in menu order — group by group — which is what a pick's index
+ * points into, so a click resolves to the same agent whichever page it was on.
+ */
+export function buildAgentMenu(opts: {
+  reqId: string;
+  groups: readonly AgentGroup[];
+  current: string | undefined;
+  group?: number;
+  page?: number;
+  pageSize: number;
+}): AgentMenuView {
+  const { reqId, groups, current, pageSize } = opts;
+  const currentGroup = groups.findIndex((g) => g.agents.some((a) => a.id === current));
+  if (opts.group === undefined && groups.length > 1) {
+    return {
+      text: `Which machine? ${current ? `(now: ${current})` : ''}`.trim(),
+      buttons: groups.map((g, i) => ({
+        id: formatButtonId(AGENT_GROUP_PREFIX, reqId, i),
+        label: truncateLabel(`${i === currentGroup ? CURRENT_MARK : ''}${g.name} (${g.agents.length})`),
+      })),
+    };
+  }
+  const gi = Math.min(Math.max(opts.group ?? 0, 0), groups.length - 1);
+  const group = groups[gi]!;
+  const offset = groups.slice(0, gi).reduce((n, g) => n + g.agents.length, 0);
+  const pages = pageCount(group.agents.length, pageSize);
+  const page = wrapPage(opts.page ?? 0, pages);
+  const slice = pageSlice(group.agents, page, pageSize);
+  const buttons = slice.items.map((def, i) => ({
+    id: formatButtonId(AGENT_PICK_PREFIX, reqId, offset + slice.start + i),
+    label: agentLabel(def, current),
+  }));
+  if (pages > 1) {
+    buttons.push(
+      { id: formatButtonId(AGENT_PAGE_PREFIX, reqId, gi * 1000 + wrapPage(page - 1, pages)), label: '‹' },
+      { id: formatButtonId(AGENT_PAGE_PREFIX, reqId, gi * 1000 + wrapPage(page + 1, pages)), label: '›' }
+    );
+  }
+  if (groups.length > 1) buttons.push({ id: formatButtonId(AGENT_BACK_PREFIX, reqId, 0), label: '‹ machines' });
+  const where = groups.length > 1 ? ` on ${group.name}` : '';
+  const pageNote = pages > 1 ? ` (${page + 1}/${pages})` : '';
+  return { text: `Which agent${where} should answer this topic?${pageNote}`, buttons };
+}
+
+/** Every agent in menu order — what a pick's index points into (see buildAgentMenu). */
+export function flatAgents(groups: readonly AgentGroup[]): AgentDef[] {
+  return groups.flatMap((g) => g.agents);
+}
+
+/** The text form, for a platform with no buttons, and the answer to a `/agent` that named nothing. */
+export function agentListText(groups: readonly AgentGroup[], current: string | undefined): string {
+  const lines = ['Agents (`/agent <id>` chooses one for this topic):'];
+  for (const g of groups) {
+    if (groups.length > 1) lines.push(`${g.name}:`);
+    for (const def of g.agents) {
+      const mark = def.id === current ? '● ' : '  ';
+      lines.push(`${groups.length > 1 ? '  ' : ''}${mark}${def.id} — ${def.harness}${def.model ? ` (${def.model})` : ''}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The agent a typed `/agent <query>` names: an exact id (case-insensitive) first, else the one id
+ * containing it. Ambiguous or unknown answers are values, so the caller can say which.
+ */
+export function matchAgent(
+  agents: readonly AgentDef[],
+  query: string
+): { kind: 'one'; def: AgentDef } | { kind: 'none' } | { kind: 'many'; ids: string[] } {
+  const q = query.trim().toLowerCase();
+  const exact = agents.find((a) => a.id.toLowerCase() === q);
+  if (exact) return { kind: 'one', def: exact };
+  const partial = agents.filter((a) => a.id.toLowerCase().includes(q));
+  if (partial.length === 1) return { kind: 'one', def: partial[0]! };
+  return partial.length === 0 ? { kind: 'none' } : { kind: 'many', ids: partial.map((a) => a.id) };
+}

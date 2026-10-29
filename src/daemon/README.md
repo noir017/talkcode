@@ -44,6 +44,7 @@ session id, agy's conversation id). One conversation holds one session *per agen
 | `schedule-bash.ts` | One `--bash` run: its own process group, a bounded output tail, the full log on disk. Also runs `preLaunch` hooks |
 | `reverse-cli-shim.ts` | Guarantees `talkcode` is on the agent's PATH; `selfInvocation` — how to re-run this CLI, shared with the tool server entry |
 | `skill-link.ts` | Links the bundled skill into the skill directories the harnesses read (`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/config/skills`) |
+| `remote-hosts.ts` | The `hosts:` table: one `RemoteHost` (src/remote/) per entry, shared by its agents; this gateway's namespace; running an agent's `talkcode …` back here (the allowlisted bridge); placing the skill on a host |
 
 ## Inbound flow
 
@@ -969,6 +970,24 @@ SIGKILL after `KILL_GRACE_MS` — harness CLIs may ignore SIGTERM mid-turn).
 `buildAgentEnv` runs at every spawn in both runtimes, which makes it the one place that provisions
 what the reverse CLI depends on: the shim at the front of `PATH`, and the skill link
 (`skill-link.ts`) under the home this agent runs as.
+
+#### Agents on a remote host
+
+An agent with `host:` is spawned through that host's `RemoteHost` instead of `child_process`, and
+everything else in this module has a remote twin used at the same points: `prepareRemoteSpawn`
+(reach the host, settle the directory there, place the skill), `remoteAgentEnv` (an overlay — the
+base is the host's login environment, never this daemon's), `expandRemoteHome`, and
+`watchRemoteLink`, which tells the chat about an outage longer than a blip and restarts the silence
+watchdog when the link is back (both runtimes' `onSilence` also re-arm while the link is down: an
+outage is not the agent being silent). `AgentChild` is what a runtime holds — met by a local child
+and a `RemoteChild` alike — so neither runtime branches on where its process is beyond the spawn.
+
+The rest of the daemon follows the same rule — the agent's machine is the one that matters: hooks
+and an agent's scheduled `--bash` tasks run there (`schedule-bash.ts` runRemoteBashCommand),
+inbound files are written there (`attachment-io.ts` remoteAttachmentSave), `send-file` fetches from
+there (`daemon.ts` sendAgentFile), and `/cd`, `/skills`, the claude cache countdown and opencode's
+log are read there. The `/cd` menu code is synchronous, so a remote listing is read into
+`ConversationRegistry.remoteScans` first; an explicit `/cd` always refreshes it.
 
 ### What a session is given: the user's words, two tools, a skill
 

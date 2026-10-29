@@ -16,7 +16,8 @@
     "skill"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-remote.mjs",
+    "test:remote": "node scripts/build-remote.mjs --check",
     "dev": "tsx src/cli.ts",
     "dev:watch": "tsx watch src/cli.ts start",
     "stop": "node scripts/stop.mjs",

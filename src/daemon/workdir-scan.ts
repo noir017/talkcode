@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, posix } from 'node:path';
 import type { WorkdirOption } from '../core/workdir-menu.js';
 
 /**
@@ -56,24 +56,37 @@ export function scanWorkdirs(root: string): WorkdirScan {
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
-
-  const dirs = entries
+  const listed = entries
     .filter((name) => !name.startsWith('.') && !SKIP_NAMES.has(name))
-    .filter((name) => {
+    .map((name) => {
       try {
-        return statSync(join(root, name)).isDirectory();
+        return { name, dir: statSync(join(root, name)).isDirectory() };
       } catch {
-        return false; // broken symlink, or vanished between readdir and stat
+        return { name, dir: false }; // broken symlink, or vanished between readdir and stat
       }
-    })
+    });
+  return workdirScanFrom(root, listed);
+}
+
+/**
+ * The same list from entries already read — what an agent on a remote host gets, whose directory is
+ * listed over there (remote/ops.go opListDir, which follows symlinks the same way). POSIX joins,
+ * because a remote host is Linux whatever this machine is.
+ */
+export function workdirScanFrom(root: string, entries: ReadonlyArray<{ name: string; dir: boolean }>, posixPaths = false): WorkdirScan {
+  const dirs = entries
+    .filter((e) => e.dir && !e.name.startsWith('.') && !SKIP_NAMES.has(e.name))
+    .map((e) => e.name)
     .sort((a, b) => a.localeCompare(b));
+  const joinPath = posixPaths ? posix.join : join;
+  const base = posixPaths ? posix.basename : basename;
 
   const shown = dirs.slice(0, WORKDIR_SCAN_MAX);
   return {
     ok: true,
     options: [
-      { path: root, name: basename(root) || root, root: true },
-      ...shown.map((name) => ({ path: join(root, name), name })),
+      { path: root, name: base(root) || root, root: true },
+      ...shown.map((name) => ({ path: joinPath(root, name), name })),
     ],
     truncated: dirs.length - shown.length,
   };

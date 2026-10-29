@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Readable, Writable } from 'node:stream';
 import { client, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
@@ -54,13 +54,20 @@ import {
   buildInputPreview,
   isNonEmptyObject,
   killChildProcess,
+  prepareRemoteSpawn,
+  remoteAgentEnv,
   resolveConversationCwd,
   stripCode,
   trimReason,
   truncateToolName,
+  watchRemoteLink,
+  type AgentChild,
 } from './agent-common.js';
 import { PreLaunchCancelled, runPreLaunchHook } from './agent-hooks.js';
+import { remoteHosts } from './remote-hosts.js';
 import { selfInvocation } from './reverse-cli-shim.js';
+import type { Welcome } from '../remote/connection.js';
+import type { RemoteHost } from '../remote/host.js';
 
 /**
  * AgentFactory's ACP (Agent Client Protocol) implementation on the official @agentclientprotocol/sdk.
@@ -157,6 +164,27 @@ export function acpMcpServers(
   ];
 }
 
+/**
+ * The same server for an agent on a remote host: the host's `talkcode` shim (on PATH there, but
+ * named absolutely — a harness may start MCP servers with a stripped environment), which carries
+ * the session back to this gateway's own `talkcode mcp` (remote-hosts.ts runCli). The socket it
+ * dials is passed explicitly for the same reason.
+ */
+export function remoteMcpServers(sessionToken: string, paths: { shim: string; socket: string }, cwd: string): McpServer[] {
+  return [
+    {
+      name: NATIVE_TOOLS_SERVER,
+      command: paths.shim,
+      args: ['mcp'],
+      env: [
+        { name: 'TALKCODE_TURN_TOKEN', value: sessionToken },
+        { name: 'TALKCODE_REMOTE_SOCK', value: paths.socket },
+        { name: 'TALKCODE_CWD', value: cwd },
+      ],
+    },
+  ];
+}
+
 // ───────────────────────── harness preset → launch command ─────────────────────────
 
 /**
@@ -170,9 +198,13 @@ export function resolveClaudeAdapterEntry(): string {
 }
 
 /** Resolve an agent def into the actual spawn command + args (presets default; custom self-configures; then append def.args). Exported for the doctor check and the harness unit tests. */
-export function resolveHarness(def: AgentDef): { command: string; args: string[] } {
+export function resolveHarness(def: AgentDef, remote = false): { command: string; args: string[] } {
   switch (def.harness) {
     case 'claude':
+      // On a remote host the adapter is that host's own install (`npm i -g
+      // @agentclientprotocol/claude-agent-acp`): the bundled one carries a native Claude Code build
+      // for THIS machine (223 MB for linux-arm64 alone), not something to ship to every host.
+      if (remote) return { command: 'claude-agent-acp', args: [...def.args] };
       // Claude via the official claude-agent-acp adapter (replacing Zed's claude-code-acp): its
       // @agentclientprotocol/sdk matches ours (protocol aligned), it forwards /usage /status /model
       // built-in echoes, and is more actively maintained. Login still reuses `claude /login` (no API
@@ -738,7 +770,7 @@ function createAcpSession(
   let cwd = resolveConversationCwd(def, conversationId, store);
 
   /** Lazily-started connection handles; established on first turn, closed on dispose. */
-  let proc: ChildProcessWithoutNullStreams | undefined;
+  let proc: AgentChild | undefined;
   let conn: ClientConnection | undefined;
   let active: ActiveSession | undefined;
   /**
@@ -1193,6 +1225,70 @@ function createAcpSession(
     await starting;
   }
 
+  /**
+   * For an agent on another machine: reach it (a first contact that fails ends the startup here,
+   * with the reason), and settle the directory there before anything is started in it.
+   */
+  async function placeOnHost(): Promise<{ host: RemoteHost; welcome: Welcome } | undefined> {
+    const host = remoteHosts.hostFor(def);
+    if (!host) return undefined;
+    const prepared = await prepareRemoteSpawn(def, host, cwd);
+    cwd = prepared.cwd;
+    return { host, welcome: prepared.welcome };
+  }
+
+  /**
+   * The child, here or on its host, and the native-tools server its sessions are given. That server
+   * is started BY the harness, so on a remote host it is the host's `talkcode` shim, which hands the
+   * session back to this gateway (remote/shim.go).
+   */
+  function spawnChild(
+    command: string,
+    args: string[],
+    sessionToken: string,
+    place: { host: RemoteHost; welcome: Welcome } | undefined
+  ): { child: AgentChild; mcpServers: () => McpServer[] } {
+    if (!place) {
+      return {
+        child: spawn(command, args, { cwd, env: buildAgentEnv(def, sessionToken, socketPath) }),
+        mcpServers: () => acpMcpServers(sessionToken, socketPath, cwd),
+      };
+    }
+    return {
+      child: place.host.spawn(command, args, { cwd, env: remoteAgentEnv(def, sessionToken) }),
+      mcpServers: () => remoteMcpServers(sessionToken, place.host.paths(place.welcome), cwd),
+    };
+  }
+
+  /**
+   * Make `child` this session's process: record it, forward its stderr, and reset the handles when it
+   * exits. Returns how to ask whether it failed to start at all — kept, so a startup that fails
+   * because the process never started says THAT (a command not on PATH, here or on the agent's host)
+   * rather than the "ACP connection closed" it surfaces as.
+   */
+  function adoptChild(child: AgentChild): () => Error | undefined {
+    // Record proc immediately so the 'exit' callback and start-failure dispose can match by reference and
+    // terminate this process (conn/active assigned only after start() succeeds; active stays the sole readiness signal).
+    proc = child;
+    child.stderr.on('data', (d: Buffer) => process.stderr.write(d));
+    let spawnError: Error | undefined;
+    child.on('error', (e) => {
+      spawnError = e;
+      console.error(`[acp] child process error (${def.id}):`, e.message);
+    });
+    // On child crash/kill: reset handles so the next ensureStarted rebuilds the connection (otherwise
+    // active stays set and reusing the dead connection makes prompt hit a closed stream with "ACP
+    // connection closed" — that session fails every turn, never self-heals). Reset only when the exiting
+    // child is the current one (avoid a stale 'exit' resetting a post-dispose new child). Don't kill here
+    // — it already exited. 'exit' once suffices; 'close' (all stdio shut) is later but not needed here.
+    child.on('exit', (code, signal) => {
+      if (proc !== child) return; // already replaced/cleared by dispose; stale callback no-ops
+      console.debug(`[acp] child process exited (${def.id}): code=${code} signal=${signal}; resetting connection handles to rebuild next turn`);
+      resetHandles();
+    });
+    return () => spawnError;
+  }
+
   /** Lazily start the ACP child and complete initialize + session/new. sessionToken is injected into its env here. */
   async function startSession(sessionToken: string): Promise<void> {
     if (active) return;
@@ -1200,6 +1296,8 @@ function createAcpSession(
     // Re-read the conversation's directory: between the last child and this one the user may have
     // moved the conversation with `/cd`, and this is the only point at which that can be honored.
     cwd = resolveConversationCwd(def, conversationId, store);
+
+    const place = await placeOnHost();
 
     // The operator's preLaunch hook, inside the shared startup so concurrent callers run it once. A
     // failure throws from here, before there is a child or a connection to roll back.
@@ -1213,26 +1311,9 @@ function createAcpSession(
       }
     }
 
-    const { command, args } = resolveHarness(def);
-
-    const env = buildAgentEnv(def, sessionToken, socketPath);
-
-    const child = spawn(command, args, { cwd, env });
-    // Record proc immediately so the 'exit' callback and start-failure dispose can match by reference and
-    // terminate this process (conn/active assigned only after start() succeeds; active stays the sole readiness signal).
-    proc = child;
-    child.stderr.on('data', (d: Buffer) => process.stderr.write(d));
-    child.on('error', (e) => console.error(`[acp] child process error (${def.id}):`, e.message));
-    // On child crash/kill: reset handles so the next ensureStarted rebuilds the connection (otherwise
-    // active stays set and reusing the dead connection makes prompt hit a closed stream with "ACP
-    // connection closed" — that session fails every turn, never self-heals). Reset only when the exiting
-    // child is the current one (avoid a stale 'exit' resetting a post-dispose new child). Don't kill here
-    // — it already exited. 'exit' once suffices; 'close' (all stdio shut) is later but not needed here.
-    child.on('exit', (code, signal) => {
-      if (proc !== child) return; // already replaced/cleared by dispose; stale callback no-ops
-      console.debug(`[acp] child process exited (${def.id}): code=${code} signal=${signal}; resetting connection handles to rebuild next turn`);
-      resetHandles();
-    });
+    const { command, args } = resolveHarness(def, place !== undefined);
+    const { child, mcpServers } = spawnChild(command, args, sessionToken, place);
+    const spawnError = adoptChild(child);
 
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin) as unknown as WritableStream<Uint8Array>,
@@ -1312,7 +1393,7 @@ function createAcpSession(
           const loaded = await ctx.request('session/load', {
             sessionId: persistedId,
             cwd,
-            mcpServers: acpMcpServers(sessionToken, socketPath, cwd),
+            mcpServers: mcpServers(),
           });
           active = resumed;
           // session/load reports the resumed session's config the same way session/new does.
@@ -1341,7 +1422,7 @@ function createAcpSession(
         const session = await ctx
           .buildSession({
             cwd,
-            mcpServers: acpMcpServers(sessionToken, socketPath, cwd),
+            mcpServers: mcpServers(),
             // model passed best-effort via _meta; whether it takes effect depends on the harness
             // (claude/gemini differ). dsh's bridge ignores _meta entirely — it reads provider/model
             // only from its own profile config (verified in @deepseek-ai/dsh-acp newSession, which
@@ -1398,6 +1479,11 @@ function createAcpSession(
       // Start failure (timeout / initialize / session/new throw): clear child and handles so the next
       // turn can retry, and rethrow a readable error to turn-runner (logged + ❌) rather than hang silently.
       dispose();
+      const failed = spawnError();
+      if (failed) {
+        const where = place ? ` on host "${place.host.id}"` : '';
+        throw new Error(`agent "${def.id}" could not start${where}: ${failed.message}`);
+      }
       throw err;
     } finally {
       if (timer) clearTimeout(timer);
@@ -1923,7 +2009,16 @@ function createAcpSession(
         if (watchdog) clearTimeout(watchdog);
         watchdog = setTimeout(() => onSilence(ms), ms);
       };
+      // Read at call time: a remote agent's link state is what decides whether silence means anything.
+      const host = remoteHosts.hostFor(def);
       const onSilence = (waited: number): void => {
+        // Cut off, not hung: while the link to the agent's host is down nothing CAN arrive, and the
+        // agent is still working over there (remote/README.md). The full timeout starts again when
+        // the link is back (watchRemoteLink below), so an outage never counts against the agent.
+        if (host && !host.isUp) {
+          arm(waited);
+          return;
+        }
         // Blocked on a person, not hung: an elicitation stops the agent by design and the answer
         // arrives at human speed. Re-arm indefinitely rather than spend the one-shot tool grace —
         // the wait is already bounded by the ask's own timeout, which resolves to `cancel` and
@@ -1965,6 +2060,7 @@ function createAcpSession(
       // Runs alongside the watchdog for harnesses that admit their failures only to their own log;
       // for every other harness this allocates a Set and starts no timer.
       const logWatch = watchHarnessLog(handlers);
+      const unwatchLink = watchRemoteLink(host, handlers, rearmWatchdog);
       const fold = watchForFoldedPrompt(state);
       /**
        * The LAST prompt this turn sent, and its response once settled — the response being what a
@@ -2114,6 +2210,7 @@ function createAcpSession(
       } finally {
         if (watchdog) clearTimeout(watchdog);
         logWatch.stop();
+        unwatchLink();
         fold.stop();
         turnState = undefined;
         onTurnUpdate = undefined;

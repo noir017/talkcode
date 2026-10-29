@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { Config } from '../config/schema.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { AgentDef, Config } from '../config/schema.js';
 import { accessUnrestricted, agentDisplayName, findAgent } from '../config/schema.js';
 import { readConfig, UNRESTRICTED_WARNING, type ReadConfig } from '../config/load.js';
 import { applyConfig, describeReload, diffConfig } from './config-reload.js';
@@ -12,6 +15,13 @@ import {
   harnessCommandName,
 } from '../core/command-translate.js';
 import { parseButtonId } from '../core/button-id.js';
+import {
+  buildAgentMenu,
+  flatAgents,
+  parseAgentButtonId,
+  type AgentButtonClick,
+  type AgentGroup,
+} from '../core/agent-menu.js';
 import {
   buildEffortMenu,
   effortChoiceText,
@@ -59,10 +69,13 @@ import type { ButtonSpec, PlatformAdapter } from '../platform/adapter.js';
 import { OutboundPacer } from '../core/outbound-pacer.js';
 import { splitIntoChunks } from '../core/stream-buffer.js';
 import { formatEmptyCatalog, formatSkillCatalog } from '../core/skills-catalog.js';
-import { resolveConversationCwd } from './agent-common.js';
+import { expandRemoteHome, remoteAgentEnv, remoteAgentHome, resolveConversationCwd } from './agent-common.js';
+import { remoteHosts } from './remote-hosts.js';
 import {
   agentHome,
   opencodeSkillDirs,
+  remoteOpencodeSkillDirs,
+  scanRemoteSkillDirs,
   scanSkillDirs,
   skillDirsFor,
 } from './skills-scan.js';
@@ -626,6 +639,17 @@ interface PendingWorkdirMenu {
   ref?: MessageRef;
 }
 
+/** An `/agent` menu on screen (see onAgentMenuRequest). */
+interface PendingAgentMenu {
+  conversationId: ConversationId;
+  conversation: ConversationRef;
+  /** The groups as they stood when the menu opened; a pick's index points into their flat list. */
+  groups: AgentGroup[];
+  current: string | undefined;
+  pageSize: number;
+  ref?: MessageRef;
+}
+
 /** Main daemon: wires platform, session registry, and IPC server together. `talkcode start` constructs and run()s it. */
 export class Daemon {
   private registry: ConversationRegistry;
@@ -683,6 +707,8 @@ export class Daemon {
    * that is the right bound rather than a TTL or an LRU (see pendingModelMenus).
    */
   private pendingWorkdirMenus = new Map<string, PendingWorkdirMenu>();
+  /** Live `/agent` menus, by reqId; one per conversation (a new one retires the old). */
+  private pendingAgentMenus = new Map<string, PendingAgentMenu>();
   /** Instances whose "slash must be registered out-of-band" skip notice was printed (log once each). */
   private skipRuntimeRegisterLogged = new Set<string>();
   /** Inbound dedup: `platform:channelId:messageId` → timestamp (see DEDUP_TTL_MS). */
@@ -727,6 +753,9 @@ export class Daemon {
 
   /** Scheduled tasks (see daemon/schedule-service.ts). Absent when started without a task store. */
   private readonly schedules?: ScheduleService;
+
+  /** The IPC socket, which an agent on a remote host reaches through remoteHosts' CLI bridge. */
+  private readonly socketPath: string;
 
   constructor(
     private readonly config: Config,
@@ -812,6 +841,7 @@ export class Daemon {
       // or a `/new` that just cleared one.
       onWorkdirMenuRequest: (id, agentId, msg, menu) =>
         this.onWorkdirMenuRequest(id, agentId, msg, menu),
+      onAgentMenuRequest: (id, msg, menu) => this.onAgentMenuRequest(id, msg, menu),
       // A voice message is transcribed and confirmed before it becomes a prompt; typing drops a
       // transcript still waiting, and /stop and /new call them off.
       takeVoice: (id, msg) => this.voice.take(id, msg),
@@ -823,6 +853,9 @@ export class Daemon {
       // turn on the chat's write budget.
       this.schedules = new ScheduleService(config, this.platforms, this.registry, clock, schedules.store, schedules.runsDir);
     }
+    // Before anything can start an agent: an agent with `host:` reaches its machine through this.
+    this.socketPath = socketPath;
+    remoteHosts.configure(config, socketPath);
     this.ipc = new IpcServer(
       socketPath,
       {
@@ -929,6 +962,7 @@ export class Daemon {
     this.pendingEffortMenus.clear();
     this.pendingSettingsMenus.clear();
     this.pendingScheduleMenus.clear();
+    this.pendingAgentMenus.clear();
     this.voice.dispose();
     // Clear pending asks after ipc/platform are down: no new clicks or asks can arrive now. Clear each
     // timer and resolve null ("no selection") so any caller still blocked on ask IPC gets a result
@@ -944,6 +978,11 @@ export class Daemon {
     }
     this.pendingAsks.clear();
     this.registry.dispose(); // release all mergers + agent sessions
+    // The stop signals the line above sent to agents on other machines are still in their links;
+    // give them a moment to leave before the connections go. A host this misses stops those agents
+    // anyway when the next gateway connects (a new epoch), or after its orphan timeout.
+    await remoteHosts.flushAll(2_000);
+    remoteHosts.closeAll();
   }
 
   /**
@@ -967,10 +1006,38 @@ export class Daemon {
     return adapter;
   }
 
+  /**
+   * `send-file`. The path is the AGENT's: for an agent on a remote host, a path on that host — so the
+   * file is fetched from there into a private temporary file first, sent from it, and removed. Capped
+   * like an inbound download (attachments.maxDownloadBytes): the platforms refuse far less anyway.
+   */
+  private async sendAgentFile(
+    conversation: ConversationId | undefined,
+    platform: PlatformAdapter,
+    address: ConversationAddress,
+    action: Extract<IpcAction, { kind: 'send-file' }>
+  ): Promise<unknown> {
+    const agentId = conversation ? (this.registry.boundAgentOf(conversation) ?? this.config.routing.default) : undefined;
+    const host = remoteHosts.hostFor(agentId ? findAgent(this.config, agentId) : undefined);
+    if (!host) return platform.sendFile(address, { path: action.path, name: action.name, caption: action.caption });
+    const base = path.posix.basename(action.path) || 'file';
+    const data = await host.readFile(action.path, this.config.attachments.maxDownloadBytes);
+    console.log(`[remote] ${host.id}: fetched ${action.path} (${data.length} bytes) to send`);
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'talkcode-file-'));
+    try {
+      const local = path.join(dir, base);
+      await fs.promises.writeFile(local, data, { mode: 0o600 });
+      return await platform.sendFile(address, { path: local, name: action.name ?? base, caption: action.caption });
+    } finally {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    }
+  }
+
   /** Execute one reverse command (address already resolved and validated by IPC). */
   private async handleReverse(action: IpcAction, address: ConversationAddress): Promise<unknown> {
     // Resolve BEFORE any await: the conversation scratch slot is only synchronously valid.
     const platform = this.reverseAdapter();
+    const conversation = this.lastResolvedConversationId;
     // A reverse command means the agent is still working for this conversation — even between turns,
     // which is the case idle reclaim would otherwise get wrong: a turn that ended after starting a
     // background job leaves that job reporting through this socket, into a conversation that from
@@ -997,11 +1064,7 @@ export class Daemon {
         }
         return platform.editMessage({ address, messageId: action.messageId }, action.text);
       case 'send-file':
-        return platform.sendFile(address, {
-          path: action.path,
-          name: action.name,
-          caption: action.caption,
-        });
+        return this.sendAgentFile(conversation, platform, address, action);
       case 'react':
         return platform.addReaction({ address, messageId: action.messageId }, action.emoji);
       case 'delete':
@@ -1125,6 +1188,7 @@ export class Daemon {
 
     read.commitEnv();
     applyConfig(this.config, next);
+    remoteHosts.configure(this.config, this.socketPath);
 
     if (diff.sections.includes('session')) this.registry.idleTimeoutChanged();
     const respawn = this.registry.respawnAgents(new Set([...diff.agentsChanged, ...diff.agentsRemoved]));
@@ -1549,6 +1613,11 @@ export class Daemon {
       this.onWorkdirClick(ev, workdir);
       return;
     }
+    const agentClick = parseAgentButtonId(ev.buttonId);
+    if (agentClick) {
+      this.onAgentClick(ev, agentClick);
+      return;
+    }
     const setting = parseSettingButtonId(ev.buttonId);
     if (setting) {
       this.onSettingClick(ev, setting);
@@ -1720,11 +1789,7 @@ export class Daemon {
     const label = agentDisplayName(def, agentId);
 
     void (async () => {
-      const home = agentHome(def);
-      const cwd = def ? resolveConversationCwd(def, conversationId, this.store) : home;
-      const configured = def?.harness === 'opencode' ? await opencodeSkillDirs(home, process.env) : [];
-      const dirs = skillDirsFor(def, { home, cwd, configured });
-      const found = await scanSkillDirs(dirs);
+      const { dirs, found } = await this.findSkills(def, conversationId);
 
       const body = found.length === 0 ? formatEmptyCatalog(label, dirs) : formatSkillCatalog(label, found);
       console.log(`[skills] ${label}: ${found.length} from ${dirs.length} dir(s)`);
@@ -1736,6 +1801,28 @@ export class Daemon {
       const parts = limit > 0 ? splitIntoChunks(body, limit) : [body];
       for (const part of parts) await adapter.sendMessage(address, part);
     })().catch((e) => console.error('[skills] reply failed:', e instanceof Error ? e.message : e));
+  }
+
+  /** The skill directories `/skills` reads for an agent, and what is in them — on its host, if remote. */
+  private async findSkills(
+    def: AgentDef | undefined,
+    conversationId: ConversationId
+  ): Promise<{ dirs: string[]; found: Awaited<ReturnType<typeof scanSkillDirs>> }> {
+    const host = remoteHosts.hostFor(def);
+    if (def && host) {
+      const w = await host.ready();
+      const home = remoteAgentHome(def, w);
+      const cwd = expandRemoteHome(resolveConversationCwd(def, conversationId, this.store), w.home);
+      const env = remoteAgentEnv(def);
+      const configured = def.harness === 'opencode' ? await remoteOpencodeSkillDirs(host, home, env) : [];
+      const dirs = skillDirsFor(def, { home, cwd, configured });
+      return { dirs, found: await scanRemoteSkillDirs(host, dirs) };
+    }
+    const home = agentHome(def);
+    const cwd = def ? resolveConversationCwd(def, conversationId, this.store) : home;
+    const configured = def?.harness === 'opencode' ? await opencodeSkillDirs(home, process.env) : [];
+    const dirs = skillDirsFor(def, { home, cwd, configured });
+    return { dirs, found: await scanSkillDirs(dirs) };
   }
 
   /**
@@ -2317,6 +2404,77 @@ export class Daemon {
     }
     this.pendingWorkdirMenus.delete(click.reqId);
     this.editWorkdirMenu(menu, text, []);
+  }
+
+  /** `/agent` on a platform with buttons: post the grouped menu (core/agent-menu.ts). */
+  private onAgentMenuRequest(
+    conversationId: ConversationId,
+    msg: InboundMessage,
+    menu: { groups: AgentGroup[]; current: string | undefined }
+  ): void {
+    const adapter = this.platforms.get(msg.conversation.platform);
+    if (!adapter) return;
+    for (const [reqId, old] of this.pendingAgentMenus) {
+      if (old.conversationId !== conversationId) continue;
+      this.pendingAgentMenus.delete(reqId);
+      this.editAgentMenu(old, 'This menu was replaced by a newer one.', []);
+    }
+    const reqId = randomUUID().slice(0, 8);
+    const pending: PendingAgentMenu = {
+      conversationId,
+      conversation: msg.conversation,
+      groups: menu.groups.map((g) => ({ ...g, agents: [...g.agents] })),
+      current: menu.current,
+      pageSize: resolvePageSize(adapter.capabilities.menuPageSize),
+    };
+    this.pendingAgentMenus.set(reqId, pending);
+    const view = buildAgentMenu({ reqId, groups: pending.groups, current: pending.current, pageSize: pending.pageSize });
+    void adapter
+      .sendButtons(addressOf(msg.conversation), view.text, view.buttons)
+      .then((ref) => {
+        pending.ref = ref;
+      })
+      .catch((e) => {
+        this.pendingAgentMenus.delete(reqId);
+        console.error('[agent] failed to post the menu:', e instanceof Error ? e.message : e);
+      });
+  }
+
+  private editAgentMenu(menu: PendingAgentMenu, text: string, buttons: Array<{ id: string; label: string }>): void {
+    const adapter = this.platforms.get(menu.conversation.platform);
+    if (!adapter || !menu.ref) return;
+    void adapter
+      .editButtons(menu.ref, text, buttons)
+      .catch((e) => console.warn('[agent] menu edit failed:', e instanceof Error ? e.message : e));
+  }
+
+  /**
+   * An `/agent` button: move between the machine and agent levels, or choose. The clicker is
+   * checked against the allowlist like every menu that changes who answers (see onWorkdirClick).
+   */
+  private onAgentClick(ev: ButtonInteraction, click: AgentButtonClick): void {
+    const clicker = ev.conversation;
+    const allow = this.config.access.allowFrom;
+    if (allow.length > 0 && !allow.includes(`${clicker.platform}:${clicker.user}`)) {
+      console.log(`[access] denied agent-menu click from ${clicker.platform}:${clicker.user}`);
+      return;
+    }
+    const menu = this.pendingAgentMenus.get(click.reqId);
+    if (!menu) {
+      this.replyToClick(ev, 'That menu has expired — send /agent again.');
+      return;
+    }
+    const render = (group?: number, page?: number): void => {
+      const view = buildAgentMenu({ reqId: click.reqId, groups: menu.groups, current: menu.current, group, page, pageSize: menu.pageSize });
+      this.editAgentMenu(menu, view.text, view.buttons);
+    };
+    if (click.kind === 'group') return render(click.group);
+    if (click.kind === 'back') return render();
+    if (click.kind === 'page') return render(click.group, click.page);
+    const def = flatAgents(menu.groups)[click.index];
+    this.pendingAgentMenus.delete(click.reqId);
+    const text = def ? this.registry.chooseAgent(menu.conversationId, def.id, menu.conversation) : 'That agent is no longer configured.';
+    this.editAgentMenu(menu, text, []);
   }
 
   /**

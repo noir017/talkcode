@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import type { Config } from '../config/schema.js';
+import { findAgent, type Config } from '../config/schema.js';
 import type { ConversationAddress, ConversationRef } from '../core/conversation.js';
 import {
   bashResultText,
@@ -20,7 +20,8 @@ import type { PlatformAdapter } from '../platform/adapter.js';
 import type { ConversationId } from '../types.js';
 import type { ScheduleListResult, ScheduleTaskView } from '../ipc/protocol.js';
 import type { ConversationRegistry } from './conversation.js';
-import { runBashCommand } from './schedule-bash.js';
+import { runBashCommand, runRemoteBashCommand, type BashRunResult } from './schedule-bash.js';
+import { remoteHosts } from './remote-hosts.js';
 import type { ScheduleStore } from './schedule-store.js';
 import { Scheduler, type ScheduleRunResult } from './scheduler.js';
 
@@ -78,6 +79,8 @@ export class ScheduleService {
       agent: this.registry.boundAgentOf(caller) ?? this.config.routing.default,
       ...optional('cwd', this.registry.workdirOf(caller)),
     };
+    const host = findAgent(this.config, from.agent)?.host;
+    if (host) Object.assign(from, { host });
     const targetConversation = this.registry.conversationAt(target.platform, target.address);
     const built = buildTask(input, {
       now: this.clock.now(),
@@ -190,14 +193,22 @@ export class ScheduleService {
   ): Promise<ScheduleRunResult> {
     const started = this.clock.now();
     const stamp = new Date(planned).toISOString().replace(/[:.]/g, '-');
-    const r = await runBashCommand({
+    const opts = {
       command: run.command,
       ...optional('cwd', run.cwd),
       timeoutMs: run.timeoutMs,
       logDir: path.join(this.runsDir, task.id),
       stamp,
       signal,
-    });
+    };
+    let r: BashRunResult;
+    if (run.host) {
+      const host = remoteHosts.get(run.host);
+      if (!host) return { status: 'failed', error: `host "${run.host}" is not configured any more` };
+      r = await runRemoteBashCommand(host, opts);
+    } else {
+      r = await runBashCommand(opts);
+    }
     const outcome = { ...r, durationMs: this.clock.now() - started };
     const { text, attach } = bashResultText(task, outcome, run.timeoutMs);
     const address = targetAddress(task);

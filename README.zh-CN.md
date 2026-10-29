@@ -43,6 +43,7 @@ Code、Codex、OpenCode，以及 Google 的 Antigravity CLI。给机器人发消
 - **原生流式体验** —— 消息原地编辑、工具调用气泡、生命周期回应表情。
 - **干活时也能发消息** —— 一轮中途发的消息并入正在跑的这一轮，不会打断它，和在 Claude Code 自己的命令行里边跑边打字一样；要停用 `/stop`。[→](docs/zh-CN/chat-commands.md#智能体干活时发消息)
 - **附件处理** —— 你发的图片和文件自动下载并交给智能体。
+- **跑在别的机器上的智能体** —— 智能体可以跑在网关经 ssh 能连到的任意 Linux 主机上；断网时继续干活，`/agent` 按机器选择。[→](docs/zh-CN/remote-hosts.md)
 - **话题即会话** —— Telegram 话题、飞书话题、Slack 线程、Discord 子区，各自绑定智能体、各自的[工作目录](docs/zh-CN/working-directory.md)，并[自动命名](docs/zh-CN/topic-names.md)。
 - **持久会话** —— 重启不丢；`/new`、`/stop`、`/kill`；闲置的智能体进程会释放，下一条消息再从原处恢复。[→](docs/zh-CN/chat-commands.md)
 - **在聊天中行动** —— 智能体可发文件、发按钮提问、引用回复、加回应、读历史。[→](docs/zh-CN/agent-actions.md)
@@ -114,6 +115,7 @@ access:
 | [平台](docs/zh-CN/platforms.md) | 各聊天平台能做什么、不能做什么 |
 | [网页端](docs/zh-CN/web-ui.md) | 话题、终端、安全地对外暴露、单点登录 |
 | [聊天命令](docs/zh-CN/chat-commands.md) | `/new` `/stop` `/kill`、智能体命令、`/model`、`/effort` |
+| [远程主机](docs/zh-CN/remote-hosts.md) | 经 ssh 跑在别的机器上的智能体、`/agent`、断网时会怎样 |
 | [工作目录](docs/zh-CN/working-directory.md) | `/cd`：一个话题一个项目 |
 | [话题命名](docs/zh-CN/topic-names.md) | `/title` 与自动命名 |
 | [在聊天里改配置](docs/zh-CN/settings.md) | `/setting`：不重启就改 config.yaml |

@@ -1,8 +1,9 @@
 import path from 'node:path';
 import type { AgentDef } from '../config/schema.js';
 import { configDir } from '../config/load.js';
-import { buildHarnessEnv } from './agent-common.js';
-import { runBashCommand, type BashRunResult } from './schedule-bash.js';
+import { buildHarnessEnv, remoteAgentEnv } from './agent-common.js';
+import { remoteHosts } from './remote-hosts.js';
+import { runBashCommand, runRemoteBashCommand, type BashRunResult } from './schedule-bash.js';
 
 /**
  * The operator's agent hooks (`agents[].hooks` in config.yaml): commands the daemon runs at points in
@@ -62,17 +63,21 @@ export async function runPreLaunchHook(
   if (!command) return;
   const timeoutMs = opts.timeoutMs ?? PRE_LAUNCH_TIMEOUT_MS;
   const started = Date.now();
-  console.log(`[hook] agent "${def.id}": running preLaunch in ${opts.cwd}`);
-  const r = await runBashCommand({
+  // On the agent's own machine: a hook prepares the ground the agent stands on, and for an agent on
+  // a remote host that ground is over there.
+  const host = remoteHosts.hostFor(def);
+  console.log(`[hook] agent "${def.id}": running preLaunch in ${opts.cwd}${host ? ` on ${host.id}` : ''}`);
+  const run = {
     command,
     cwd: opts.cwd,
     timeoutMs,
     logDir: opts.logDir ?? path.join(configDir(), 'hooks', def.id),
     stamp: new Date(started).toISOString().replace(/[:.]/g, '-'),
     signal: opts.signal,
-    env: buildHarnessEnv(def),
-    settleOnExit: true,
-  });
+  };
+  const r = host
+    ? await runRemoteBashCommand(host, { ...run, env: remoteAgentEnv(def) })
+    : await runBashCommand({ ...run, env: buildHarnessEnv(def), settleOnExit: true });
   const took = `${((Date.now() - started) / 1000).toFixed(1)}s`;
   const output = r.logFile ? `; output: ${r.logFile}` : '';
   const failure = describeFailure(def.id, r, timeoutMs);

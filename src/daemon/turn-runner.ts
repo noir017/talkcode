@@ -21,7 +21,8 @@ import { describeOutboundError, MessageNotEditableError } from '../core/outbound
 import { outboundLane } from './paced-adapter.js';
 import { formatRuntimeFooter } from '../core/runtime-footer.js';
 import { ingestAttachments, type AttachmentInput } from '../core/attachment-ingest.js';
-import { createAttachmentIngestDeps } from './attachment-io.js';
+import { createAttachmentIngestDeps, remoteAttachmentSave } from './attachment-io.js';
+import { remoteHosts } from './remote-hosts.js';
 
 /**
  * The sender a scheduled run's message carries (ConversationRegistry.runScheduledPrompt). Exported
@@ -380,7 +381,7 @@ export class TurnRunner {
     // (crash, `/cd`, idle reclaim all rebuild one underneath it), and a sink installed on a dead
     // child would leave background output with nowhere to go.
     agent.setFollowUpSink?.(this.followUpSink(conversationId));
-    const { prompt, images } = await this.buildPrompt(batch, platform);
+    const { prompt, images } = await this.buildPrompt(batch, platform, agentId);
     console.log(`[turn] ${conversationId} starting turn (${batch.length} message(s))`);
     // Open to messages sent while it runs (see steer) from here until it ends. Keyed by conversation,
     // and removed only if it is still THIS turn, so a turn can never unregister its successor.
@@ -475,7 +476,7 @@ export class TurnRunner {
         turn.lanes.some((lane) => sameAddress(lane, addressOf(m.conversation)))
     );
     if (!fromThisLane) return 'refused';
-    const { prompt, images } = await this.buildPrompt(batch, this.adapterFor(turn.platformId));
+    const { prompt, images } = await this.buildPrompt(batch, this.adapterFor(turn.platformId), this.deps.agentIdOf(conversationId));
     if (this.running.get(conversationId) !== turn) return 'refused';
     const outcome = await turn.agent.steer({ prompt, ...(images.length > 0 ? { images } : {}) });
     console.log(`[turn] ${conversationId} ${batch.length} message(s) sent mid-turn: ${outcome}`);
@@ -1224,7 +1225,8 @@ export class TurnRunner {
    */
   private async buildPrompt(
     batch: InboundMessage[],
-    platform: PlatformAdapter
+    platform: PlatformAdapter,
+    agentId: string
   ): Promise<{ prompt: string; images: TurnImage[] }> {
     const base = this.mergePrompt(batch);
     if (!this.config.attachments.enabled) return { prompt: base, images: [] };
@@ -1239,18 +1241,22 @@ export class TurnRunner {
     if (atts.length === 0) return { prompt: base, images: [] };
 
     try {
+      // The platform fetches its own private media (Lark `internal:` URLs); everything else
+      // goes over plain HTTP. Bound per turn because the adapter is resolved per turn.
+      const deps = createAttachmentIngestDeps(
+        this.config,
+        platform.fetchAttachment ? (url) => platform.fetchAttachment!(url) : undefined
+      );
+      // A file for an agent on another machine is put on that machine, where it can open it.
+      const host = remoteHosts.hostFor(findAgent(this.config, agentId));
+      if (host) deps.save = remoteAttachmentSave(host);
       const { promptText, images, heldBack } = await ingestAttachments(
         atts,
         {
           maxInjectBytes: this.config.attachments.maxInjectBytes,
           maxDownloadBytes: this.config.attachments.maxDownloadBytes,
         },
-        // The platform fetches its own private media (Lark `internal:` URLs); everything else
-        // goes over plain HTTP. Bound per turn because the adapter is resolved per turn.
-        createAttachmentIngestDeps(
-          this.config,
-          platform.fetchAttachment ? (url) => platform.fetchAttachment!(url) : undefined
-        )
+        deps
       );
       for (const h of heldBack) {
         console.log(`[turn] picture ${h.name} goes to the agent by path only: ${h.reason}`);

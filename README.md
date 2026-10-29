@@ -43,6 +43,7 @@ was called `agent-anywhere` until 2.0.0.
 - **Native streaming** — in-place edits, live tool-call bubbles, lifecycle reactions.
 - **Send while it works** — a message sent mid-turn joins the running turn instead of stopping it, as typing into Claude Code's own CLI does; `/stop` stops. [→](docs/chat-commands.md#sending-while-the-agent-works)
 - **Attachments** — images and files you send are downloaded and handed to the agent.
+- **Agents on other machines** — an agent can run on any Linux host the gateway reaches over ssh; it keeps working through a dropped connection, and `/agent` picks one by machine. [→](docs/remote-hosts.md)
 - **Topics are conversations** — a Telegram or Feishu topic, a Slack or Discord thread, each with its own agent, its own [directory](docs/working-directory.md) and an [automatic name](docs/topic-names.md).
 - **Persistent** — conversations survive restarts; `/new`, `/stop`, `/kill`; idle agents are released and resumed on the next message. [→](docs/chat-commands.md)
 - **The agent acts in the chat** — sends files, asks with buttons, replies, reacts, reads history. [→](docs/agent-actions.md)
@@ -117,6 +118,7 @@ is in [Configuration](docs/configuration.md).
 | [Platforms](docs/platforms.md) | what each chat platform can and cannot do |
 | [Web UI](docs/web-ui.md) | topics, the terminal, exposing it safely, single sign-on |
 | [Chat commands](docs/chat-commands.md) | `/new` `/stop` `/kill`, agent commands, `/model`, `/effort` |
+| [Remote hosts](docs/remote-hosts.md) | agents on other machines over ssh, `/agent`, what happens when the network drops |
 | [Working directory](docs/working-directory.md) | `/cd`: one topic per project |
 | [Topic names](docs/topic-names.md) | `/title` and automatic naming |
 | [Settings from chat](docs/settings.md) | `/setting`: editing config.yaml without a restart |

@@ -3,7 +3,10 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, resolveSocketPath, configPath, readRawConfigIfExists, saveConfig } from '../config/load.js';
-import { ConfigSchema, accessUnrestricted, platformInstances, type Config } from '../config/schema.js';
+import { ConfigSchema, accessUnrestricted, platformInstances, type Config, type HostDef } from '../config/schema.js';
+import { spawnSync } from 'node:child_process';
+import { sshArgs } from '../remote/binaries.js';
+import { defaultIdentityFile, defaultKnownHostsFile } from '../daemon/remote-hosts.js';
 import { isLegacyConfig, migrateLegacyConfig } from '../config/migrate.js';
 import { resolveClaudeAdapterEntry } from '../daemon/agent-acp.js';
 import { AGY_COMMAND } from '../daemon/agent-agy.js';
@@ -49,6 +52,40 @@ function locateCommand(cmd: string): string | null {
 }
 
 /** Agent definition -> its harness's main executable name (doctor only checks reachability, same convention as agent-acp's resolveHarness / agent-agy's AGY_COMMAND). claude is handled separately (a local dependency, not PATH). */
+/** One `hosts:` entry, checked the way the daemon will use it (see the check's own comment). */
+async function checkRemoteHost(def: HostDef, commands: string[]): Promise<{ ok: boolean; detail: string }> {
+  const key = expandLocal(def.identityFile ?? defaultIdentityFile());
+  const known = expandLocal(def.knownHostsFile ?? defaultKnownHostsFile());
+  if (!fs.existsSync(key)) return { ok: false, detail: `no private key at ${key}` };
+  if (!fs.existsSync(known)) {
+    return { ok: false, detail: `no known_hosts at ${known} — add the host's key (ssh-keyscan, checked by hand) before the daemon can connect` };
+  }
+  // The script travels inside single quotes (sshArgs) and the probe inside double quotes within it,
+  // so: plain command names only, and `\$c` so the outer shell leaves the loop variable alone.
+  const names = commands.filter((c) => /^[\w.~/+-]+$/.test(c));
+  const probe = `for c in ${names.join(' ')}; do command -v \\$c >/dev/null 2>&1 && echo TCR-HAS \\$c || echo TCR-MISSING \\$c; done`;
+  const script = `uname -sm; exec "\${SHELL:-/bin/sh}" -ilc "${probe}" </dev/null 2>/dev/null`;
+  const r = spawnSync('ssh', sshArgs({ destination: def.ssh, identityFile: key, knownHostsFile: known }, script), {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  if (r.error) return { ok: false, detail: r.error.message };
+  if (r.status !== 0 && !r.stdout.includes('TCR-')) {
+    return { ok: false, detail: `ssh failed (exit ${r.status}): ${r.stderr.trim().split('\n').slice(-1)[0] ?? ''}` };
+  }
+  const system = r.stdout.split('\n')[0]?.trim() ?? '';
+  const missing = [...r.stdout.matchAll(/^TCR-MISSING (\S+)/gm)].map((m) => m[1]);
+  const supported = /^Linux (x86_64|amd64|aarch64|arm64)$/.test(system);
+  const parts = [`connected (${system})`];
+  if (!supported) parts.push('✗ talkcode-remote runs on Linux x86_64/arm64 only');
+  if (missing.length) parts.push(`✗ not on the login PATH there: ${missing.join(', ')}`);
+  return { ok: supported && missing.length === 0, detail: parts.join(', ') };
+}
+
+function expandLocal(p: string): string {
+  return p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
 function harnessCommand(def: import('../config/schema.js').AgentDef): string {
   switch (def.harness) {
     case 'claude':
@@ -386,6 +423,8 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
         const lines: string[] = [];
         let anyMissing = false;
         for (const def of cfg.agents) {
+          // An agent on another machine needs its command THERE (the remote-hosts check below).
+          if (def.host) continue;
           const cmd = harnessCommand(def);
           const auth = authNote(def);
           // claude runs a locally installed adapter dependency (claude-agent-acp), so its check is
@@ -414,6 +453,29 @@ export async function runDoctor(opts: { migrateConfig?: boolean } = {}): Promise
         return anyMissing
           ? { ok: false, detail: `some harness commands are not on PATH: ${lines.join('; ')}` }
           : { ok: true, detail: lines.join('; ') };
+      },
+    },
+    {
+      /**
+       * Each `hosts:` entry: the key and known_hosts the gateway pins, a real connection, and the
+       * harness commands of the agents placed there — looked up on the host's LOGIN PATH, which is
+       * the environment talkcode-remote starts agents in (remote/shellenv.go), not the bare one a
+       * non-interactive ssh command gets.
+       */
+      name: 'Remote hosts reachable',
+      run: async () => {
+        if (!cfg) return { ok: false, detail: 'config unavailable, cannot check hosts' };
+        const hosts = Object.entries(cfg.hosts ?? {});
+        if (hosts.length === 0) return { ok: true, detail: 'none configured (every agent runs here)' };
+        const lines: string[] = [];
+        let failed = false;
+        for (const [id, def] of hosts) {
+          const commands = [...new Set(cfg.agents.filter((a) => a.host === id).map((a) => harnessCommand(a)))];
+          const r = await checkRemoteHost(def, commands);
+          failed ||= !r.ok;
+          lines.push(`${id} (${def.ssh}): ${r.detail}`);
+        }
+        return { ok: !failed, detail: lines.join('; ') };
       },
     },
     {

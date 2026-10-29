@@ -39,9 +39,12 @@ export interface ReverseOutput {
  * resolve to absolute here.
  */
 function resolvePathArg(p: string, base: string): string {
+  // An agent on a remote host runs this CLI through the gateway (daemon/remote-hosts.ts), so `~` is
+  // that host's home, which the bridge passes in; locally it is ours.
+  const home = process.env.TALKCODE_REMOTE_HOME || os.homedir();
   let expanded = p;
-  if (p === '~') expanded = os.homedir();
-  else if (p.startsWith('~/')) expanded = path.join(os.homedir(), p.slice(2));
+  if (p === '~') expanded = home;
+  else if (p.startsWith('~/')) expanded = path.posix.join(home, p.slice(2));
   return path.resolve(base, expanded);
 }
 
@@ -71,8 +74,10 @@ export async function runReverse(rawAction: IpcAction): Promise<void> {
   const socket = resolveSocketPath(loadConfig());
 
   // Resolve send-file paths to absolute here (CWD == agent CWD) to avoid the daemon building
-  // file://./x.png (malformed) or a path relative to the daemon CWD (wrong).
-  const action = normalizeActionPaths(rawAction);
+  // file://./x.png (malformed) or a path relative to the daemon CWD (wrong). For an agent on a
+  // remote host this process runs on the gateway, not in the agent's directory; the bridge passes
+  // that directory as TALKCODE_CWD (daemon/remote-hosts.ts).
+  const action = normalizeActionPaths(rawAction, process.env.TALKCODE_REMOTE_HOME ? process.env.TALKCODE_CWD : undefined);
 
   // Blocking ask hangs on the daemon side until the user selects/times out, so the
   // client's default 10s isn't enough; use action.timeoutMs (default from the protocol,

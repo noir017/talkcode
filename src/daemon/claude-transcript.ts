@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { AgentDef } from '../config/schema.js';
-import { expandEnv, expandHome } from './agent-common.js';
+import { expandEnv, expandHome, expandRemoteHome, remoteAgentHome } from './agent-common.js';
+import type { Welcome } from '../remote/connection.js';
+import type { RemoteHost } from '../remote/host.js';
 import { agentHome } from './skills-scan.js';
 
 /**
@@ -181,6 +183,46 @@ export function claudeProjectsDir(def: AgentDef): string {
   const configured = def.env['CLAUDE_CONFIG_DIR'] !== undefined ? expandEnv(def.env['CLAUDE_CONFIG_DIR']) : process.env.CLAUDE_CONFIG_DIR;
   const base = configured ? expandHome(configured) : path.join(agentHome(def), '.claude');
   return path.join(base, 'projects');
+}
+
+/**
+ * The same directory for an agent on a remote host: its `env` block's CLAUDE_CONFIG_DIR, else
+ * `.claude` under its home there. A CLAUDE_CONFIG_DIR exported by the host's own shell rc is not
+ * visible from here; the cache segment is then simply absent, the documented way this degrades.
+ */
+export function remoteClaudeProjectsDir(def: AgentDef, w: Welcome): string {
+  const configured = def.env['CLAUDE_CONFIG_DIR'];
+  const base = configured ? expandRemoteHome(expandEnv(configured), w.home) : path.posix.join(remoteAgentHome(def, w), '.claude');
+  return path.posix.join(base, 'projects');
+}
+
+/**
+ * The transcript fields cacheExpiryFromLines reads (Entry). Asked of the host by name, so a window
+ * that is mostly tool output — a whole file in one result — crosses the network as a few hundred
+ * bytes per entry instead of the megabyte it is on disk.
+ */
+const ENTRY_FIELDS = ['type', 'timestamp', 'isSidechain', 'message.id', 'message.usage'];
+
+/**
+ * readCacheExpiry for a session whose Claude Code runs on a remote host. Never rejects, like the
+ * local one; and gives up quickly rather than waiting out an outage — a status bar can wait for
+ * the next turn.
+ */
+export async function readRemoteCacheExpiry(
+  host: RemoteHost,
+  projectsDir: string,
+  cwd: string,
+  sessionId: string
+): Promise<CacheReading | undefined> {
+  if (!SESSION_ID.test(sessionId) || !host.isUp) return undefined;
+  const file = path.posix.join(projectsDir, projectSlug(cwd), `${sessionId}.jsonl`);
+  try {
+    const tail = await host.readTail(file, TAIL_BYTES, { fields: ENTRY_FIELDS, timeoutMs: 10_000 });
+    return cacheExpiryFromLines(tail.split('\n'));
+  } catch (e) {
+    console.debug(`[status] could not read the claude transcript for ${sessionId} on ${host.id}:`, e instanceof Error ? e.message : e);
+    return undefined;
+  }
 }
 
 /** The directory name Claude Code files a working directory's transcripts under. */

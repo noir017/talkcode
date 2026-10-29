@@ -91,6 +91,17 @@ export const AgentDefSchema = z
      * opencode 2.2.0 ran a file-writing command without asking.
      */
     permissions: z.enum(['auto', 'ask']).default('auto'),
+    /**
+     * The `hosts:` entry this agent runs on; absent = this machine. Over there the gateway starts
+     * the harness through talkcode-remote (see remote/README.md), so `command`, `cwd`, `env` and
+     * `hooks.preLaunch` all mean that host's: its PATH, its directories, its shell.
+     */
+    host: z.string().min(1).optional(),
+    /**
+     * A label the `/agent` menu groups agents under — typically where they run. Unset = the
+     * agent's host id, or no group for an agent on this machine.
+     */
+    group: z.string().min(1).max(64).optional(),
   })
   .refine((a) => a.harness !== 'custom' || (a.command && a.command.length > 0), {
     message: 'command is required when harness=custom',
@@ -103,6 +114,26 @@ export const AgentDefSchema = z
     path: ['permissions'],
   });
 export type AgentDef = z.infer<typeof AgentDefSchema>;
+
+/**
+ * A machine the gateway reaches over ssh to run agents on (`hosts.<id>` in config.yaml).
+ *
+ * On the user side of the config line, like `voice`: it is an address and a credential. The key
+ * and known_hosts default to files in the config directory rather than the operator's own
+ * `~/.ssh`, because the gateway pins both (binaries.ts sshArgs, `-F none`): a connection it makes
+ * never depends on an ssh config it did not write, and a changed host key fails it.
+ */
+export const HostDefSchema = z
+  .object({
+    /** `user@host`, optionally `:port` (an IPv6 literal in brackets). */
+    ssh: z.string().regex(/^[^\s'"]+$/, 'ssh must be user@host[:port], with no spaces or quotes'),
+    /** Private key. Default: `<config dir>/ssh/id_ed25519`. */
+    identityFile: z.string().min(1).optional(),
+    /** known_hosts holding the host's key; checked strictly. Default: `<config dir>/ssh/known_hosts`. */
+    knownHostsFile: z.string().min(1).optional(),
+  })
+  .strict();
+export type HostDef = z.infer<typeof HostDefSchema>;
 
 /** Route match conditions (all optional; provided fields must all match; omitted = no constraint). */
 export const RouteWhenSchema = z
@@ -350,6 +381,14 @@ export const ConfigSchema = z
 
     /** Agent definitions (at least one); routing selects by id. */
     agents: z.array(AgentDefSchema).min(1),
+
+    /** Remote machines agents can run on, keyed by the id `agents[].host` names (see HostDefSchema). */
+    hosts: z
+      .record(
+        z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/i, 'host id must be 1-32 chars of letters/digits/_/- and start alphanumeric'),
+        HostDefSchema
+      )
+      .optional(),
 
     routing: z.object({
       /** Agent id used when the pipeline doesn't match (must exist in agents). */
@@ -649,6 +688,16 @@ export const ConfigSchema = z
         message: `routing.default references a non-existent agent id "${cfg.routing.default}" (available: ${[...ids].join(', ')})`,
       });
     }
+    const hostIds = new Set(Object.keys(cfg.hosts ?? {}));
+    cfg.agents.forEach((a, i) => {
+      if (a.host !== undefined && !hostIds.has(a.host)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['agents', i, 'host'],
+          message: `agent "${a.id}" names host "${a.host}", which is not under hosts: (available: ${[...hostIds].join(', ') || 'none'})`,
+        });
+      }
+    });
     const platformIds = new Set(Object.keys(cfg.platforms));
     cfg.routing.pipeline.forEach((rule, i) => {
       if (!ids.has(rule.use.agent)) {

@@ -19,6 +19,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # talkcode-remote (remote/) is Go: its tests run here, and `npm run build` cross-compiles it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: remote/go.mod
+          cache-dependency-path: remote/go.mod
 
       # `npm ci` (not `npm install`): installs strictly from package-lock.json, so
       # the toolchain here can't drift from what upstream CI validated.
@@ -32,6 +37,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test talkcode-remote
+        run: npm run test:remote
 
       - name: Build
         run: npm run build

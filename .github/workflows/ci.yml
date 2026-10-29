@@ -14,6 +14,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # talkcode-remote (remote/) is Go: its tests run here, and `npm run build` cross-compiles it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: remote/go.mod
+          cache-dependency-path: remote/go.mod
       - run: npm ci
       - name: Typecheck
         run: npm run typecheck
@@ -21,6 +26,8 @@ jobs:
         run: npm run lint
       - name: Test + coverage
         run: npm run test:coverage
+      - name: Test talkcode-remote
+        run: npm run test:remote
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

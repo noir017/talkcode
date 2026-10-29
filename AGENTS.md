@@ -44,6 +44,8 @@ it. Do not duplicate that content here.
 | `src/platform/` | IM adapters: the profile seam, 8 Satori platform profiles, per-dialect markdown renderers, and `webui/` — a browser page the daemon serves, implementing `PlatformAdapter` directly | [README](src/platform/README.md) |
 | `src/daemon/` | The running system: routing, conversations, turn orchestration, agent runtimes (ACP + agy) | [README](src/daemon/README.md) |
 | `src/ipc/` | Reverse-command protocol over a unix socket (agent → daemon → chat) | [README](src/ipc/README.md) |
+| `src/remote/` | The gateway's side of agents on other machines: one reliable link per host over ssh | [README](src/remote/README.md) |
+| `remote/` | talkcode-remote, the host side of that link — **Go**, a static binary per architecture, built by `npm run build` into `dist/remote-bin/` | [README](remote/README.md) |
 | `src/commands/` | CLI entry points: `setup`, `doctor`, `start`, reverse commands | [README](src/commands/README.md) |
 | `src/types.ts` | Domain data shapes shared across modules. Types only, no behavior. | — |
 | `src/cli.ts` | Commander wiring. `start` is lazy-imported to keep `--help`/`doctor` fast. | — |
@@ -57,6 +59,7 @@ Dependencies point downward only. This is currently true and must stay true:
 ```
 commands ──► daemon ──► platform ──► core ──► config
      └────────┴──────────┴─────────► ipc
+              └────────────────────► remote
 ```
 
 Enforced facts, verifiable with grep:
@@ -76,6 +79,10 @@ Enforced facts, verifiable with grep:
   schemas). That file is deliberately kept free of Satori imports so config loading
   never drags in the adapter chain.
 - `ipc/` imports nothing from other modules except `types.ts`.
+- `remote/` (the TypeScript one) imports nothing from other modules: it is transport. What is the
+  daemon's to decide about a remote agent — the namespace, how its `talkcode` command is run here,
+  where the skill goes — lives in `daemon/remote-hosts.ts`. The one exception to "daemon only" is
+  `commands/doctor.ts`, which uses its ssh argv to check hosts the way the daemon will reach them.
 - `daemon/` is the only module allowed to depend on everything.
 
 If a change requires an upward import, the design is wrong — move the pure part down
@@ -98,7 +105,8 @@ get an explicit Hyrum's Law warning and a contract test.
 **Single sources of truth.** Several lists are deliberately defined once and consumed
 in many places. Extend the source, never a copy:
 - `ipc/commands.ts` `REVERSE_COMMANDS` → CLI registration, the `talkcode help` pages
-  (`HELP_TOPICS`), the native tools' parameters and validation (`ipc/tools.ts`), docs.
+  (`HELP_TOPICS`), the native tools' parameters and validation (`ipc/tools.ts`), the commands an
+  agent on a remote host may run back here (`daemon/remote-hosts.ts`), docs.
 - `core/command-translate.ts` `GENERIC_COMMANDS` → the registered slash menu + translation.
 - `core/settings.ts` — the `/setting` table → the menu rows, the text list, value validation,
   the config path patched, and the ack sentence.
@@ -129,16 +137,21 @@ edits are `void`-and-`catch`: a failure is logged and the turn continues.
 
 ## Testing
 
-Vitest, colocated: `foo.ts` is tested by `foo.test.ts` in the same directory. ~2070
-tests across 102 files.
+Vitest, colocated: `foo.ts` is tested by `foo.test.ts` in the same directory. ~2680
+tests across 131 files. The Go half (`remote/`) has its own `go test`, colocated the same way.
 
 ```bash
 npm test              # vitest run
 npm run test:coverage # + v8 coverage with thresholds
+npm run test:remote   # go vet + go test in remote/ (a release gate)
 npm run typecheck     # tsc --noEmit
 npm run lint          # eslint (flat config)
-npm run build         # tsc -p tsconfig.build.json → dist/
+npm run build         # tsc → dist/, then talkcode-remote for amd64 + arm64 → dist/remote-bin/
 ```
+
+Building, releasing and `src/remote/remote.integration.test.ts` need the Go toolchain (`go.mod`
+names the version; CI installs it with `setup-go`). The integration test skips itself without one;
+the build does not.
 
 Coverage thresholds are enforced only where they earn their keep (`vitest.config.ts`):
 `src/core/**` at 70%, `daemon/attachment-io.ts` and `ipc/protocol.ts` on the
@@ -187,6 +200,13 @@ Do not weaken these without saying so explicitly in the PR:
 4. **Secrets never round-trip to disk.** `${VAR}` expansion happens once at load, after
    parse and before validation; `setup`/`saveConfig` operate on the raw unexpanded
    object. Proxy URLs are redacted before logging.
+5. **A remote host is reached only as configured, and reaches back only through the reverse
+   commands.** ssh is pinned (`remote/binaries.ts` sshArgs: `-F none`, the gateway's own key and
+   known_hosts, strict host key checking — a changed host key fails the connection). talkcode-remote
+   opens no network port: ssh in, an owner-only unix socket out. An agent on a host can run back
+   here only the reverse commands, `mcp` and `help` (`daemon/remote-hosts.ts` isBridgedCommand),
+   never `start`, `setup` or any other part of the gateway's administration — and what it runs
+   still passes the IPC token check and `ipc/protocol.ts` validation like a local agent's command.
 
 ## Adding things
 

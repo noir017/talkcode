@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import type { AgentDef } from '../config/schema.js';
+import type { RemoteHost } from '../remote/host.js';
 import { expandHome } from './agent-common.js';
 
 /**
@@ -213,4 +214,49 @@ export async function scanSkillDirs(dirs: readonly string[]): Promise<FoundSkill
     }
   }
   return found;
+}
+
+/**
+ * One shell pass over `dirs` on a remote host, printing `dir<TAB>name` for every entry holding a
+ * SKILL.md. A listing plus a stat per entry would be a round trip each; this is one. The glob's
+ * trailing slash matches directories and links to directories alike — the same leniency `stat`
+ * gives the local scan.
+ */
+const REMOTE_SKILL_SCAN =
+  'for d in "$@"; do [ -d "$d" ] || continue; for e in "$d"/*/; do [ -f "${e}SKILL.md" ] && printf "%s\\t%s\\n" "$d" "$(basename "$e")"; done; done; exit 0';
+
+/** scanSkillDirs for an agent on a remote host: the same first-wins catalogue, read over there. */
+export async function scanRemoteSkillDirs(host: RemoteHost, dirs: readonly string[]): Promise<FoundSkill[]> {
+  if (dirs.length === 0) return [];
+  const r = await host.run({ argv: ['sh', '-c', REMOTE_SKILL_SCAN, 'sh', ...dirs], timeoutMs: 30_000 });
+  if (r.code !== 0) throw new Error(r.spawnError ?? r.stderr ?? `exit ${r.code ?? r.signal}`);
+  const byDir = new Map<string, string[]>();
+  for (const line of r.output.toString('utf8').split('\n')) {
+    const tab = line.indexOf('\t');
+    if (tab <= 0) continue;
+    const dir = line.slice(0, tab);
+    byDir.set(dir, [...(byDir.get(dir) ?? []), line.slice(tab + 1)]);
+  }
+  const found: FoundSkill[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    for (const name of (byDir.get(dir) ?? []).sort((a, b) => a.localeCompare(b))) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      found.push({ name, dir });
+    }
+  }
+  return found;
+}
+
+/** opencodeSkillDirs, reading opencode.json on the agent's host; `env` is the agent's own block. */
+export async function remoteOpencodeSkillDirs(host: RemoteHost, home: string, env: Record<string, string>): Promise<string[]> {
+  const file = join(env['XDG_CONFIG_HOME'] || join(home, '.config'), 'opencode', 'opencode.json');
+  try {
+    const parsed: unknown = JSON.parse((await host.readFile(file, 1 << 20)).toString('utf8'));
+    const skills = (parsed as { skills?: unknown })?.skills;
+    return Array.isArray(skills) ? skills.filter((s): s is string => typeof s === 'string' && s.length > 0) : [];
+  } catch {
+    return [];
+  }
 }

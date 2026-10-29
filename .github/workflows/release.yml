@@ -35,6 +35,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # talkcode-remote (remote/) is Go: its tests run here, and `npm run build` cross-compiles it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: remote/go.mod
+          cache-dependency-path: remote/go.mod
 
       # Resolved once: on a tag push this is the tag, on a manual run it's the input.
       - name: Resolve tag
@@ -65,6 +70,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test talkcode-remote
+        run: npm run test:remote
 
       - name: Build
         run: npm run build

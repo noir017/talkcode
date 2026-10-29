@@ -2,7 +2,10 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { AgentDef } from '../config/schema.js';
+import type { RemoteHost } from '../remote/host.js';
 import { agentHome } from './skills-scan.js';
+import { remoteAgentHome } from './agent-common.js';
+import { remoteHosts } from './remote-hosts.js';
 
 /** The harness ids, taken from the config shape rather than re-declared (as skills-scan does). */
 type Harness = AgentDef['harness'];
@@ -161,6 +164,24 @@ async function readTail(path: string): Promise<string | undefined> {
 }
 
 /**
+ * The same tail from an agent's remote host, filtered there to the lines a parser could use: a
+ * stretch of a log is mostly not errors, and this runs on a poll. The host already dropped the line
+ * its window cut in half, so a blank one is put in front for the parser to drop instead. Environment
+ * overrides (XDG_DATA_HOME) come from the agent's own `env` only — this daemon's describe the wrong
+ * machine.
+ */
+async function readRemoteTail(host: RemoteHost, def: AgentDef, probe: HarnessLogProbe): Promise<string | undefined> {
+  const w = host.conn.welcome;
+  if (!w || !host.isUp) return undefined;
+  try {
+    const path = probe.logPath(remoteAgentHome(def, w), def.env);
+    return `\n${await host.readTail(path, TAIL_BYTES, { grep: ['level=ERROR'], timeoutMs: 10_000 })}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * What `def`'s harness logged against `sessionId` since `since`, oldest first.
  *
  * Empty whenever anything is missing — an unsupported harness, no session id yet, no log file, a
@@ -175,7 +196,8 @@ export async function readHarnessErrors(
 ): Promise<HarnessLogEvent[]> {
   const probe = harnessLogProbe(def.harness);
   if (!probe || !sessionId) return [];
-  const tail = await readTail(probe.logPath(agentHome(def), env));
+  const host = remoteHosts.hostFor(def);
+  const tail = host ? await readRemoteTail(host, def, probe) : await readTail(probe.logPath(agentHome(def), env));
   if (tail === undefined) return [];
   try {
     return probe.parse(tail, sessionId, since);

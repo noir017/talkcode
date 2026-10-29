@@ -1,5 +1,5 @@
 import { promisify } from 'node:util';
-import { execFile as execFileCb, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile as execFileCb, spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import type { AgentDef, Config } from '../config/schema.js';
 import { findAgent } from '../config/schema.js';
@@ -19,10 +19,16 @@ import {
   buildHarnessEnv,
   buildInputPreview,
   killChildProcess,
+  prepareRemoteSpawn,
+  remoteAgentEnv,
   resolveConversationCwd,
   trimReason,
   truncateToolName,
+  watchRemoteLink,
+  type AgentChild,
 } from './agent-common.js';
+import { remoteHosts } from './remote-hosts.js';
+import type { RemoteHost } from '../remote/host.js';
 import { PreLaunchCancelled, runPreLaunchHook } from './agent-hooks.js';
 import {
   AGY_STATUS_FD,
@@ -148,6 +154,9 @@ export function buildAgyArgs(
 /** The executable name; `agy install` puts it on PATH. Exported so doctor reports the same thing. */
 export const AGY_COMMAND = 'agy';
 
+/** An agy child, local or on a remote host: what AgentChild has, plus fd 3 for the status line. */
+type AgyChild = AgentChild & { readonly stdio: ReadonlyArray<unknown> };
+
 /**
  * Parse `agy models` TSV output into ModelSelector options (`{ value, name }`).
  * Lines are formatted as `<modelId>\t<displayName>` (e.g. `gemini-3.8-flash-high\tGemini 3.8 Flash (High)`).
@@ -253,6 +262,47 @@ export async function runAgyCliCommand(
 }
 
 /**
+ * One agy invocation on a remote host — `agy models`, `agy -p=/usage` and the rest of the one-shots
+ * — run there through talkcode-remote with the agent's environment, answered in AgyCliResult's
+ * terms. The host is the one the agent runs on, because that is where agy is signed in.
+ */
+export async function runAgyOnHost(host: RemoteHost, def: AgentDef, argv: string[], cwd?: string): Promise<AgyCliResult> {
+  const what = `agy ${argv.join(' ')}`;
+  try {
+    const r = await host.run({ argv: [AGY_COMMAND, ...argv], cwd, env: remoteAgentEnv(def), timeoutMs: CLI_COMMAND_TIMEOUT_MS, max: 1 << 20 });
+    if (r.spawnError) return { ok: false, error: `${what} on ${host.id}: ${r.spawnError}` };
+    if (r.timedOut) return { ok: false, error: `${what} on ${host.id} timed out` };
+    if (r.code !== 0) return { ok: false, error: `${what} on ${host.id} exited ${r.code ?? r.signal}${r.stderr ? `: ${r.stderr}` : ''}` };
+    return { ok: true, output: r.output.toString('utf8').trim() };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** One of agy's slash commands as a one-shot, wherever `def` runs (runAgyCliCommand locally). */
+export function runAgyCliFor(def: AgentDef, name: string, cwd: string, local: AgyCliRunner = runAgyCliCommand): Promise<AgyCliResult> {
+  const host = remoteHosts.hostFor(def);
+  return host ? runAgyOnHost(host, def, [`-p=/${name}`], cwd) : local(name, cwd, buildHarnessEnv(def));
+}
+
+/**
+ * `agy models` from where the deployment's agy runs: the first agy agent's host when it has one,
+ * so a gateway with no agy of its own still lists models. The list is Google's, the same for every
+ * account, so one host answering for all is enough.
+ */
+export async function fetchAgyModelsFor(cfg: Pick<Config, 'agents'>): Promise<Array<{ value: string; name: string }>> {
+  const def = cfg.agents.find((a) => a.harness === 'agy');
+  const host = remoteHosts.hostFor(def);
+  if (!def || !host) return defaultFetchAgyModels();
+  const r = await runAgyOnHost(host, def, ['models']);
+  if (!r.ok) {
+    console.debug('[agy] fetch models failed:', r.error);
+    return [];
+  }
+  return parseAgyModelsOutput(r.output);
+}
+
+/**
  * Render what a one-shot CLI command printed, as a chat message.
  *
  * Everything but `/usage` prints either a short TSV table (`/model`, `/credits`, `/effort`,
@@ -335,7 +385,7 @@ export function createAgyAgentFactory(
   cfg: Config,
   socketPath: string,
   store?: ConversationStore,
-  modelFetcher: AgyModelFetcher = defaultFetchAgyModels,
+  modelFetcher: AgyModelFetcher = () => fetchAgyModelsFor(cfg),
   cli: AgyCliRunner = runAgyCliCommand
 ): AgentFactory {
   const sessions = new Map<string, AgentSession>();
@@ -409,7 +459,7 @@ export function createAgyAgentFactory(
   }
   // Still done eagerly as well: the operator's own interactive agy reads the same setting, and
   // should find the shim drawing its status line from the moment the daemon is up.
-  for (const home of new Set(cfg.agents.filter((a) => a.harness === 'agy').map((a) => agentHome(a)))) {
+  for (const home of new Set(cfg.agents.filter((a) => a.harness === 'agy' && !a.host).map((a) => agentHome(a)))) {
     wireStatusLine(home);
   }
 
@@ -440,10 +490,11 @@ export function createAgyAgentFactory(
   const quotaByHome = new Map<string, { pools?: QuotaPool[]; at: number; pending?: Promise<void> }>();
 
   function metersFor(def: AgentDef): AgyMeters {
-    const home = agentHome(def);
+    // The quota belongs to an account on a machine: the same HOME on two hosts is two accounts.
+    const home = def.host ? `${def.host}:${def.env['HOME'] ?? '~'}` : agentHome(def);
     return {
       async currentModel(cwd) {
-        const r = await cli('model', cwd, buildHarnessEnv(def));
+        const r = await runAgyCliFor(def, 'model', cwd, cli);
         if (!r.ok) {
           console.debug(`[agy] could not ask for the default model (${def.id}):`, r.error);
           return undefined;
@@ -459,7 +510,7 @@ export function createAgyAgentFactory(
         if (Date.now() - entry.at < QUOTA_REFRESH_MS) return Promise.resolve();
         entry.at = Date.now();
         const e = entry;
-        e.pending = cli('usage', cwd, buildHarnessEnv(def))
+        e.pending = runAgyCliFor(def, 'usage', cwd, cli)
           .then((r) => {
             if (!r.ok) {
               console.debug(`[agy] could not read the quota (${def.id}):`, r.error);
@@ -583,7 +634,7 @@ function createAgySession(
   let cwd = resolveConversationCwd(def, conversationId, store);
 
   /** Lazily-started child; established on the first turn, killed on dispose. */
-  let proc: ChildProcessWithoutNullStreams | undefined;
+  let proc: AgyChild | undefined;
   /** Set once the child's `init` event arrived — the sole readiness signal (mirrors ACP's `active`). */
   let ready = false;
   /**
@@ -728,12 +779,13 @@ function createAgySession(
    * the write end alive after agy itself is gone, so the read end would otherwise never see EOF and
    * its handle would sit open for as long as that process lives.
    */
-  function closeStatusPipe(child: ChildProcessWithoutNullStreams): void {
-    child.stdio[AGY_STATUS_FD]?.destroy();
+  function closeStatusPipe(child: AgyChild): void {
+    const pipe = child.stdio[AGY_STATUS_FD];
+    if (pipe instanceof Readable) pipe.destroy();
   }
 
   /** One line off a child's status pipe. Frames from a superseded child are dropped like its stdout. */
-  function handleStatusLine(line: string, from: ChildProcessWithoutNullStreams): void {
+  function handleStatusLine(line: string, from: AgyChild): void {
     if (proc !== from) return;
     const status = parseAgyStatusFrame(line);
     if (!status) {
@@ -799,7 +851,7 @@ function createAgySession(
    * rather than before it: the answer takes seconds, and only the footer needs it. Skipped when the
    * status line is already reporting (an agy older than 1.4.7), which names the model itself.
    */
-  function lookUpDefaultModel(child: ChildProcessWithoutNullStreams): void {
+  function lookUpDefaultModel(child: AgyChild): void {
     if (!meters || lastSeenModel || statusFrames > 0) return;
     pendingModel = meters
       .currentModel(cwd)
@@ -866,7 +918,7 @@ function createAgySession(
   }
 
   /** Attach the line reader to a freshly spawned child's status pipe. */
-  function readStatusPipe(child: ChildProcessWithoutNullStreams): void {
+  function readStatusPipe(child: AgyChild): void {
     const pipe = child.stdio[AGY_STATUS_FD];
     // A socket whenever the spawn asked for a fourth 'pipe'. Checked rather than cast, so a change in
     // how it is opened costs the footer its numbers (and says so, via onStatusSilence) — not the spawn.
@@ -916,6 +968,9 @@ function createAgySession(
     // Re-read the conversation's directory: a `/cd` since the last child disposed it, and this is
     // the only point at which the new one can be honored (agy takes its cwd at spawn).
     cwd = resolveConversationCwd(def, conversationId, store);
+    // An agy on another machine: reach it and settle the directory there first (see agent-acp.ts).
+    const host = remoteHosts.hostFor(def);
+    if (host) cwd = (await prepareRemoteSpawn(def, host, cwd)).cwd;
     // The operator's preLaunch hook, before anything of the child's exists: a failure throws from
     // here with nothing to roll back. Only runTurn calls this, one turn at a time, so unlike the ACP
     // runtime there is no concurrent caller to share the run with.
@@ -929,8 +984,10 @@ function createAgySession(
       }
     }
     // Before the spawn, because agy reads its settings at startup: a status line wired after this
-    // line would not be drawn by this child at all.
-    onStatusSilence = statusLineAtSpawn?.();
+    // line would not be drawn by this child at all. Not on a remote host: the status line is a
+    // script of THIS install (agy-statusline.ts), and an agy new enough to be worth driving from a
+    // gateway (1.4.7+) reports in its stream anyway.
+    onStatusSilence = host ? undefined : statusLineAtSpawn?.();
 
     // Replay this session's prior conversation so a daemon restart keeps the context (the ACP
     // runtime's session/load equivalent). agy owns the history on its own disk; we only remember which.
@@ -940,15 +997,14 @@ function createAgySession(
     // The fourth pipe is the status line's way back (agy-statusline.ts). The cast only restores what
     // the three-`pipe` overload would have inferred: @types/node types a longer stdio array as a
     // bare ChildProcess with nullable streams, and fds 0-2 here are pipes all the same.
-    const child = spawn(
-      AGY_COMMAND,
-      buildAgyArgs(def, cwd, store?.agentSession(conversationId, def.id), modelPreference),
-      {
-        cwd,
-        env: { ...buildAgentEnv(def, sessionToken, socketPath), [AGY_STATUS_FD_ENV]: String(AGY_STATUS_FD) },
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
-      }
-    ) as ChildProcessWithoutNullStreams;
+    const args = buildAgyArgs(def, cwd, store?.agentSession(conversationId, def.id), modelPreference);
+    const child: AgyChild = host
+      ? host.spawn(AGY_COMMAND, args, { cwd, env: remoteAgentEnv(def, sessionToken) })
+      : (spawn(AGY_COMMAND, args, {
+          cwd,
+          env: { ...buildAgentEnv(def, sessionToken, socketPath), [AGY_STATUS_FD_ENV]: String(AGY_STATUS_FD) },
+          stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        }) as unknown as AgyChild);
     // Record immediately so the 'exit' callback and start-failure rollback can match by reference.
     proc = child;
     // agy sends diagnostics (auth notices, permission notes, conversation warnings) to stderr.
@@ -992,7 +1048,7 @@ function createAgySession(
    * fail any in-flight turn — the stream ended without a `result`, so nothing else would settle it.
    * Guarded by reference so a stale 'exit' can't clobber a post-dispose replacement child.
    */
-  function onChildExit(child: ChildProcessWithoutNullStreams, code: number | null, signal: string | null): void {
+  function onChildExit(child: AgyChild, code: number | null, signal: string | null): void {
     if (proc !== child) return;
     console.debug(`[agy] child process exited (${def.id}): code=${code} signal=${signal}; will respawn on the next turn`);
     closeStatusPipe(child);
@@ -1011,7 +1067,7 @@ function createAgySession(
    * agy still flushes a trailing `result` before exiting, and feeding that to whatever turn is
    * current would fail an unrelated turn (or, after an abort, the very next one).
    */
-  function handleLine(line: string, from: ChildProcessWithoutNullStreams): void {
+  function handleLine(line: string, from: AgyChild): void {
     if (proc !== from) {
       console.debug('[agy] dropping a frame from a superseded child:', line.slice(0, 120));
       return;
@@ -1097,6 +1153,8 @@ function createAgySession(
 
       // Install the sink BEFORE writing the prompt, so no event can arrive unclaimed.
       liveHandlers = handlers;
+      // An agy on another machine keeps working through a lost connection; say so if one lasts.
+      const unwatchLink = watchRemoteLink(remoteHosts.hostFor(def), handlers, () => {});
       pendingQuota = undefined;
       refreshQuota();
       const done = new Promise<void>((resolve, reject) => {
@@ -1140,6 +1198,7 @@ function createAgySession(
         if (aborting) return; // intentional abort/dispose is not an error
         throw err;
       } finally {
+        unwatchLink();
         liveHandlers = undefined;
         reportSettled(handlers);
       }
@@ -1208,7 +1267,7 @@ function startupTimeoutMessage(agentId: string): string {
  * escalation so a wedged process that ignores SIGINT can't linger — once detached, nothing else
  * tracks its pid.
  */
-function interruptChild(child: ChildProcessWithoutNullStreams): void {
+function interruptChild(child: AgyChild): void {
   try {
     child.kill('SIGINT');
   } catch (e) {
