@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-10-30
+
 ### Added
 
 - **The web UI's sidebar says which machine each topic's agent runs on.** The line under a topic's
