@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-30
+
 ### Added
 
 - **The names routing rules give agents are in the slash menu and `/help`.** An agent command
