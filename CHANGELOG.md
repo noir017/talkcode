@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.11.1] - 2026-10-30
+
 ### Fixed
 
 - **Topic titles in the web UI's sidebar use the whole row.** On a computer, a row's ☆ and ×
