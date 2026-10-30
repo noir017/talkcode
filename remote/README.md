@@ -85,7 +85,8 @@ until the peer acknowledges it. `a` on any frame acknowledges the peer's frames 
   same epoch as before, `resumed: true`: both sides drop what the other already has (≤ `recv`) and
   resend the rest, in order. With a different epoch the daemon first stops everything the previous
   gateway started and starts numbering from zero: `resumed: false`. A gateway that had state and
-  gets `resumed: false` knows the daemon lost it (restarted) and fails everything it had in flight.
+  gets `resumed: false` knows the daemon lost it (restarted) and fails everything it had in flight
+  — what it had sent; a new process or request waiting for that connection goes to the new daemon.
 - Duplicates (`s` ≤ received) are dropped; a gap is a corrupt stream and the connection is closed.
 - Acks go out after 64 KiB received or 100 ms, whichever first, or ride on any frame sent meanwhile.
 - The newest link connection wins: a daemon that gets a `hello` while it has a link closes the old

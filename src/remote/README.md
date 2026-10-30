@@ -19,10 +19,15 @@ skill); the runtimes reach a host through `daemon/agent-common.ts`.
 
 ## Invariants
 
-- **Down is not dead.** Everything is queued in the link while a connection is down and delivered
-  on the next one; processes keep running on the host. Only `reset` (the host's daemon came back
-  without our state) fails what was in flight. Code that waits on a host while a person waits on it
-  (a menu, a status read) passes a timeout instead of assuming the link is up.
+- **Down is not dead.** Everything is queued while a connection is down and delivered on the next
+  one; processes keep running on the host. Only `reset` (the host's daemon came back without our
+  state) fails what was in flight. Code that waits on a host while a person waits on it (a menu, a
+  status read) passes a timeout instead of assuming the link is up.
+- **A reset fails only what the old daemon was given.** The frames of something already running
+  (stdin, a signal, a cancel) queue in the link; a NEW process or request waits in `RemoteHost`
+  for a connection instead (`whenUp`), so the one that sets off a reconnect to a restarted daemon —
+  the next request after any quiet spell, since an idle connection closes and the host's daemon
+  then exits — goes to the new daemon rather than being failed as "restarted" with the rest.
 - **A first contact fails fast.** Before a host has ever answered, a request waits for the first
   connection and rejects with its reason; after that, requests queue through outages. A wrong key or
   address should be said, not retried silently forever.
@@ -42,6 +47,8 @@ skill); the runtimes reach a host through `daemon/agent-common.ts`.
 `remote.test.ts` covers the codec, the link and the ssh argv as units.
 `remote.integration.test.ts` builds the real talkcode-remote and drives it through a transport that
 runs the host script under a local `sh` with its own HOME — everything but ssh itself: the install,
-agents over stdio, a connection killed mid-run and resumed with input typed during the outage, the
-operations, the shim bridge, a new epoch stopping the old agents, and a new version retiring the
-old daemon and its directory. Skipped where there is no Go toolchain (CI has one).
+agents over stdio, a connection killed mid-run and resumed with input typed during the outage, a
+daemon that restarted during an outage (what it ran is gone, what was asked for meanwhile runs on
+the new one), the operations, the shim bridge, a new epoch stopping the old agents, and a new
+version retiring the old daemon and its directory. Skipped where there is no Go toolchain (CI has
+one).

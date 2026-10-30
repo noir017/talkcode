@@ -201,6 +201,36 @@ describe.skipIf(!hasGo)('talkcode-remote, end to end', () => {
     expect(out).toBe('early\nlate\ngot typed-offline\n');
   }, 30_000);
 
+  it('a daemon that restarted takes down what it ran, but not what was asked for while it was away', async () => {
+    // The everyday shape of this: the gateway closes an idle connection, the host's daemon exits ten
+    // minutes later, and the next request reconnects to a new one. That request never reached the
+    // old daemon, so it has nothing to lose — yet queued in the link it was failed with the rest as
+    // "restarted", which cost every quiet host its next directory menu (2026-10-30).
+    const home = newHome();
+    mkdirSync(join(home, 'ws', 'proj'), { recursive: true });
+    const host = makeHost(home);
+    const old = host.spawn('sleep', ['30']);
+    await new Promise((r) => old.on('spawn', r));
+    const oldExit = new Promise<string | null>((resolve) => old.on('exit', (_code, signal) => resolve(signal)));
+
+    // Asked for the moment the connection is gone, so before any reconnect.
+    let listing: Promise<Array<{ name: string; dir: boolean }>> | undefined;
+    let fresh: RemoteChild | undefined;
+    host.once('down', () => {
+      listing = host.listDir('~/ws', 15_000);
+      fresh = host.spawn('sh', ['-c', 'echo hi']);
+    });
+    const daemonPid = Number(readFileSync(join(home, '.talkcode/remote/run/gw1/daemon.pid'), 'utf8').trim());
+    process.kill(daemonPid, 'SIGTERM');
+    await waitFor(() => !pidAlive(daemonPid));
+    for (const p of transports) p.kill('SIGKILL');
+    await waitFor(() => fresh !== undefined);
+
+    expect(await oldExit).toBe('SIGKILL');
+    expect(await listing).toEqual([{ name: 'proj', dir: true }]);
+    expect(await collect(fresh!)).toMatchObject({ out: 'hi\n', code: 0 });
+  }, 30_000);
+
   it('runs operations on the host: files, tails, links, commands', async () => {
     const home = newHome();
     const host = makeHost(home);

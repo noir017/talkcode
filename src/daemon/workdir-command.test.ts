@@ -588,6 +588,20 @@ describe('the directory question for an agent on a host', () => {
     expect(pickers).toEqual(['rc']);
   });
 
+  it('reads a listing that failed again before answering, rather than answering from the failure', async () => {
+    // 2.11.1: the reread behind the menu fixed only the next `/cc`, so this one got the command list.
+    const { reg, send, menus, pickers } = rig({ config });
+    listDir.mockRejectedValueOnce(new Error('talkcode-remote on host "box" restarted'));
+    reg.warmRemoteScans();
+    await drain();
+    expect(listDir.mock.calls[0]![0]).toBe('/srv/work');
+
+    await send('/cc');
+    expect(pickers).toEqual([]);
+    expect(menus).toHaveLength(1);
+    expect(menus[0]!.options.map((o) => o.path)).toEqual(['/srv/work', '/srv/work/proj']);
+  });
+
   it('waits after /new too', async () => {
     const { send, menus, replies } = rig({ config });
     await send('/cc hello');

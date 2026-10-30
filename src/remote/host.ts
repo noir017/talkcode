@@ -93,6 +93,8 @@ export interface RemoteHostOptions {
 interface PendingRpc {
   resolve(v: { res: Record<string, unknown>; body: Buffer }): void;
   reject(e: Error): void;
+  /** On the link yet — until then it is in `unsent`, and no daemon has heard of it. */
+  sent: boolean;
 }
 
 export class RemoteHost extends EventEmitter {
@@ -100,6 +102,8 @@ export class RemoteHost extends EventEmitter {
   private readonly children = new Map<string, RemoteChild>();
   private readonly rpcs = new Map<string, PendingRpc>();
   private readonly clis = new Map<string, CliSession>();
+  /** New processes and requests waiting for a connection to go out on (see whenUp). */
+  private readonly unsent: Array<() => void> = [];
   private seq = 0;
 
   constructor(private readonly opts: RemoteHostOptions) {
@@ -111,7 +115,26 @@ export class RemoteHost extends EventEmitter {
     this.conn.on('frame', (h: FrameHeader, body: Buffer) => this.onFrame(h, body));
     this.conn.on('reset', () => this.onReset());
     this.conn.on('down', (reason: string) => this.emit('down', reason));
-    this.conn.on('up', (resumed: boolean) => this.emit('up', resumed));
+    this.conn.on('up', (resumed: boolean) => {
+      for (const send of this.unsent.splice(0)) send();
+      this.emit('up', resumed);
+    });
+  }
+
+  /**
+   * Put a new process or request on the link: now if a connection is up, else once one is.
+   *
+   * Not queued in the link meanwhile, the way the frames of something already running are. A
+   * connection that comes back to a daemon that restarted (`reset`) has to fail everything the old
+   * one was given, and the link cannot tell what that was from what nobody has seen yet — so the
+   * request that set off the reconnect was failed as "restarted" too. That is every request after a
+   * quiet spell: the gateway closes an idle connection, the host's daemon exits ten minutes later,
+   * and the next one finds a new daemon. Its first casualty was the directory listing behind a bare
+   * `/cc`, which then answered without its menu (2026-10-30).
+   */
+  private whenUp(send: () => void): void {
+    if (this.conn.isUp) send();
+    else this.unsent.push(send);
   }
 
   get id(): string {
@@ -151,7 +174,9 @@ export class RemoteHost extends EventEmitter {
     this.children.set(id, child);
     this.conn.hold();
     const open = (): void =>
-      child.open({ t: 'spawn', id, cmd: command, args, cwd: opts.cwd, env: definedOnly(opts.env), unset: opts.unset, fd3: opts.fd3 });
+      this.whenUp(() =>
+        child.open({ t: 'spawn', id, cmd: command, args, cwd: opts.cwd, env: definedOnly(opts.env), unset: opts.unset, fd3: opts.fd3 })
+      );
     if (this.conn.welcome) open();
     else this.conn.ready().then(open, (e: Error) => this.finishChild(id, null, null, e.message));
     return child;
@@ -187,15 +212,20 @@ export class RemoteHost extends EventEmitter {
     const rid = `r${this.seq}`;
     this.conn.hold();
     const settled = new Promise<{ res: Record<string, unknown>; body: Buffer }>((resolve, reject) => {
-      this.rpcs.set(rid, { resolve, reject });
+      this.rpcs.set(rid, { resolve, reject, sent: false });
     });
-    this.conn.send({ ...fields, t: 'rpc', op, rid }, body);
+    this.whenUp(() => {
+      const p = this.rpcs.get(rid);
+      if (!p) return; // timed out or cancelled while it waited
+      p.sent = true;
+      this.conn.send({ ...fields, t: 'rpc', op, rid }, body);
+    });
     const cancel = (why: string): void => {
       const p = this.rpcs.get(rid);
       if (!p) return;
       this.rpcs.delete(rid);
       this.conn.release();
-      this.conn.send({ t: 'rpc-cancel', rid });
+      if (p.sent) this.conn.send({ t: 'rpc-cancel', rid });
       p.reject(new Error(why));
     };
     const timer =
@@ -344,14 +374,18 @@ export class RemoteHost extends EventEmitter {
     if (open) this.clis.set(cid, session);
   }
 
-  /** The host's daemon came back without our state: everything started through it is gone. */
+  /**
+   * The host's daemon came back without our state: everything started through it is gone. What is
+   * still waiting in `unsent` was never given to it, and goes to the new one instead (whenUp).
+   */
   private onReset(): void {
-    const n = this.children.size;
-    if (n > 0 || this.rpcs.size > 0) {
-      console.warn(`[remote] ${this.id}: talkcode-remote restarted; ${n} process(es) on it are gone`);
+    const gone = [...this.children].filter(([, c]) => c.isOpen).map(([id]) => id);
+    const lost = [...this.rpcs].filter(([, p]) => p.sent);
+    if (gone.length > 0 || lost.length > 0) {
+      console.warn(`[remote] ${this.id}: talkcode-remote restarted; ${gone.length} process(es) on it are gone`);
     }
-    for (const id of [...this.children.keys()]) this.finishChild(id, null, 'SIGKILL');
-    for (const [rid, p] of [...this.rpcs]) {
+    for (const id of gone) this.finishChild(id, null, 'SIGKILL');
+    for (const [rid, p] of lost) {
       this.rpcs.delete(rid);
       this.conn.release();
       p.reject(new Error(`talkcode-remote on host "${this.id}" restarted`));
@@ -378,7 +412,7 @@ export class RemoteChild extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   private opened = false;
   private done = false;
-  /** Frames written before the spawn itself was sent (first contact still under way). */
+  /** Frames written before the spawn itself was sent (first contact, or a connection, still to come). */
   private early: Array<{ h: FrameHeader; body?: Buffer }> = [];
 
   constructor(private readonly host: RemoteHost, readonly id: string, fd3: boolean) {
@@ -394,6 +428,11 @@ export class RemoteChild extends EventEmitter {
       },
     });
     this.stdio = [this.stdin, this.stdout, this.stderr, fd3 ? new PassThrough() : null];
+  }
+
+  /** @internal — its `spawn` is on the link, so a daemon that restarted took it down. */
+  get isOpen(): boolean {
+    return this.opened;
   }
 
   kill(signal: NodeJS.Signals | number = 'SIGTERM'): boolean {

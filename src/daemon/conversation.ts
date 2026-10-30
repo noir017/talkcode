@@ -2670,8 +2670,8 @@ ${formatTokens(left)} left before compaction — ${name}`;
    * Kept because the menu code is synchronous — it decides on the spot whether a menu goes out —
    * while a remote directory can only be listed asynchronously. An explicit `/cd` refreshes it first
    * (and so always shows what is there now); the menus offered on the side of `/new` or a bare agent
-   * command wait for it when nothing is known yet (afterRemoteListing), and it is read for every
-   * remote agent as the daemon starts and after a `/reload` (warmRemoteScans).
+   * command wait for it when nothing usable is known yet (afterRemoteListing), and it is read for
+   * every remote agent as the daemon starts and after a `/reload` (warmRemoteScans).
    */
   private readonly remoteScans = new Map<string, WorkdirScan>();
 
@@ -2689,7 +2689,7 @@ ${formatTokens(left)} left before compaction — ${name}`;
    * process, every restart left each host's first new conversation answering `/cc` with Claude's
    * own command list instead of the directory menu (2026-10-29, the first day all agents ran on
    * hosts). The daemon calls it at start and after a `/reload`; a host that is down simply leaves
-   * its entry as a failed scan, which the next menu refreshes.
+   * its entry as a failed scan, which the next menu waits to have read again (afterRemoteListing).
    */
   warmRemoteScans(): void {
     const seen = new Set<string>();
@@ -2704,17 +2704,22 @@ ${formatTokens(left)} left before compaction — ${name}`;
 
   /**
    * Run `then` — which offers a directory menu from what is known — once a remote agent's listing
-   * is in. A local agent, or one already listed, goes straight on; one never listed waits for its
-   * host, but at most REMOTE_LISTING_WAIT_MS, after which `then` runs anyway and answers the way it
-   * would without a list (the picker, or nothing). An already-listed one is read again behind the
-   * menu, so a project created since shows up next time without waiting on anyone now.
+   * is in. A local agent, or one listed fine before, goes straight on; one never listed, or whose
+   * last listing failed, waits for its host, but at most REMOTE_LISTING_WAIT_MS, after which `then`
+   * runs anyway and answers the way it would without a list (the picker, or nothing). A listed one
+   * is read again behind the menu, so a project created since shows up next time without waiting on
+   * anyone now.
+   *
+   * A failed listing waits like a missing one because answering from it is answering without a menu:
+   * the reread behind it fixed only the NEXT `/cc`, so a host that once failed to answer (a link that
+   * came back to a restarted talkcode-remote, 2026-10-30) cost the user one command list per failure.
    */
   private afterRemoteListing(def: AgentDef | undefined, then: () => void): void {
     if (!def?.host) {
       then();
       return;
     }
-    if (this.remoteScans.has(`${def.host}\0${resolveAgentCwd(def)}`)) {
+    if (this.remoteScans.get(`${def.host}\0${resolveAgentCwd(def)}`)?.ok) {
       then();
       void this.refreshRemoteScan(def);
       return;

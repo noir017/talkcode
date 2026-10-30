@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The first thing asked of a host after a quiet spell no longer fails as "restarted".** The
+  gateway closes a connection nobody has used for five minutes, and the host's talkcode-remote exits
+  ten minutes after that, so the next request reaches a new one. The gateway then fails everything
+  the old one was running, which is right — but it failed the new request with it, which had never
+  reached the old one. That request was whatever came first: the directory list behind a bare `/cc`
+  (which then answered with Claude's command list, and only the next `/cc` got the menu), a
+  scheduled task (`talkcode-remote on host "uniagent" restarted`), or starting the agent for a
+  message. A new process or request now waits for the connection and goes to the new daemon. And a
+  bare `/cc` or `/new` whose last directory list failed now reads it again, waiting up to five
+  seconds as for a list never read, instead of answering from the failure.
+
 ## [2.11.1] - 2026-10-30
 
 ### Fixed
