@@ -13,6 +13,10 @@ import {
   genericCommandSpecs,
   genericNativeNames,
   harnessCommandName,
+  routeCommandSpecs,
+  routeCommandAgent,
+  SLASH_DESC_MAX,
+  SLASH_NAME_RE,
 } from '../core/command-translate.js';
 import { parseButtonId } from '../core/button-id.js';
 import {
@@ -133,12 +137,6 @@ import {
 
 /** Transcripts `talkcode voice-log` lists when no `--limit` is given. */
 const DEFAULT_VOICE_LOG_LIMIT = 10;
-
-/** Valid slash name: lowercase/digit/_/-, 1-32 chars (Discord constraint). Non-matching names are skipped on registration. */
-const SLASH_NAME_RE = /^[a-z0-9_-]{1,32}$/;
-
-/** Slash description cap (Discord 100 chars); truncated beyond. */
-const SLASH_DESC_MAX = 100;
 
 /**
  * Daemon-level slash commands are defined in core/command-translate.ts (DAEMON_COMMANDS), so
@@ -286,14 +284,16 @@ export function agentCommandToSpec(cmd: AgentCommand): SlashCommandSpec | null {
  * to `routing.default`, running opencode's `customize-opencode` on the claude agent. It also had no
  * stable content, since whichever harness last built a session overwrote it.
  *
- * Three layers, in registration order:
+ * Four layers, in registration order:
  *  - daemon commands (/new, /clear, /help) — intercepted before any agent
  *  - the generic vocabulary — translated per harness at invocation (core/command-translate.ts)
  *  - one agent command per configured harness (/cc, /oc, /agy) — switches the conversation, and
  *    bare is the escape hatch to that agent's own commands, which are not registered globally
+ *  - the names `routing.pipeline` gives particular agents (`when: { command: oc2 }`) — the same
+ *    thing as an agent command, for an agent the harness table cannot name (a second opencode)
  */
-export function buildRegisteredSpecs(cfg: Pick<Config, 'agents'>): SlashCommandSpec[] {
-  const specs = [...DAEMON_COMMANDS, ...genericCommandSpecs(), ...agentCommandSpecs(cfg)];
+export function buildRegisteredSpecs(cfg: Pick<Config, 'agents' | 'routing'>): SlashCommandSpec[] {
+  const specs = [...DAEMON_COMMANDS, ...genericCommandSpecs(), ...agentCommandSpecs(cfg), ...routeCommandSpecs(cfg)];
   // Dedup defensively: a harness named like a generic command (or a future daemon command) must not
   // register twice — Telegram rejects the whole setMyCommands batch on a duplicate name.
   const seen = new Set<string>();
@@ -2923,9 +2923,10 @@ export class Daemon {
     // harness apart from a missing one was to try it in chat: an unconfigured `/agy` is not
     // registered, so it reaches the bound agent as plain text and dies as an unknown command of
     // that agent's own (route() now answers it, but the log is where the cause is visible).
-    const agentCmds = agentCommandSpecs(this.config)
-      .map((s) => `/${s.name}→${agentForCommand(this.config, s.name) ?? '?'}`)
-      .join(' ');
+    const agentCmds = [
+      ...agentCommandSpecs(this.config).map((s) => `/${s.name}→${agentForCommand(this.config, s.name) ?? '?'}`),
+      ...routeCommandSpecs(this.config).map((s) => `/${s.name}→${routeCommandAgent(this.config, s.name) ?? '?'}`),
+    ].join(' ');
     console.log(`[slash] agent commands from config: ${agentCmds || '(none)'}`);
     for (const [id, adapter] of this.platforms) {
       if (!adapter.capabilities.slashCommands) continue; // no registration support: plain-text passthrough still works

@@ -73,6 +73,22 @@ earlier conversation itself. `/new` clears a topic, after which any agent can
 take it. The full harness name (`/opencode`) still works if you type it — it is
 just not registered, so it costs no slot in the platform menu.
 
+An agent the harness table cannot name — a second opencode, say, on another
+[host](remote-hosts.md) — gets a name of its own from a routing rule:
+
+```yaml
+routing:
+  pipeline:
+    - when: { command: oc2 }
+      use: { agent: opencode-devbox }
+```
+
+`/oc2` then does for that agent what `/oc` does for the first opencode, and it is
+registered too, listed in `/help` by the agent it selects. Only a rule whose one
+condition is `command` is registered, and only if it comes before every rule that
+matches on something else: the menu is the same in every chat, and an earlier
+`when: { platform: … }` rule would answer `/oc2` itself in the chats it covers.
+
 A name whose harness you have **not** configured (`/agy` with no `harness: agy`
 agent) is answered with exactly that, and runs no turn — otherwise it reaches
 whichever agent is bound still spelled `/agy …`, which reads it as one of its own

@@ -12,9 +12,11 @@ import {
   harnessHasPicker,
   isGenericCommand,
   isSessionQuery,
+  routeCommandAgent,
+  routeCommandSpecs,
   translateCommand,
 } from './command-translate.js';
-import type { AgentDef } from '../config/schema.js';
+import type { AgentDef, RouteRule } from '../config/schema.js';
 
 /**
  * Pure-function tests for the generic command vocabulary.
@@ -269,7 +271,10 @@ describe('unconfiguredHarnessCommand', () => {
 });
 
 describe('buildHelpText', () => {
-  const cfg = { agents: [agent('cc', 'claude'), agent('oc', 'opencode'), agent('g', 'agy')] };
+  const cfg = {
+    agents: [agent('cc', 'claude'), agent('oc', 'opencode'), agent('g', 'agy')],
+    routing: { default: 'cc', pipeline: [] },
+  };
 
   it('lists the daemon commands and every configured agent command', () => {
     const text = buildHelpText(cfg, { agent: 'cc', harness: 'claude' });
@@ -309,7 +314,7 @@ describe('buildHelpText', () => {
     // not in the table — it guards a real code path against the next preset added with nothing
     // probed yet, which is the state every harness here started in.
     const unprobed = 'unprobed' as AgentDef['harness'];
-    const cfgNone = { agents: [agent('x', unprobed), agent('cc', 'claude')] };
+    const cfgNone = { agents: [agent('x', unprobed), agent('cc', 'claude')], routing: { default: 'cc', pipeline: [] } };
     const text = buildHelpText(cfgNone, { agent: 'x', harness: unprobed });
     expect(text).not.toContain('Works on the current agent');
     // The agent commands still list, because switching away is what a stuck user needs.
@@ -333,6 +338,91 @@ describe('buildHelpText', () => {
     // Every agent command in the menu appears in the help, by construction (same table).
     const text = buildHelpText(cfg);
     for (const spec of agentCommandSpecs(cfg)) expect(text).toContain(`/${spec.name}`);
+  });
+
+  it('lists the names routing.pipeline gives agents, by the agent they select', () => {
+    const withRoutes = {
+      agents: [...cfg.agents, { ...agent('oc-a2', 'opencode'), host: 'devbox' }],
+      routing: { default: 'cc', pipeline: [{ when: { command: 'oc2' }, use: { agent: 'oc-a2' } }] },
+    };
+    const text = buildHelpText(withRoutes);
+    expect(text).toContain('`/oc2` — oc-a2 (opencode on devbox)');
+    for (const spec of routeCommandSpecs(withRoutes)) expect(text).toContain(`/${spec.name}`);
+  });
+});
+
+describe('routeCommandSpecs', () => {
+  const agents = [
+    agent('cc', 'claude'),
+    agent('oc', 'opencode'),
+    { ...agent('oc-a2', 'opencode'), host: 'devbox' },
+    { ...agent('ag-a2', 'agy'), host: 'devbox' },
+  ];
+  const routes = (...pipeline: RouteRule[]) => ({ agents, routing: { default: 'cc', pipeline } });
+  const rule = (when: RouteRule['when'], agentId: string): RouteRule => ({ when, use: { agent: agentId } });
+
+  it('registers each name a command-only rule gives an agent, sorted, described by that agent', () => {
+    const specs = routeCommandSpecs(routes(rule({ command: 'oc2' }, 'oc-a2'), rule({ command: '/AG2' }, 'ag-a2')));
+    // Normalized the way routing matches it: leading slash dropped, lowercased.
+    expect(specs.map((s) => s.name)).toEqual(['ag2', 'oc2']);
+    // Phrased like an agent command; the bare form's picker is promised only where it exists.
+    expect(specs.find((s) => s.name === 'oc2')!.description).toBe(
+      'Use oc-a2 (opencode on devbox) — alone, lists its own commands'
+    );
+    expect(specs.find((s) => s.name === 'ag2')!.description).toBe('Use ag-a2 (agy on devbox)');
+    expect(routeCommandAgent(routes(rule({ command: 'oc2' }, 'oc-a2')), 'oc2')).toBe('oc-a2');
+  });
+
+  it('skips a rule with another condition: the menu is global, the rule is not', () => {
+    // From any other chat the name would reach the bound agent as the literal text `/oc2`.
+    const specs = routeCommandSpecs(routes(rule({ command: 'oc2', platform: 'tg' }, 'oc-a2')));
+    expect(specs).toEqual([]);
+  });
+
+  it('stops at the first rule that does not match on a command, since it answers `/oc2 …` too', () => {
+    const specs = routeCommandSpecs(
+      routes(rule({ command: 'ag2' }, 'ag-a2'), rule({ platform: 'tg' }, 'cc'), rule({ command: 'oc2' }, 'oc-a2'))
+    );
+    expect(specs.map((s) => s.name)).toEqual(['ag2']);
+  });
+
+  it('leaves names the menu already answers to their own entry', () => {
+    // A harness name, short or full (`/opencode` stays unregistered on purpose), a generic command,
+    // a daemon command — each already means something in the menu, so a rule naming it adds nothing.
+    const specs = routeCommandSpecs(
+      routes(
+        rule({ command: 'oc' }, 'oc-a2'),
+        rule({ command: 'opencode' }, 'oc-a2'),
+        rule({ command: 'compact' }, 'oc-a2'),
+        rule({ command: 'help' }, 'oc-a2')
+      )
+    );
+    expect(specs).toEqual([]);
+  });
+
+  it('lets the first rule for a name decide it, as routing does, and skips names no platform accepts', () => {
+    const specs = routeCommandSpecs(
+      routes(
+        rule({ command: 'oc2', platform: 'tg' }, 'oc'),
+        rule({ command: 'oc2' }, 'oc-a2'),
+        rule({ command: 'Two Words' }, 'oc-a2')
+      )
+    );
+    expect(specs).toEqual([]);
+  });
+
+  it('names a local agent by its harness alone, and a custom one by its id alone', () => {
+    const specs = routeCommandSpecs({
+      agents: [agent('cc', 'claude'), agent('cc2', 'claude'), agent('tool', 'custom')],
+      routing: {
+        default: 'cc',
+        pipeline: [rule({ command: 'cc2' }, 'cc2'), rule({ command: 'tool' }, 'tool')],
+      },
+    });
+    expect(specs.map((s) => s.description)).toEqual([
+      'Use cc2 (claude) — alone, lists its own commands',
+      'Use tool',
+    ]);
   });
 });
 

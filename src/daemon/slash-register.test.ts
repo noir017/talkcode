@@ -15,7 +15,10 @@ import type { AgentDef, Config } from '../config/schema.js';
 const agent = (id: string, harness: AgentDef['harness']): AgentDef =>
   ({ id, harness, args: [], env: {}, permissions: 'auto' }) as AgentDef;
 
-const cfg = (...agents: AgentDef[]): Pick<Config, 'agents'> => ({ agents });
+const cfg = (...agents: AgentDef[]): Pick<Config, 'agents' | 'routing'> => ({
+  agents,
+  routing: { default: agents[0]?.id ?? 'cc', pipeline: [] },
+});
 
 describe('agentCommandToSpec', () => {
   it('valid name + no hint → plain spec (no options)', () => {
@@ -110,6 +113,24 @@ describe('buildRegisteredSpecs', () => {
   it('every spec has a non-empty description', () => {
     const specs = buildRegisteredSpecs(cfg(agent('cc', 'claude')));
     expect(specs.every((s: { description: string }) => s.description.length > 0)).toBe(true);
+  });
+
+  it('registers the names routing.pipeline gives agents, after the agent commands', () => {
+    // The case that asked for it: a second opencode on another host, reachable only as `/oc2`, which
+    // worked when typed but was offered nowhere — the web UI suggested `/oc` and nothing else.
+    const c = cfg(agent('cc', 'claude'), agent('oc', 'opencode'), { ...agent('oc-a2', 'opencode'), host: 'devbox' });
+    c.routing.pipeline = [{ when: { command: 'oc2' }, use: { agent: 'oc-a2' } }];
+    const names = buildRegisteredSpecs(c).map((s) => s.name);
+    expect(names.slice(-3)).toEqual(['cc', 'oc', 'oc2']);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('does not register a pipeline name the harness table already answers', () => {
+    // `when.command: oc` is a common rule that predates the built-in agent commands; it must not
+    // produce a second `/oc` (Telegram rejects the whole batch on a duplicate name).
+    const c = cfg(agent('cc', 'claude'), agent('oc', 'opencode'));
+    c.routing.pipeline = [{ when: { command: 'oc' }, use: { agent: 'oc' } }];
+    expect(buildRegisteredSpecs(c).filter((s) => s.name === 'oc')).toHaveLength(1);
   });
 });
 

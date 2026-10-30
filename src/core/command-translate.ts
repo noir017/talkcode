@@ -35,6 +35,16 @@ import type { SlashCommandSpec } from '../types.js';
 export type Harness = AgentDef['harness'];
 
 /**
+ * Valid slash name: lowercase/digit/_/-, 1-32 chars (Discord constraint). Non-matching names are
+ * skipped on registration. Here rather than in daemon.ts because routeCommandSpecs checks names an
+ * operator wrote against it, and core cannot import daemon.
+ */
+export const SLASH_NAME_RE = /^[a-z0-9_-]{1,32}$/;
+
+/** Slash description cap (Discord 100 chars); truncated beyond. */
+export const SLASH_DESC_MAX = 100;
+
+/**
  * Commands the DAEMON answers itself — intercepted in ConversationRegistry.route() and never
  * forwarded to an agent. Defined here rather than in daemon.ts so that registration
  * (buildRegisteredSpecs) and `/help` read one list instead of two that can drift.
@@ -516,6 +526,85 @@ export function agentCommandSpecs(cfg: Pick<Config, 'agents'>): SlashCommandSpec
     }));
 }
 
+/** A name `routing.pipeline` gives one agent, and that agent's id. */
+interface CommandRoute {
+  name: string;
+  agentId: string;
+}
+
+/**
+ * The names `routing.pipeline` gives particular agents (`when: { command: oc2 }`) that the menu can
+ * honestly offer, in the order the menu lists them.
+ *
+ * Only a rule whose ONE condition is the command qualifies. The menu is the same in every chat,
+ * while a rule that also names a platform, channel or user matches only there — anywhere else the
+ * name would reach the bound agent as the literal text `/oc2`. For the same reason the walk stops
+ * at the first rule with no command condition: routing takes the first rule that matches, so that
+ * one answers `/oc2 …` too wherever it applies, and the menu cannot say where that is.
+ *
+ * Skipped as well, because the menu already answers them: names the harness table owns (`/oc`,
+ * and the unregistered `/opencode` — a `when.command: opencode` rule written before the short names
+ * must not bring back the menu slot their absence saves), and daemon or generic command names. The
+ * first rule for a name decides it, as in routing.
+ */
+function commandRoutes(cfg: Pick<Config, 'routing'>): CommandRoute[] {
+  const routes: CommandRoute[] = [];
+  const seen = new Set<string>();
+  for (const rule of cfg.routing.pipeline) {
+    const { command, ...conditions } = rule.when;
+    if (command === undefined) break;
+    // Normalized the way routing.ts matches it, so the registered name is the one that routes.
+    const name = command.replace(/^\//, '').toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (Object.values(conditions).some((v) => v !== undefined)) continue;
+    if (!SLASH_NAME_RE.test(name)) continue;
+    if (harnessForCommand(name) || isGenericCommand(name) || DAEMON_COMMANDS.some((c) => c.name === name)) continue;
+    routes.push({ name, agentId: rule.use.agent });
+  }
+  return routes.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Who a route selects, for a reader: the agent id, with its harness and host when they say
+ * something. The name itself was made up by the operator, so on its own it tells the user nothing —
+ * `/oc2` could be anything — while "oc-a2 (opencode on devbox)" is the question they are asking.
+ */
+function routeTarget(cfg: Pick<Config, 'agents'>, agentId: string): string {
+  const def = cfg.agents.find((a) => a.id === agentId);
+  // `custom` is left out for the reason agentCommandSpecs skips it: the word means nothing to a reader.
+  const what = [def && def.harness !== 'custom' ? def.harness : undefined, def?.host ? `on ${def.host}` : undefined]
+    .filter(Boolean)
+    .join(' ');
+  return what ? `${agentId} (${what})` : agentId;
+}
+
+/**
+ * The names `routing.pipeline` gives particular agents, as registrable specs — the fourth layer of
+ * the menu, after the agent commands (see buildRegisteredSpecs).
+ *
+ * An agent command is keyed on harness (see agentForCommand), so a second agent of one harness — an
+ * opencode on another host beside the local one — has no registered name, and the operator wires
+ * one by hand with a `when.command` rule. Typed, that already worked. But it had no menu entry and
+ * no line in `/help`, so nothing on screen said the name existed: the web UI offered `/oc` to a user
+ * typing `/oc2`, and nothing at all for the agent they meant.
+ *
+ * Described like an agent command, because it is one — the same binding, and bare, the same picker.
+ */
+export function routeCommandSpecs(cfg: Pick<Config, 'agents' | 'routing'>): SlashCommandSpec[] {
+  return commandRoutes(cfg).map(({ name, agentId }) => {
+    const harness = cfg.agents.find((a) => a.id === agentId)?.harness;
+    const use = `Use ${routeTarget(cfg, agentId)}`;
+    const description = harnessHasPicker(harness) ? `${use} — alone, lists its own commands` : use;
+    return { name, description: description.slice(0, SLASH_DESC_MAX) };
+  });
+}
+
+/** The agent a registered route name selects, or undefined when the name is not one (see commandRoutes). */
+export function routeCommandAgent(cfg: Pick<Config, 'routing'>, name: string): string | undefined {
+  return commandRoutes(cfg).find((r) => r.name === name)?.agentId;
+}
+
 /**
  * The `/help` body: every command this deployment answers, grouped by who answers it.
  *
@@ -527,7 +616,7 @@ export function agentCommandSpecs(cfg: Pick<Config, 'agents'>): SlashCommandSpec
  * told "not supported" the moment they tap it is the silent-degradation this project avoids.
  */
 export function buildHelpText(
-  cfg: Pick<Config, 'agents'>,
+  cfg: Pick<Config, 'agents' | 'routing'>,
   current?: { agent: string; harness: Harness | undefined }
 ): string {
   const lines: string[] = [];
@@ -536,11 +625,13 @@ export function buildHelpText(
   for (const cmd of DAEMON_COMMANDS) lines.push(`\`/${cmd.name}\` — ${cmd.description}`);
 
   const agents = agentCommandSpecs(cfg);
-  if (agents.length > 0) {
+  const routes = commandRoutes(cfg);
+  if (agents.length + routes.length > 0) {
     lines.push('', '**Agents** — `/<cmd> <prompt>` asks it; alone, lists its commands. A topic keeps the agent it started with; `/new` to choose again');
     // Named by harness rather than reusing the menu description, which repeats the line above:
     // the menu has no header to carry that explanation, this section does.
     for (const spec of agents) lines.push(`\`/${spec.name}\` — ${harnessForCommand(spec.name)}`);
+    for (const route of routes) lines.push(`\`/${route.name}\` — ${routeTarget(cfg, route.agentId)}`);
   }
 
   // Generic names are translated to each harness's own spelling at invocation time, so what is

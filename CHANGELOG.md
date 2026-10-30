@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The names routing rules give agents are in the slash menu and `/help`.** An agent command
+  selects the first agent of its harness, so a second one — an opencode on another host beside the
+  local one — has none, and a `when: { command: oc2 }` rule gives it a name. Typed, that already
+  worked, but nothing on screen said the name existed: the menu and the web UI's suggestions
+  offered `/oc` and nothing for the other agent, and `/help` left it out. Those names are now
+  registered and listed, described by the agent they select ("Use oc-a2 (opencode on devbox)").
+  Only a rule whose one condition is the command counts, and only ahead of the first rule that
+  matches on something else: the menu is the same in every chat, so it offers only names that route
+  the same way in all of them. A rule naming something the menu already has (`/oc`, `/opencode`,
+  `/help`) adds nothing.
+
 ## [2.9.2] - 2026-10-29
 
 ### Fixed

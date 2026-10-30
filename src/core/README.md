@@ -436,7 +436,7 @@ an entry invoked from it routes like any other message — i.e. to `routing.defa
 to the agent that offered it. Concretely: opencode's `customize-opencode` was landing on
 the `claude` agent.
 
-The fix, three layers, all fixed at startup from config alone:
+The fix, four layers, all fixed at startup from config alone:
 
 1. `DAEMON_COMMANDS` (`/new`, `/clear`, `/stop`, `/kill`, `/setting`, `/help`) — intercepted before any
    agent. `/new` and `/stop` are separate because they answer separate asks: both end the running
@@ -450,6 +450,12 @@ The fix, three layers, all fixed at startup from config alone:
 3. `HARNESS_COMMANDS` — one agent command per configured harness (`/cc`, `/oc`, `/agy`).
    `/oc <prompt>` switches the conversation and asks; bare `/oc` switches and offers that
    agent's own commands, which are the ones not registered globally.
+4. `routeCommandSpecs` — the names `routing.pipeline` gives particular agents
+   (`when: { command: oc2 }`): the agent command of an agent the harness table cannot name, such
+   as a second opencode on another host. Only a rule whose one condition is the command, and only
+   ahead of the first rule with no command condition — the menu is global, so it offers only names
+   that route the same way in every chat. Names layers 1-3 already answer are left to them, which
+   keeps an old `when.command: opencode` rule from bringing back a slot the short names saved.
 
 `translateCommand` returns `passthrough` (not generic — forward untouched, power users
 can type native names), `translated` (forward as the native name), `local` (**the daemon
