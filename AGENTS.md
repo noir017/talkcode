@@ -274,8 +274,9 @@ beside it as a [remote host](docs/remote-hosts.md). The operator's notes for tha
 
 **Step 3 is not yours, and not because of caution.** The gateway in that container serves the
 conversation that asked for the change, and a restarting gateway stops the agents it started on
-its hosts — so updating it kills the session issuing the update, mid-command. You cannot verify
-your own deploy; you can only report that it is ready.
+its hosts. It waits for the turns in progress first, so an update lands only once the turn that
+asked for it is over: the session issuing the update never sees it happen. You cannot verify your
+own deploy; you can only report that it is ready.
 
 Notes that decide whether steps 1–2 are even correct:
 

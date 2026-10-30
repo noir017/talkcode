@@ -82,8 +82,10 @@ The host must be Linux on x86-64 or arm64, with a POSIX `sh`. Nothing else is ne
 - A lost connection is noticed within about 15 seconds and retried with a growing pause (1 second
   up to 30). If it lasts longer than 10 seconds the conversation says so, and says so again when it
   is back. The turn is not failed for the silence.
-- Restarting the gateway stops the agents it had started on the hosts. A gateway that died without
-  stopping them stops them the moment it starts again.
+- Restarting the gateway stops the agents it had started on the hosts. Stopped with SIGTERM, as a
+  container is, it first waits for the turns in progress to finish (see
+  [Updating](docker.md#updating)). A gateway that died without stopping them stops them the moment
+  it starts again.
 - A host that hears nothing from its gateway for 24 hours stops that gateway's agents.
 
 ## Versions

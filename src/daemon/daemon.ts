@@ -122,6 +122,7 @@ import {
 import { VoiceIntake } from './voice.js';
 import { ScheduleService } from './schedule-service.js';
 import type { ScheduleStore } from './schedule-store.js';
+import { DRAIN_LIMIT_MS, describeInProgress, nothingInProgress, whenIdle, type InProgress } from './restart-drain.js';
 import { taskListText } from '../core/schedule.js';
 import {
   buildScheduleDeleteConfirm,
@@ -717,6 +718,9 @@ export class Daemon {
   private stopping = false;
   /** Cancel handle for installed signal handlers (removed on stop to avoid leak + test cross-talk). */
   private signalCleanup: (() => void) | null = null;
+  /** Set while a SIGTERM waits for the work in progress (beginDrain); cancels that wait. */
+  private drainCancel: (() => void) | null = null;
+  private readonly clock: { now(): number; schedule(fn: () => void, ms: number): () => void };
   /**
    * Scratch slot for the session owning the current reverse command (written by resolveChannel,
    * read by handleReverse). Only ask needs the sessionId anchor, but IPC's handle(action, channelId)
@@ -780,7 +784,7 @@ export class Daemon {
         return () => clearTimeout(t);
       },
     };
-
+    this.clock = clock;
     this.pacer = new OutboundPacer(config.outbound, clock);
     this.platforms = new Map(
       [...platforms].map(([id, adapter]) => [id, withOutboundPacing(adapter, this.pacer)])
@@ -913,15 +917,19 @@ export class Daemon {
     this.installSignalHandlers();
   }
 
-  /** Install SIGINT/SIGTERM → one-shot graceful stop, then exit 128+signo per convention. */
+  /**
+   * Install SIGINT/SIGTERM → one-shot graceful stop, then exit 128+signo per convention.
+   *
+   * A SIGTERM that finds work in progress waits for it first (beginDrain): it is what stopping or
+   * recreating the container sends, so it is how the gateway is updated, and stopping at once would
+   * cut off every turn in progress. A second SIGTERM, or SIGINT (Ctrl-C, or `docker stop -s SIGINT`
+   * for an update that should not wait), stops at once.
+   */
   private installSignalHandlers(): void {
     const onSignal = (signal: NodeJS.Signals): void => {
+      if (signal === 'SIGTERM' && !this.drainCancel && this.beginDrain()) return;
       console.log(`[daemon] received ${signal}, shutting down gracefully…`);
-      // Exit codes follow shell convention (SIGINT=130 / SIGTERM=143); force exit even if stop fails.
-      const code = signal === 'SIGINT' ? 130 : 143;
-      void this.stop()
-        .catch((e) => console.error('[daemon] shutdown failed:', e instanceof Error ? e.message : e))
-        .finally(() => process.exit(code));
+      this.exitAfterStop(signal === 'SIGINT' ? 130 : 143);
     };
     const onSigint = (): void => onSignal('SIGINT');
     const onSigterm = (): void => onSignal('SIGTERM');
@@ -933,9 +941,50 @@ export class Daemon {
     };
   }
 
+  /** Exit codes follow shell convention (SIGINT=130 / SIGTERM=143); exit even if stop fails. */
+  private exitAfterStop(code: number): void {
+    void this.stop()
+      .catch((e) => console.error('[daemon] shutdown failed:', e instanceof Error ? e.message : e))
+      .finally(() => process.exit(code));
+  }
+
+  private inProgress(): InProgress {
+    return { turns: this.registry.turnsInProgress(), runs: this.schedules?.scheduler.inFlight ?? 0 };
+  }
+
+  /**
+   * Wait for the turns and scheduled runs in progress, then stop (restart-drain.ts). Returns false,
+   * doing nothing, when there are none — the stop then happens at once, as it always did.
+   *
+   * Meanwhile nothing new starts: a message that would start a turn in an idle conversation is
+   * refused (ConversationRegistry.beginDrain), and the scheduler starts no run. What is already at
+   * work carries on whole — messages to a busy conversation still reach its turn, `/stop` still stops
+   * it, a question still takes its answer, and the agents' reverse commands still work.
+   */
+  private beginDrain(): boolean {
+    const now = this.inProgress();
+    if (nothingInProgress(now)) return false;
+    this.registry.beginDrain();
+    this.schedules?.scheduler.hold();
+    console.log(
+      `[daemon] received SIGTERM with ${describeInProgress(now)} in progress: stopping once ${now.turns + now.runs === 1 ? 'it finishes' : 'they finish'}, at most ${DRAIN_LIMIT_MS / 60_000} min. Another SIGTERM, or SIGINT, stops now.`
+    );
+    this.drainCancel = whenIdle(
+      () => this.inProgress(),
+      this.clock,
+      (left) => {
+        if (nothingInProgress(left)) console.log('[daemon] nothing in progress any more, shutting down gracefully…');
+        else console.warn(`[daemon] ${describeInProgress(left)} still in progress after ${DRAIN_LIMIT_MS / 60_000} min; shutting down anyway…`);
+        this.exitAfterStop(143);
+      }
+    );
+    return true;
+  }
+
   async stop(): Promise<void> {
     if (this.stopping) return; // run once when signals repeat / explicit stop races a signal
     this.stopping = true;
+    this.drainCancel?.();
     this.signalCleanup?.();
     this.signalCleanup = null;
     // First, so nothing new starts while the rest goes down. Bash runs in flight are signalled and

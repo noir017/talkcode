@@ -129,6 +129,33 @@ describe('Scheduler', () => {
     second.stop();
   });
 
+  it('while held for a restart, lets the run in flight finish, starts none, and leaves what fell due to the next gateway', async () => {
+    const clock = makeClock();
+    const e = executor();
+    const s = new Scheduler(new ScheduleStore(file), clock, e.exec);
+    s.start();
+    s.add(task({ cron: '*/10 * * * *', bash: 'true' }));
+    e.holdRuns();
+    await clock.advance(10 * MIN); // 10:10 starts, and is still going
+    expect(s.inFlight).toBe(1);
+
+    s.hold();
+    await e.release(); // finishes, and is recorded as usual
+    expect(s.inFlight).toBe(0);
+    expect(new ScheduleStore(file).get('a1b2c3')).toMatchObject({ runs: 1, lastRun: { status: 'ok' } });
+    await clock.advance(10 * MIN); // 10:20 falls due while held: not run, not recorded as missed
+    expect(e.runs.map((r) => r.planned)).toEqual([NOW + 10 * MIN]);
+    expect(s.runNow('a1b2c3')).toMatch(/restarting/);
+
+    // The next gateway, a few minutes later, catches 10:20 up.
+    const c2 = makeClock(NOW + 25 * MIN);
+    const next = new Scheduler(new ScheduleStore(file), c2, e.exec);
+    next.start();
+    await c2.advance(0);
+    expect(e.runs.map((r) => r.planned)).toEqual([NOW + 10 * MIN, NOW + 20 * MIN]);
+    next.stop();
+  });
+
   it('records a run missed by more than an hour instead of making it late', async () => {
     const store = new ScheduleStore(file);
     store.put(task({ at: '+5m', bash: 'true' }));

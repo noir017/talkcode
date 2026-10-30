@@ -66,6 +66,22 @@ export class Scheduler {
     for (const abort of this.running.values()) abort.abort();
   }
 
+  /**
+   * Stop starting runs, and let the ones in flight finish — for a gateway waiting to restart
+   * (restart-drain.ts). What falls due meanwhile is not recorded as missed or run late: it is still
+   * due when the next gateway starts, which catches up a run missed by less than an hour.
+   */
+  hold(): void {
+    this.stopped = true;
+    this.cancelTimer?.();
+    this.cancelTimer = null;
+  }
+
+  /** Runs in flight right now. */
+  get inFlight(): number {
+    return this.running.size;
+  }
+
   list(): ScheduleTask[] {
     return this.store.list();
   }
@@ -128,6 +144,7 @@ export class Scheduler {
     const task = this.store.get(id);
     if (!task) return `no scheduled task #${id}`;
     if (this.running.has(id)) return `#${id} is running right now`;
+    if (this.stopped) return `the gateway is restarting; run #${id} again once it is back`;
     void this.execute(task, this.clock.now(), { manual: true });
     return task;
   }

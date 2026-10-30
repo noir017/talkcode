@@ -7,11 +7,15 @@
 #   talkcode update [--dry-run] [--force]
 #                     pull the image the compose file names; if it changed, recreate the
 #                     container, wait until every host is connected again, report the version,
-#                     and remove the image it replaced. Refuses while a turn or a scheduled run
-#                     is in progress (--force overrides; --dry-run only reports).
-#   talkcode restart [--force]   the same check, then a restart without pulling
+#                     and remove the image it replaced. With a turn or a scheduled run in
+#                     progress, the gateway finishes it first (at most 30 min) and the rest goes
+#                     on in the background: `talkcode status` shows it, update.log in the compose
+#                     directory has it. --force restarts at once, cutting them off; --dry-run
+#                     only reports.
+#   talkcode restart [--force]   the same, without pulling
 #   talkcode logs [args]         docker logs -t (default: --tail 200)
-#   talkcode status              the container, its image and the gateway's version
+#   talkcode status              the container, its image, the gateway's version, what is in
+#                                progress, and whether a restart is waiting for it
 #   talkcode <anything else>     runs the talkcode CLI inside the container: `talkcode doctor`,
 #                                `talkcode --version`. update / restart / logs / status are not
 #                                CLI commands, so nothing is shadowed.
@@ -21,13 +25,19 @@
 #
 # Why update is a command and not just `docker compose pull && up -d`: recreating the container
 # restarts the gateway, and a restarting gateway stops the agents it started on its hosts (see
-# docs/remote-hosts.md) — a turn in progress is cut off. When that is acceptable is the operator's
-# call, so this says what is running before it does anything, and never runs on a timer.
+# docs/remote-hosts.md). The gateway waits for the turns in progress when it is stopped with
+# SIGTERM — but docker gives it 10 seconds before killing it, so this passes a stop timeout long
+# enough for the wait, says what is running before it does anything, and never runs on a timer.
 set -euo pipefail
 
 APP_DIR="${TALKCODE_APP_DIR:-$HOME/apps/talkcode}"
 CONTAINER="${TALKCODE_CONTAINER:-talkcode}"
 PKG=/usr/local/lib/node_modules/talkcode/package.json
+UPDATE_LOG="${APP_DIR}/update.log"
+# How long docker waits for the gateway to stop: its own limit on waiting for work in progress
+# (DRAIN_LIMIT_MS in src/daemon/restart-drain.ts, 30 min) plus the time its shutdown takes, so the
+# gateway always stops itself and is never killed halfway through that shutdown.
+STOP_WAIT=1920
 
 die() { printf '%s\n' "talkcode: $*" >&2; exit 1; }
 say() { printf '%s\n' "talkcode: $*" >&2; }
@@ -50,18 +60,51 @@ in_progress() {
         END { for (k in open) print k }'
 }
 
-# Stop here if something would be cut off, unless forced. --dry-run reports and goes on: its
-# whole purpose is to show what would happen.
-guard() {
-    local force="$1" dry="$2" busy
-    running || return 0
+# Say what is in progress, if anything; succeeds only when something is.
+report_busy() {
+    local busy
+    running || return 1
     busy="$(in_progress)"
-    [ -n "${busy}" ] || return 0
-    say "in progress now — a restart cuts these off (the conversations are kept):"
+    [ -n "${busy}" ] || return 1
+    say "in progress now:"
     printf '%s\n' "${busy}" | sed 's/^/    /' >&2
-    if [ "${dry}" -eq 0 ] && [ "${force}" -eq 0 ]; then
-        die "add --force once they can be interrupted"
-    fi
+}
+
+# When the gateway began waiting for its work in progress to stop (it logs that on the SIGTERM),
+# as local time; nothing when it is not waiting.
+draining_since() {
+    local ts
+    running || return 0
+    ts="$(docker logs -t --since "$(docker inspect -f '{{.State.StartedAt}}' "${CONTAINER}")" "${CONTAINER}" 2>&1 \
+        | sed -n 's/^\([^ ]*\) \[daemon\] received SIGTERM with .*/\1/p' | tail -1)"
+    [ -z "${ts}" ] || date -d "${ts}" '+%F %T'
+}
+
+# One update or restart at a time: a second one while the first waits would stop the container
+# under it. The lock is fd 9, so the background half (in_background) holds it until it is done.
+take_lock() {
+    [ -d "${APP_DIR}" ] || die "no ${APP_DIR} (set TALKCODE_APP_DIR)"
+    command -v flock >/dev/null || return 0
+    exec 9>"${APP_DIR}/.update.lock"
+    flock -n 9 || die "an update or restart is already under way — see ${UPDATE_LOG}"
+}
+
+# Go on in the background: the gateway may wait up to 30 minutes, and the turn it waits for may be
+# the one that ran this — an agent asked to update the gateway has to be able to finish its turn, or
+# each would wait for the other. setsid, so a closed terminal or ssh session does not take it along.
+in_background() {
+    say "the gateway finishes these first (at most 30 min), then restarts; this goes on in the background."
+    say "talkcode status shows it; the log is ${UPDATE_LOG}"
+    setsid "$(readlink -f "$0")" __switch "$@" >>"${UPDATE_LOG}" 2>&1 </dev/null &
+}
+
+# --force: SIGINT, which the gateway takes as "stop now" — SIGTERM would wait for what is in
+# progress. Through `docker stop`, not `docker kill`: a container that stopped by itself is
+# restarted by its restart policy, one stopped through docker is not.
+stop_now() {
+    running || return 0
+    report_busy && say "--force: stopping now and cutting these off (the conversations are kept)"
+    docker stop --signal SIGINT -t 60 "${CONTAINER}" >/dev/null || die "stop failed: talkcode logs"
 }
 
 # Wait for the restarted gateway to be up and to have reached every host it had reached before,
@@ -135,32 +178,63 @@ do_update() {
         return 0
     fi
     say "image $(short "${before:-none}") → $(short "${after}")"
-    guard "${force}" "${dry}"
     if [ "${dry}" -eq 1 ]; then
+        report_busy && say "--dry-run: an update now would wait for these first (at most 30 min)"
         say "--dry-run: stopping here (the new image is pulled; the next update switches to it)"
         return 0
     fi
     hosts="$(previous_hosts)"
-    (cd "${APP_DIR}" && docker compose up -d) >&2 || die "up -d failed: cd ${APP_DIR} && docker compose logs"
+    if [ "${force}" -eq 1 ]; then
+        stop_now
+        switch_over up "${hosts}" "${ref}"
+    elif report_busy; then
+        in_background up "${hosts}" "${ref}"
+    else
+        switch_over up "${hosts}" "${ref}"
+    fi
+}
+
+# Stop the gateway and start it on the current compose file (`up`, recreating it on a new image) or
+# as it is (`restart`), then wait for it and say how it came back. The stop is a SIGTERM with
+# STOP_WAIT to spare, so a gateway with work in progress finishes it first.
+switch_over() {
+    local how="$1" hosts="$2" ref="${3:-}"
+    if [ "${how}" = up ]; then
+        (cd "${APP_DIR}" && docker compose up -d -t "${STOP_WAIT}") >&2 || die "up -d failed: cd ${APP_DIR} && docker compose logs"
+    else
+        (cd "${APP_DIR}" && docker compose restart -t "${STOP_WAIT}") >&2 || die "restart failed"
+    fi
     settle "${hosts}"
-    prune_old "${ref}"
-    say "done: talkcode $(version)"
+    if [ -n "${ref}" ]; then prune_old "${ref}"; fi
+    say "$([ "${how}" = up ] && echo done || echo restarted): talkcode $(version)"
 }
 
 do_restart() {
     local force=0 hosts
     case "${1:-}" in --force) force=1 ;; '') ;; *) die "restart: unknown argument $1 (--force)" ;; esac
-    guard "${force}" 0
     hosts="$(previous_hosts)"
-    (cd "${APP_DIR}" && docker compose restart) >&2 || die "restart failed"
-    settle "${hosts}"
-    say "restarted: talkcode $(version)"
+    if [ "${force}" -eq 1 ] && running; then
+        stop_now
+        docker start "${CONTAINER}" >/dev/null || die "start failed: talkcode logs"
+        settle "${hosts}"
+        say "restarted: talkcode $(version)"
+    elif report_busy; then
+        in_background restart "${hosts}"
+    else
+        switch_over restart "${hosts}"
+    fi
 }
 
 command -v docker >/dev/null || die "docker not found"
 case "${1:-}" in
-    update)  shift; do_update "$@" ;;
-    restart) shift; do_restart "$@" ;;
+    update)  shift; take_lock; do_update "$@" ;;
+    restart) shift; take_lock; do_restart "$@" ;;
+    # The background half of an update or restart (in_background); not for typing.
+    __switch)
+        shift
+        say "$(date '+%F %T') ${1}: waiting for the gateway to finish what is in progress, then restarting it"
+        switch_over "$@"
+        say "$(date '+%F %T') finished" ;;
     logs)    shift; if [ "$#" -eq 0 ]; then set -- --tail 200; fi; exec docker logs -t "$@" "${CONTAINER}" ;;
     status)
         docker ps -a --filter "name=^/${CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
@@ -169,6 +243,10 @@ case "${1:-}" in
             busy="$(in_progress)"
             if [ -n "${busy}" ]; then printf 'in progress:\n'; printf '%s\n' "${busy}" | sed 's/^/    /'
             else printf 'in progress: nothing\n'; fi
+            since="$(draining_since)"
+            if [ -n "${since}" ]; then
+                printf 'restarting: waiting since %s for what is in progress (at most 30 min; log: %s)\n' "${since}" "${UPDATE_LOG}"
+            fi
         fi ;;
     -h|--help|'') awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0" ;;
     *)

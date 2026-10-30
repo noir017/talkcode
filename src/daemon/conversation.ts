@@ -470,6 +470,11 @@ export class ConversationRegistry {
    * two — long enough for a second turn to finish underneath it and start a duplicate.
    */
   private namingInFlight = new Set<ConversationId>();
+  /**
+   * The gateway is waiting for the turns in progress before it restarts (beginDrain): a message that
+   * would start a turn in an idle conversation is answered here instead (refuseWhileDraining).
+   */
+  private draining = false;
 
   constructor(
     private readonly config: Config,
@@ -868,6 +873,34 @@ export class ConversationRegistry {
     if (state) state.lastActivityAt = this.clock.now();
   }
 
+  /** Conversations with a turn running, or a batch inside its merge window about to start one. */
+  turnsInProgress(): number {
+    let n = 0;
+    for (const state of this.conversations.values()) if (!state.merger.isIdle()) n++;
+    return n;
+  }
+
+  /**
+   * The gateway is going to restart once the turns in progress are over (the daemon's SIGTERM, see
+   * restart-drain.ts). From now on a message that would start a turn in an idle conversation is
+   * refused (refuseWhileDraining); each conversation at work is told, once, that the restart waits
+   * for it — so a reply that comes late, or the silence after it, has an explanation in the chat.
+   */
+  beginDrain(): void {
+    this.draining = true;
+    for (const [id, state] of this.conversations) {
+      if (state.merger.isIdle()) continue;
+      // No lane yet means a first batch still inside its merge window: it is about to run, and the
+      // refusal is not what it will get, so there is nothing to explain to it.
+      const lane = this.laneOf(id);
+      if (!lane) continue;
+      void this.platforms
+        .get(lane.platformId)
+        ?.sendMessage(lane.address, '⏳ The gateway restarts when this turn is done — it is waiting for it to finish.')
+        .catch((e) => console.warn('[drain] failed to tell a conversation about the restart:', e instanceof Error ? e.message : e));
+    }
+  }
+
   /**
    * The lane this conversation writes to: the running turn's, else the last one a turn ran in.
    *
@@ -1062,6 +1095,9 @@ export class ConversationRegistry {
       this.answerBareCommand(key, state, conv.platform, address, msg);
       return;
     }
+
+    // Before the voice step, so a message that is going to be refused spends no transcription.
+    if (this.refuseWhileDraining(key, state, address, msg)) return;
 
     // A voice message is transcribed and shown to the user before anything else happens to it. Past
     // the gate and the daemon commands (a stranger must not spend transcription quota, and `/stop`
@@ -2920,6 +2956,33 @@ ${formatTokens(left)} left before compaction — ${name}`;
       return { kind: 'rebound', agent: agentDisplayName(def, state.agentId) };
     }
     return this.setWorkdir(id, expectAgentId, path);
+  }
+
+  /**
+   * While the gateway waits to restart (beginDrain), answer a message that would start a turn in an
+   * idle conversation here, instead of handing it to the agent.
+   *
+   * A turn started now is one the restart would either wait for — and every message makes the wait
+   * longer, so an update on a busy gateway might never land — or cut off halfway. A conversation
+   * already at work takes the message as usual (offered to its turn, or queued behind it): that is the
+   * user steering the very work the restart is waiting for, and refusing it would only strand it.
+   */
+  private refuseWhileDraining(
+    key: ConversationId,
+    state: ConversationState,
+    address: ConversationAddress,
+    msg: InboundMessage
+  ): boolean {
+    if (!this.draining || !state.merger.isIdle()) return false;
+    console.log(`[route] ${key}: not started — the gateway is waiting to restart`);
+    void this.platforms
+      .get(msg.conversation.platform)
+      ?.sendMessage(
+        address,
+        '⏳ Not sent to the agent: the gateway is about to restart, once the turns already running are done. Send this again when it is back.'
+      )
+      .catch((e) => console.warn('[drain] failed to answer a message:', e instanceof Error ? e.message : e));
+    return true;
   }
 
   /**

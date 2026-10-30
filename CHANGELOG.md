@@ -5,6 +5,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Restarting the gateway lets the turns in progress finish first.** Stopping the container, which
+  is how the gateway is updated, stopped the agents on the hosts at once, so a turn in progress was
+  cut off halfway. `talkcode update` therefore refused to run while anything was in progress, and
+  had to be tried again until nothing was. Now a SIGTERM that finds a turn or a scheduled run in
+  progress waits for it, for at most 30 minutes, before the gateway stops. Each busy conversation is
+  told the restart is waiting for it. A message that would start a new turn gets a reply instead,
+  since a turn started then would only make the wait longer or be cut off. Messages to a busy
+  conversation, `/stop` and answers work as usual. Scheduled tasks do not start, and a run that
+  falls due meanwhile is run when the gateway is back. A second SIGTERM, or SIGINT, stops at once.
+  The host's `talkcode update` and `restart` no longer refuse: with work in progress they let the
+  gateway finish it and go on in the background, logging to `update.log`, and return at once, so
+  an agent that runs them can end its own turn. `--force` stops at once, as before. Docker gives a
+  container 10 seconds to stop, so the host command passes a longer timeout, and the compose
+  example in [Running in a container](docs/docker.md) sets `stop_grace_period`. The host command is
+  not in the image, so it has to be installed again (`docker/talkcode-host`).
+
 ## [2.11.2] - 2026-10-30
 
 ### Fixed
