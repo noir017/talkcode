@@ -177,6 +177,17 @@ and the `/agent` menu call a machine the same thing; an agent on the gateway's o
 It is read off the agent's definition on every lookup rather than stored with the topic, for the
 directory's reason: a `/reload` that moves an agent moves where the topic's next turn runs.
 
+**A row's ☆ and × take no room until they show.** On a pointer device they appear only under the
+pointer, and until 2.11.1 they were merely `opacity:0` — still in the flex row, so every title in a
+240px column got 129px and stopped in front of a 59px strip of nothing (measured in Chromium).
+They now sit in one `.topic-acts` box that floats over the row's right end inside
+`@media(hover:hover)`, on a fade into `--row-bg`, the row's own colour, which is why that colour
+is a variable. A starred row at rest keeps the box in the layout, because its lit star is content
+a title must not run under, and drops its × from it. Touch screens are untouched: no hover, so
+the buttons are always on screen and keep their room. `page.dom.test.ts` pins the rules as text,
+since jsdom has no layout; the widths above, and the title's 188px after, were measured in real
+Chromium on 2026-10-30, along with where a click on either button lands once the row is hovered.
+
 **The dot on each row is about the agent, not about the turn.** Four states, and two of them
 exist because "a turn is running" turned out to be a bad proxy for both of the things a person
 actually reads that column for:

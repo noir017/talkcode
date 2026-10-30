@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Topic titles in the web UI's sidebar use the whole row.** On a computer, a row's ☆ and ×
+  appear only under the pointer, but they were only made transparent, so they kept their place:
+  every title was cut off about a quarter of the way short of the column's edge, in front of an
+  empty strip. They now appear over the end of
+  the row when it is hovered, and take no room otherwise; a starred row keeps room for its star
+  alone. Phones are unchanged, since without hover the buttons are always shown.
+
 ## [2.11.0] - 2026-10-30
 
 ### Added

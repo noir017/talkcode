@@ -2726,6 +2726,80 @@ describe('webui page: the narrow-screen stylesheet', () => {
   });
 });
 
+describe('webui page: the row buttons that only a pointer can reveal', () => {
+  const A = 'a1b2c3d4';
+  const B = 'b2c3d4e5';
+
+  /**
+   * The `@media(hover:hover)` block, as text, for the reasons `narrowBlock` gives — and one more:
+   * what is being pinned is a layout (whether two buttons take up room in a row), and jsdom has no
+   * layout at all. The widths were measured in Chromium (see the README).
+   */
+  const hoverBlock = (): string => {
+    const html = renderPage('Chat', false);
+    const at = html.indexOf('@media(hover:hover){');
+    if (at < 0) throw new Error('there is no hover block in the stylesheet');
+    let depth = 0;
+    for (let i = html.indexOf('{', at); i < html.length; i++) {
+      if (html[i] === '{') depth++;
+      else if (html[i] === '}' && --depth === 0) return html.slice(at, i + 1);
+    }
+    throw new Error('the hover block is never closed');
+  };
+
+  it('keeps the star and the × together in one box, and marks the starred rows', async () => {
+    const h = await open({ url: `http://localhost:8787/?t=${A}` });
+    await h.emit(sync(A, [], [A]));
+    await h.emit({
+      t: 'topics',
+      topics: [
+        { id: A, title: 'plain', lastAt: 1000, msgCount: 0 },
+        { id: B, title: 'kept', lastAt: 999, msgCount: 0, starred: true },
+      ],
+    });
+
+    for (const id of [A, B]) {
+      const acts = h.doc.querySelector(`[data-topic="${id}"] .topic-acts`);
+      expect(acts?.querySelector(`[data-star="${id}"]`)).not.toBeNull();
+      expect(acts?.querySelector(`[data-del="${id}"]`)).not.toBeNull();
+    }
+    // What the stylesheet keys a starred row's resting layout on.
+    expect(h.doc.querySelector(`[data-topic="${B}"]`)?.classList.contains('starred')).toBe(true);
+    expect(h.doc.querySelector(`[data-topic="${A}"]`)?.classList.contains('starred')).toBe(false);
+
+    // Starring repaints at once, so the class follows the click rather than the broadcast.
+    await h.click(`[data-star="${A}"]`);
+    expect(h.doc.querySelector(`[data-topic="${A}"]`)?.classList.contains('starred')).toBe(true);
+  });
+
+  it('floats the buttons over the row on a pointer device instead of reserving room for them', () => {
+    // The bug: opacity:0 buttons that still sat in the row, so every title was cut short in front
+    // of an empty strip. Out of the layout, and lit only under the pointer or keyboard focus.
+    const css = hoverBlock();
+    expect(css).toContain('.topic-acts{position:absolute;');
+    expect(css).toContain('opacity:0;pointer-events:none');
+    expect(css).toContain('#topics .topic-item:hover .topic-acts,#topics .topic-item:focus-within .topic-acts{opacity:1;pointer-events:auto}');
+    // The fade has to end in the row's own colour, or it draws a band across the title.
+    expect(css).toContain('linear-gradient(90deg,transparent,var(--row-bg) 18px)');
+  });
+
+  it('puts a starred row' + "'s lit star back in the layout, and drops its hidden × from it", () => {
+    const css = hoverBlock();
+    expect(css).toContain('#topics .topic-item.starred:not(:hover):not(:focus-within) .topic-acts{position:static;');
+    expect(css).toContain('#topics .topic-item.starred:not(:hover):not(:focus-within) .topic-del{display:none}');
+  });
+
+  it('leaves a touch screen' + "'s rows as they were: no hover, so the buttons stay in the row", () => {
+    const html = renderPage('Chat', false);
+    const block = hoverBlock();
+    // Outside the hover block the box is an ordinary member of the row.
+    const outside = html.replace(block, '');
+    expect(outside).toContain('.topic-acts{display:flex;align-items:center;gap:8px;flex-shrink:0}');
+    expect(outside).not.toMatch(/\.topic-acts\{[^}]*position:absolute/);
+    expect(block.slice('@media'.length)).not.toContain('@media');
+  });
+});
+
 describe('webui page: the terminal window', () => {
   /** Every mounted terminal, whether or not it is the one on screen. */
   const frames = (h: { doc: Document }): HTMLIFrameElement[] =>

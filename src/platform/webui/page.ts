@@ -106,9 +106,11 @@ body{background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,
 #sidebar-header .add{font-size:15px;font-weight:600}
 
 #topics{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:3px;padding:8px}
-#topics .topic-item{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:1px solid transparent;border-radius:5px;background:none;text-align:left;font:inherit;font-size:13px;cursor:pointer;transition:background .15s;position:relative}
-#topics .topic-item:hover{background:#222}
-#topics .topic-item.on{background:#252525;border-color:var(--line)}
+/* The row's colour is a variable because the hover buttons' fade (.topic-acts) has to end in exactly
+   it: a fade into any other colour shows as a band across the title. #171717 is #sidebar's own. */
+#topics .topic-item{--row-bg:#171717;display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:1px solid transparent;border-radius:5px;background:var(--row-bg);text-align:left;font:inherit;font-size:13px;cursor:pointer;transition:background .15s;position:relative}
+#topics .topic-item:hover{--row-bg:#222}
+#topics .topic-item.on{--row-bg:#252525;border-color:var(--line)}
 /* Four states, and the dot is the only thing that carries all four. Read as one sentence: the
    colour says whether the agent is there, the pulse says whether it is busy.
      grey     — nothing resident. History, or a topic that will have to resume from a session id.
@@ -157,6 +159,21 @@ body{background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,
 .topic-star:hover{color:#fbbf24;background:rgba(251,191,36,.12)}
 .topic-star.on,#topics .topic-item .topic-star.on{opacity:1;color:#fbbf24}
 @media(hover:none){.topic-star{opacity:.45}}
+/* The star and the × in one box, so they can leave the row's layout together.
+   On a pointer device they are invisible until hovered — but opacity:0 hides a box without removing
+   it, so they used to hold their place in the row anyway and every title stopped ~60px short of the
+   column's edge, in front of two buttons nobody could see (reported 2026-10-30). There they now
+   float over the row's right end, on a fade into the row's own colour that covers the title's tail
+   rather than reflowing it. Two cases keep them in the row: a touch screen, which has no hover and
+   shows them all the time, and a starred row at rest, whose lit star is content a title must not
+   run under — its × is dropped from the layout there instead of being kept as a gap. */
+.topic-acts{display:flex;align-items:center;gap:8px;flex-shrink:0}
+@media(hover:hover){
+  .topic-acts{position:absolute;top:0;bottom:0;right:9px;padding-left:22px;background:linear-gradient(90deg,transparent,var(--row-bg) 18px);opacity:0;pointer-events:none;transition:opacity .15s}
+  #topics .topic-item:hover .topic-acts,#topics .topic-item:focus-within .topic-acts{opacity:1;pointer-events:auto}
+  #topics .topic-item.starred:not(:hover):not(:focus-within) .topic-acts{position:static;padding-left:0;background:none;opacity:1;pointer-events:auto}
+  #topics .topic-item.starred:not(:hover):not(:focus-within) .topic-del{display:none}
+}
 /* Starred rows are listed first; this line is where they end. A pseudo-element on the first row
    after them rather than a node of its own, so #topics holds rows and nothing else. */
 #topics .topic-item.after-stars{margin-top:5px}
@@ -1300,7 +1317,7 @@ const SCRIPT = `
       }
       var unread=isCur?0:Math.max(0, count - readCounts[t.id]);
       var cls='topic-item '+(isCur?'on ':'')+(isRunning?'running':'idle')+(isLive?' live':'')
-        +(stars && i===stars?' after-stars':'');
+        +(t.starred?' starred':'')+(stars && i===stars?' after-stars':'');
       var dotCls='topic-dot'+(isAsking?' asking':(isRunning?' running':(isLive?' live':'')));
       var badge=unread>0?'<span class="topic-badge">'+(unread>99?'99+':unread)+'</span>':'';
       // Not "a shell is alive over there" — the daemon only sees the connection, so this says a
@@ -1326,8 +1343,10 @@ const SCRIPT = `
          + '</span>'
          + term
          + badge
+         + '<span class="topic-acts">'
          + star
          + '<button type="button" class="btn-icon topic-del" data-del="'+text(t.id)+'" title="Delete topic">×</button>'
+         + '</span>'
          + '</div>';
     }
     bar.innerHTML=h;
