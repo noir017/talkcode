@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-10-30
+
 ### Fixed
 
 - **The first thing asked of a host after a quiet spell no longer fails as "restarted".** The
