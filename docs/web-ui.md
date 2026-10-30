@@ -29,7 +29,9 @@ every other platform gets: streaming replies, tool bubbles, the `/model`, `/effo
 the same way a Telegram forum topic or a Feishu 话题 does: each has its own agent
 session and its own context, and each gets named automatically from what it turned
 out to be about. `+` opens one; the agent can open one itself with
-`talkcode create-thread`, and write into one with `--channel main/<topic id>`. On a narrow
+`talkcode create-thread`, and write into one with `--channel main/<topic id>`. Under each
+title is the directory the topic works in, led by the machine when its agent runs on a
+[remote host](remote-hosts.md) (`devbox · talkcode`); hover it for the full path. On a narrow
 screen the sidebar becomes a drawer.
 
 **Stopping it.** While a reply is streaming, **Stop** beside Send ends the turn

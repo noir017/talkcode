@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The web UI's sidebar says which machine each topic's agent runs on.** The line under a topic's
+  title showed only its directory, and two agents of one harness on two hosts usually work in
+  directories of the same name, so their topics read `workspace` alike and the agent id in the
+  title was the only way to tell them apart. An agent on a remote host now has the machine in front
+  of the directory (`devbox · workspace`), with `devbox:/home/user/workspace` on hover. The name
+  is the agent's `group`, else its `host` — the one the `/agent` menu already groups it under — and
+  is read from the current config, so it follows an agent that `/reload` moved. Agents on the
+  gateway's own machine show the directory alone, as before.
+
 ## [2.10.0] - 2026-10-30
 
 ### Added

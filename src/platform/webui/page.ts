@@ -1307,8 +1307,11 @@ const SCRIPT = `
       // page has that topic's terminal open (shown or minimized). See terminal-sessions.ts.
       var term=t.term?'<span class="topic-term" title="A terminal is attached to this topic">&gt;_</span>':'';
       // The full path on the title attribute rather than in the row: two checkouts of one
-      // project have the same last segment, and the column is 240px wide.
-      var dir=t.dir?'<span class="topic-dir" title="'+text(t.dir.path)+'">'+text(t.dir.name)+'</span>':'';
+      // project have the same last segment, and the column is 240px wide. The machine goes
+      // first: it is the short word, and the one that tells apart two agents of one harness on two
+      // hosts — whose directories usually share a name too — so it is what the ellipsis spares.
+      var where=t.dir&&t.dir.host?t.dir.host+' · ':'';
+      var dir=t.dir?'<span class="topic-dir" title="'+text((t.dir.host?t.dir.host+':':'')+t.dir.path)+'">'+text(where+t.dir.name)+'</span>':'';
       // aria-pressed rather than two different buttons: it is one control with a state, and the
       // state is what a screen reader should announce.
       var star='<button type="button" class="btn-icon topic-star'+(t.starred?' on':'')+'" data-star="'+text(t.id)+'"'

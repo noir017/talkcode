@@ -22,6 +22,20 @@ export interface ButtonSpec {
 }
 
 /**
+ * Where a conversation works, as `useWorkdirLookup` answers it.
+ *
+ * The machine travels with the path because the path alone does not say where it is: two agents of
+ * one harness on two hosts usually share a home layout, so their topics all read `workspace`, and
+ * the agent id in the title was the only thing telling them apart (2026-10-30). `host` is
+ * `core/agent-menu.ts` agentPlaceOf — the agent's group, else its host — and is absent for an agent
+ * on the gateway's own machine.
+ */
+export interface ConversationWorkdir {
+  path: string;
+  host?: string;
+}
+
+/**
  * Platform capability interface. One layer above Satori so the core classes depend only on
  * capabilities, not concrete platforms; missing capabilities degrade gracefully in the
  * implementation (see capabilities).
@@ -135,7 +149,7 @@ export interface PlatformAdapter {
    * rendering a list, so it may be called often, and nothing about delivering a message may
    * depend on it.
    */
-  useWorkdirLookup?(lookup: (ref: ConversationRef) => string | undefined): void;
+  useWorkdirLookup?(lookup: (ref: ConversationRef) => ConversationWorkdir | undefined): void;
 
   /**
    * Hand the platform a way to ask whether the conversation at one of its addresses still has an

@@ -107,6 +107,8 @@ agents:
   - { id: cc-dev, harness: claude, host: devbox, group: build machines }
 ```
 
+The web UI's sidebar uses the same name, in front of the directory under each topic.
+
 ## Limits
 
 - A host where systemd-logind ends a user's processes at logout (`KillUserProcesses=yes`) also

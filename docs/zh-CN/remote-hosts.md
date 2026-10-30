@@ -96,6 +96,8 @@ agents:
   - { id: cc-dev, harness: claude, host: devbox, group: 构建机 }
 ```
 
+网页界面的侧边栏也用这个名字，写在每个话题下面的目录前。
+
 ## 限制
 
 - 如果主机上的 systemd-logind 会在用户登出时结束其进程（`KillUserProcesses=yes`），最后一个 ssh 连接关闭时

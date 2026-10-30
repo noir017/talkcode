@@ -816,6 +816,31 @@ describe('webui page: topics', () => {
     expect(dirs[0]!.getAttribute('title')).toBe('/home/user/workspace/talkcode');
   });
 
+  it('names the machine ahead of the directory for an agent on a host', async () => {
+    // Two agy agents on two hosts, both in a directory called `workspace`: without the machine the
+    // second lines are identical, and the agent id in the title is all that is left to go on.
+    const h = await open({ url: 'http://localhost:8787/?t=a1b2c3d4' });
+    await h.emit(sync('a1b2c3d4', [], ['a1b2c3d4']));
+
+    await h.emit({
+      t: 'topics',
+      topics: [
+        { id: 'a1b2c3d4', title: '[ag] 开工', lastAt: 1000, msgCount: 0, dir: { name: 'workspace', path: '/home/user/workspace', host: 'uniagent' } },
+        { id: 'b2c3d4e5', title: '[ag2] 你好', lastAt: 999, msgCount: 0, dir: { name: 'workspace', path: '/home/user/workspace', host: 'devbox' } },
+        { id: 'c3d4e5f6', title: '[cc] local', lastAt: 998, msgCount: 0, dir: { name: 'talkcode', path: '/srv/talkcode' } },
+      ],
+    });
+
+    const dirs = Array.from(h.doc.querySelectorAll('.topic-dir'));
+    expect(dirs.map((d) => d.textContent)).toEqual(['uniagent · workspace', 'devbox · workspace', 'talkcode']);
+    // The tooltip is the whole address, in the form scp and ssh already taught everyone to read.
+    expect(dirs.map((d) => d.getAttribute('title'))).toEqual([
+      'uniagent:/home/user/workspace',
+      'devbox:/home/user/workspace',
+      '/srv/talkcode',
+    ]);
+  });
+
   it('leaves the row alone for a daemon that offered no directory', async () => {
     // Every `topics` event before this feature existed, and every deployment whose adapter does
     // not implement the lookup: the second line is absent, not blank.

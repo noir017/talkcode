@@ -41,7 +41,7 @@ import {
 } from '../../core/conversation.js';
 import { MessageNotEditableError } from '../../core/outbound-errors.js';
 import type { AgentStatus, ButtonInteraction, InboundMessage, SlashCommandSpec } from '../../types.js';
-import type { ButtonSpec } from '../adapter.js';
+import type { ButtonSpec, ConversationWorkdir } from '../adapter.js';
 import type { WebuiPlatformConfig } from '../config-schemas.js';
 import { escapeHtml, renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import type { ClickRequest, SendRequest, WebEvent, WebMessage } from './protocol.js';
@@ -262,7 +262,7 @@ export class WebRoom {
   private onMsg: ((m: InboundMessage) => void) | null = null;
   private onBtn: ((ev: ButtonInteraction) => void) | null = null;
   /** Injected by the daemon; absent in a deployment (or a test) that never offered one. */
-  private workdir: ((ref: ConversationRef) => string | undefined) | null = null;
+  private workdir: ((ref: ConversationRef) => ConversationWorkdir | undefined) | null = null;
   /** Likewise, and read the same way — see `useLivenessLookup`. */
   private liveness: ((ref: ConversationRef) => boolean) | null = null;
   /** Likewise — see `useScheduleLookup`. Only ever read when the store is full. */
@@ -421,7 +421,7 @@ export class WebRoom {
    * tell us. Everything cached under a previous lookup is dropped, since the new one is by
    * definition a different daemon's answer.
    */
-  useWorkdirLookup(lookup: (ref: ConversationRef) => string | undefined): void {
+  useWorkdirLookup(lookup: (ref: ConversationRef) => ConversationWorkdir | undefined): void {
     this.workdir = lookup;
     this.dirCache.clear();
   }
@@ -501,15 +501,18 @@ export class WebRoom {
     const now = Date.now();
     const hit = this.dirCache.get(topicId);
     if (hit && now - hit.at < DIR_TTL_MS) return hit.dir;
-    let full: string | undefined;
+    let found: ConversationWorkdir | undefined;
     try {
-      full = this.workdir(this.conversation(topicId));
+      found = this.workdir(this.conversation(topicId));
     } catch (e) {
       console.warn('[webui] could not resolve a topic working directory:', e instanceof Error ? e.message : e);
     }
     // basename('/') is '', and a directory with no last segment has no short name to show — the
     // full path is then both the label and the tooltip, which is honest and still fits.
-    const dir = full ? { name: basename(full) || full, path: full } : undefined;
+    const full = found?.path;
+    const dir = full
+      ? { name: basename(full) || full, path: full, ...(found?.host ? { host: found.host } : {}) }
+      : undefined;
     this.dirCache.set(topicId, { at: now, dir });
     return dir;
   }

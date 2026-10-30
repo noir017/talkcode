@@ -942,12 +942,26 @@ describe('WebRoom: which directory a topic is working in', () => {
 
   it('labels each topic with the last segment, keeping the full path for the tooltip', () => {
     const { room, topic } = attached();
-    room.useWorkdirLookup((ref) => (ref.thread === topic ? '/home/user/workspace/talkcode' : undefined));
+    room.useWorkdirLookup((ref) => (ref.thread === topic ? { path: '/home/user/workspace/talkcode' } : undefined));
 
     expect(room.topicList().find((t) => t.id === topic)?.dir).toEqual({
       name: 'talkcode',
       path: '/home/user/workspace/talkcode',
     });
+  });
+
+  it('carries the machine through when the daemon names one, and invents none when it does not', () => {
+    const { room, topic } = attached();
+    room.useWorkdirLookup(() => ({ path: '/home/user/workspace', host: 'devbox' }));
+    expect(room.topicList().find((t) => t.id === topic)?.dir).toEqual({
+      name: 'workspace',
+      path: '/home/user/workspace',
+      host: 'devbox',
+    });
+
+    // A local agent: the key is absent rather than empty, so the page has nothing to prefix.
+    room.useWorkdirLookup(() => ({ path: '/home/user/workspace' }));
+    expect(room.topicList().find((t) => t.id === topic)?.dir).toEqual({ name: 'workspace', path: '/home/user/workspace' });
   });
 
   it('asks the daemon at the address of the topic, not of the channel', () => {
@@ -957,7 +971,7 @@ describe('WebRoom: which directory a topic is working in', () => {
     const asked: Array<string | undefined> = [];
     room.useWorkdirLookup((ref) => {
       asked.push(ref.thread);
-      return '/srv/project';
+      return { path: '/srv/project' };
     });
 
     room.topicList();
@@ -974,7 +988,7 @@ describe('WebRoom: which directory a topic is working in', () => {
     let asked = 0;
     room.useWorkdirLookup(() => {
       asked += 1;
-      return answer;
+      return { path: answer };
     });
 
     for (let i = 0; i < 20; i++) room.post(topic, { own: false, html: '' }, `m${i}`);

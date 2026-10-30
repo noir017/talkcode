@@ -83,8 +83,12 @@ export interface Topic {
    * the one that tells two checkouts of the same name apart, so the page hangs it off the title
    * attribute. Derived on every render like `running` and `msgCount` — never persisted, because
    * the daemon's answer is the only true one and a stale copy of it would outlive a `/cd`.
+   *
+   * `host` names the machine the directory is on (`ConversationWorkdir`), absent for the
+   * gateway's own. It sits on this object rather than beside it because a path is only half an
+   * address: two agents of one harness on two hosts both work in `workspace`.
    */
-  dir?: { name: string; path: string };
+  dir?: { name: string; path: string; host?: string };
 }
 
 /**

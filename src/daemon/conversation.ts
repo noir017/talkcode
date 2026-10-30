@@ -36,7 +36,7 @@ import type {
   PermissionAnswer,
   InboundMessage,
 } from '../types.js';
-import type { PlatformAdapter } from '../platform/adapter.js';
+import type { ConversationWorkdir, PlatformAdapter } from '../platform/adapter.js';
 import type { AgentFactory, AgentSession, AgentUsage } from './agent.js';
 import type { EffortSelector, ModelSelector } from '../types.js';
 import {
@@ -89,7 +89,7 @@ import {
   type WorkdirOption,
 } from '../core/workdir-menu.js';
 import { scanWorkdirs, isDirectory, workdirScanFrom, type WorkdirScan } from './workdir-scan.js';
-import { agentGroups, agentListText, matchAgent, type AgentGroup } from '../core/agent-menu.js';
+import { agentGroups, agentListText, agentPlaceOf, matchAgent, type AgentGroup } from '../core/agent-menu.js';
 import { rankByFrecency } from '../core/frecency.js';
 import type { WorkdirUsageStore } from './workdir-usage.js';
 import { expandRemoteHome, resolveAgentCwd, resolveConversationCwd } from './agent-common.js';
@@ -2592,16 +2592,23 @@ ${formatTokens(left)} left before compaction — ${name}`;
   }
 
   /**
-   * The directory the conversation at an ADDRESS works in — the lookup handed to any platform
-   * that can display it (`PlatformAdapter.useWorkdirLookup`).
+   * Where the conversation at an ADDRESS works — the lookup handed to any platform that can
+   * display it (`PlatformAdapter.useWorkdirLookup`): the directory, and the machine it is on.
    *
    * `boundAgentFor` rather than `agentIdOf` for the reason a `/cd` typed as the opening message
    * uses it: after a restart a topic has a persisted binding and no state, and falling through
    * to `routing.default` would report the wrong agent's root for every topic on the list.
+   *
+   * The machine is read off the agent's definition as it stands now, not recorded with the
+   * conversation: moving an agent to another host (`/reload`) moves where its next turn runs, so
+   * a label that remembered the old one would be naming a machine the topic no longer reaches.
    */
-  workdirForRef(ref: ConversationRef): string | undefined {
+  workdirForRef(ref: ConversationRef): ConversationWorkdir | undefined {
     const id = this.idForRef(ref);
-    return this.workdirOf(id, this.boundAgentFor(id, this.config.routing.default));
+    const def = findAgent(this.config, this.boundAgentFor(id, this.config.routing.default));
+    if (!def) return undefined;
+    const host = agentPlaceOf(def);
+    return { path: resolveConversationCwd(def, id, this.store), ...(host ? { host } : {}) };
   }
 
   /**

@@ -33,7 +33,18 @@ export interface AgentGroup {
 
 /** What an agent is grouped under (see the header). */
 export function agentGroupOf(def: AgentDef): string {
-  return def.group ?? def.host ?? LOCAL_GROUP;
+  return agentPlaceOf(def) ?? LOCAL_GROUP;
+}
+
+/**
+ * The name of where an agent runs, when there is one to give: its group, else its host. An agent
+ * on the gateway's own machine that names no group has none — the web UI's topic list, which shows
+ * this beside each topic's directory, has nothing worth saying about it, and `LOCAL_GROUP` is a
+ * menu heading rather than a name. One function so the list and the `/agent` menu cannot call the
+ * same machine two different things.
+ */
+export function agentPlaceOf(def: AgentDef): string | undefined {
+  return def.group ?? def.host;
 }
 
 /** Agents by group, groups in the order their first agent appears in config.yaml. */

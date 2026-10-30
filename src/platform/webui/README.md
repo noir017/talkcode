@@ -169,6 +169,14 @@ lookup instead (`PlatformAdapter.useWorkdirLookup`), and `topicList()` asks it �
 `DIR_TTL_MS`, because the list is rebuilt on every posted message and the lookup stats the
 filesystem on the other side. A deployment that never offers one shows no second line at all.
 
+The lookup answers with the machine as well as the path (`ConversationWorkdir`), and the row puts it
+first: `devbox · workspace`. Two agents of one harness on two hosts usually share a home layout,
+so without it their rows were identical and the agent id baked into the title was the only tell.
+The name is `core/agent-menu.ts` agentPlaceOf — the agent's `group`, else its `host` — so the row
+and the `/agent` menu call a machine the same thing; an agent on the gateway's own machine has none.
+It is read off the agent's definition on every lookup rather than stored with the topic, for the
+directory's reason: a `/reload` that moves an agent moves where the topic's next turn runs.
+
 **The dot on each row is about the agent, not about the turn.** Four states, and two of them
 exist because "a turn is running" turned out to be a bad proxy for both of the things a person
 actually reads that column for:

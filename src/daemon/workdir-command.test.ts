@@ -465,15 +465,15 @@ describe('workdirForRef (what a platform is told to display)', () => {
 
   it('answers the agent root for a conversation that has never chosen one', () => {
     const { reg } = rig();
-    expect(reg.workdirForRef(ref())).toBe(root);
+    expect(reg.workdirForRef(ref())).toEqual({ path: root });
   });
 
   it('follows a /cd, so the label a page shows is the directory the child will start in', () => {
     const { reg, send } = rig();
     return send('/cd quantlab').then(() => {
-      expect(reg.workdirForRef(ref())).toBe(QUANTLAB);
+      expect(reg.workdirForRef(ref())?.path).toBe(QUANTLAB);
       // The same answer the runtimes read at spawn, by construction — one resolver, not two.
-      expect(reg.workdirForRef(ref())).toBe(reg.workdirOf('discord#c1#', 'cc'));
+      expect(reg.workdirForRef(ref())?.path).toBe(reg.workdirOf('discord#c1#', 'cc'));
     });
   });
 
@@ -481,8 +481,8 @@ describe('workdirForRef (what a platform is told to display)', () => {
     const { reg, send } = rig();
     await send('/cd quantlab');
     // Same channel, a lane of its own: it has chosen nothing and must not inherit the move.
-    expect(reg.workdirForRef(ref({ thread: 't7' }))).toBe(root);
-    expect(reg.workdirForRef(ref())).toBe(QUANTLAB);
+    expect(reg.workdirForRef(ref({ thread: 't7' }))?.path).toBe(root);
+    expect(reg.workdirForRef(ref())?.path).toBe(QUANTLAB);
   });
 
   it('answers for an address nothing has ever been said at', () => {
@@ -490,7 +490,37 @@ describe('workdirForRef (what a platform is told to display)', () => {
     // rendered for conversations with no in-memory state, and a blank second line for all of
     // them would make the feature look broken rather than empty.
     const { reg } = rig();
-    expect(reg.workdirForRef(ref({ channel: 'never-used', thread: 'nor-this' }))).toBe(root);
+    expect(reg.workdirForRef(ref({ channel: 'never-used', thread: 'nor-this' }))?.path).toBe(root);
+  });
+
+  it('names the machine an agent on a host works on: its group, else its host', () => {
+    // Two agy agents on two hosts with the same home layout: the path is the same string on both,
+    // so the machine is the only part of the answer that tells their topics apart.
+    const remote = parseConfig({
+      platforms: { discord: { type: 'discord', token: 't' } },
+      hosts: { box: { ssh: 'u@box' }, aws: { ssh: 'u@aws' } },
+      agents: [
+        { id: 'ag', harness: 'agy', host: 'box', cwd: '/home/u/workspace' },
+        { id: 'ag2', harness: 'agy', host: 'aws', group: 'sydney', cwd: '/home/u/workspace' },
+        { id: 'cc', harness: 'claude', cwd: root },
+      ],
+      routing: {
+        default: 'ag',
+        pipeline: [
+          { when: { command: 'ag2' }, use: { agent: 'ag2' } },
+          { when: { command: 'cc' }, use: { agent: 'cc' } },
+        ],
+      },
+    });
+    const { reg, send } = rig({ config: { ...remote, inbound: { ...remote.inbound, mergeWindowMs: 1, maxMergeWindowMs: 1 } } });
+    expect(reg.workdirForRef(ref())).toEqual({ path: '/home/u/workspace', host: 'box' });
+    // `group` wins, because it is the name the `/agent` menu already shows for that machine.
+    return send('/ag2').then(async () => {
+      expect(reg.workdirForRef(ref())).toEqual({ path: '/home/u/workspace', host: 'sydney' });
+      // And an agent on the gateway's own machine has no machine to name.
+      await send('/cc');
+      expect(reg.workdirForRef(ref())).toEqual({ path: root });
+    });
   });
 });
 
