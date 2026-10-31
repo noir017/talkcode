@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-10-31
+
 ### Changed
 
 - **The web UI's menus are laid out as a grid, and a page holds 24 instead of 12.** `/cd`,
