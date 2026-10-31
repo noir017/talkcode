@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-10-31
+
 ### Added
 
 - **The web UI can close every idle agent at once.** An agent's process stays up after its turn
