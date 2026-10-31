@@ -237,7 +237,7 @@ async function open(
     url?: string;
     width?: number;
     height?: number;
-    /** What each POST answers with; anything unlisted answers `{}`, as most routes do. */
+    /** What each request answers with; anything unlisted answers `{}`, as most routes do. */
     replies?: Record<string, unknown>;
     /** Per-path HTTP status. Anything unlisted answers 200; ≥400 is `ok: false`. */
     status?: Record<string, number>;
@@ -272,6 +272,11 @@ async function open(
      */
     hang?: string[];
     /**
+     * Paths whose answer waits for a promise the test settles, so two requests can be made to
+     * answer in the order a slow link would choose rather than the order they were sent.
+     */
+    held?: Record<string, Promise<void>>;
+    /**
      * Run any timer of 10 s or more after 30 ms instead, and write down what it was asked for.
      * That is how a 15-second request limit is both exercised and checked for its value without
      * a test that takes 15 seconds. Off by default: only the tests about those limits want it.
@@ -293,6 +298,7 @@ async function open(
     password = true,
     mic,
     hang = [],
+    held = {},
     shortenLong = false,
   } = opts;
   const streams: Stream[] = [];
@@ -356,8 +362,9 @@ async function open(
           return real(fn, 30);
         };
       }
-      (w as any).fetch = (path: string, init: { body: string; signal?: AbortSignal }) => {
-        calls.push({ path, body: JSON.parse(init.body) });
+      (w as any).fetch = (path: string, init: { body?: string; signal?: AbortSignal }) => {
+        // A GET (the file reader's) carries no body; recorded as an empty one.
+        calls.push({ path, body: init.body === undefined ? {} : JSON.parse(init.body) });
         if (hang.includes(path)) {
           return new Promise((_, reject) => {
             init.signal?.addEventListener('abort', () =>
@@ -366,11 +373,11 @@ async function open(
           });
         }
         const code = status[path] ?? 200;
-        return Promise.resolve({
+        return (held[path] ?? Promise.resolve()).then(() => ({
           ok: code < 400,
           status: code,
           json: () => Promise.resolve(replies[path] ?? {}),
-        });
+        }));
       };
     },
   });
@@ -661,6 +668,130 @@ describe('webui page: a picture the agent sent', () => {
     img.dispatchEvent(new h.window.Event('error'));
     expect(img.style.display).toBe('none');
     expect(h.doc.querySelector('#log .files a')).not.toBeNull();
+  });
+});
+
+describe('webui page: reading a file the agent sent', () => {
+  const T = 'a1b2c3d4';
+  /** A file message as `index.ts` `sendFile` builds it for a name `readableKind` accepts. */
+  function readable(id: string, name: string, token: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...message(id, ''), file: { name, url: `f/${token}`, view: `view/${token}` }, ...extra };
+  }
+  const reading = (html: string, size = 120, shown = size): Record<string, unknown> => ({
+    name: 'x',
+    size,
+    shown,
+    html,
+  });
+  const say = (h: Harness): string => h.el('reader-body').textContent ?? '';
+
+  it('offers Preview beside the link only for a file the server said it can render', async () => {
+    const h = await open();
+    await h.emit(
+      sync(T, [readable('m1', 'plan.md', 'aa'), { ...message('m2', ''), file: { name: 'build.apk', url: 'f/bb' } }], [T])
+    );
+    const rows = h.doc.querySelectorAll('#log .files');
+    expect(rows[0]?.querySelector('a')?.textContent).toBe('plan.md');
+    expect(rows[0]?.querySelector('button.view')?.getAttribute('data-view')).toBe('view/aa');
+    // `view` is the server's answer, not a guess from the name — no field, no button.
+    expect(rows[1]?.querySelector('button.view')).toBeNull();
+  });
+
+  it('opens the file over the transcript, rendered, with its name and a way to save it', async () => {
+    const h = await open({ replies: { 'view/aa': reading('<h1>Plan</h1><p>ship it</p>') } });
+    await h.emit(sync(T, [readable('m1', 'plan.md', 'aa')], [T]));
+    expect(h.el('reader').hidden).toBe(true);
+
+    await h.click('#log button.view');
+    await until('the file to arrive', () => say(h).includes('ship it'));
+    expect(h.el('reader').hidden).toBe(false);
+    expect(h.calls.map((c) => c.path)).toContain('view/aa');
+    expect(h.el('reader-name').textContent).toBe('plan.md');
+    expect(h.el('reader-get').getAttribute('href')).toBe('f/aa');
+    expect(h.el('reader-get').hasAttribute('download')).toBe(true);
+    // Inside `.b`, so a document gets the headings, tables and code blocks a reply gets.
+    expect(h.el('reader-body').querySelector('.b h1')?.textContent).toBe('Plan');
+    // Nothing about a cut, because nothing was cut.
+    expect(h.el('reader-body').querySelector('.reader-note')).toBeNull();
+  });
+
+  it('says how much of a long file it is showing', async () => {
+    const h = await open({ replies: { 'view/aa': reading('<pre class="src"><code>1\n2</code></pre>', 3 * 1048576, 524288) } });
+    await h.emit(sync(T, [readable('m1', 'run.log', 'aa')], [T]));
+    await h.click('#log button.view');
+    await until('the file to arrive', () => h.el('reader-body').querySelector('.src') !== null);
+    expect(h.el('reader-body').querySelector('.reader-note')?.textContent).toBe(
+      'Showing the first 512 KB of 3.0 MB. Download it for the rest.'
+    );
+  });
+
+  it('closes on its button and on Escape, and lets the document go', async () => {
+    const h = await open({ replies: { 'view/aa': reading('<p>ship it</p>') } });
+    await h.emit(sync(T, [readable('m1', 'plan.md', 'aa')], [T]));
+
+    await h.click('#log button.view');
+    await until('the file to arrive', () => say(h).includes('ship it'));
+    await h.click('#reader-close');
+    expect(h.el('reader').hidden).toBe(true);
+    // Emptied, not hidden with half a megabyte of DOM still under it.
+    expect(h.el('reader-body').childNodes.length).toBe(0);
+
+    await h.click('#log button.view');
+    await until('the file to arrive', () => say(h).includes('ship it'));
+    h.doc.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(h.el('reader').hidden).toBe(true);
+  });
+
+  it('says a file is gone, in words, when its token no longer resolves', async () => {
+    const h = await open({ status: { 'view/aa': 404 }, replies: { 'view/aa': { error: 'no such file' } } });
+    await h.emit(sync(T, [readable('m1', 'plan.md', 'aa')], [T]));
+    await h.click('#log button.view');
+    await until('an answer', () => !say(h).includes('Loading'));
+    expect(say(h)).toBe('This file is no longer here: the daemon has let it go since it was sent.');
+  });
+
+  it("shows the server's reason for a file it would not render", async () => {
+    const h = await open({ status: { 'view/aa': 415 }, replies: { 'view/aa': { error: 'that file is not text' } } });
+    await h.emit(sync(T, [readable('m1', 'notes.txt', 'aa')], [T]));
+    await h.click('#log button.view');
+    await until('an answer', () => !say(h).includes('Loading'));
+    expect(say(h)).toBe('that file is not text');
+  });
+
+  it('puts the second file on screen when the first answers late', async () => {
+    // A slow link: the first file is opened, given up on, and another opened — and then the first
+    // answer lands. It must not end up under the second file's name.
+    let release: () => void = () => {};
+    const slow = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = await open({
+      held: { 'view/aa': slow },
+      replies: { 'view/aa': reading('<p>the first</p>'), 'view/bb': reading('<p>the second</p>') },
+    });
+    await h.emit(sync(T, [readable('m1', 'one.md', 'aa'), readable('m2', 'two.md', 'bb')], [T]));
+    const [first, second] = Array.from(h.doc.querySelectorAll('#log button.view')) as HTMLButtonElement[];
+
+    first?.click();
+    await tick();
+    await h.click('#reader-close');
+    second?.click();
+    await until('the second file', () => say(h).includes('the second'));
+    release();
+    await tick();
+    await tick();
+    expect(h.el('reader-name').textContent).toBe('two.md');
+    expect(say(h)).toBe('the second');
+  });
+
+  it('offers no Preview on a message from before a restart, whose token is dead', async () => {
+    const h = await open();
+    await h.emit(sync(T, [readable('m1', 'plan.md', 'aa', { g: 1 }), readable('m2', 'next.md', 'bb', { g: 2 })], [T], { epoch: 2 }));
+    const rows = h.doc.querySelectorAll('#log .files');
+    // The link stays on the old one — it is what that message has always degraded to.
+    expect(rows[0]?.querySelector('a')).not.toBeNull();
+    expect(rows[0]?.querySelector('button.view')).toBeNull();
+    expect(rows[1]?.querySelector('button.view')).not.toBeNull();
   });
 });
 
@@ -2844,6 +2975,15 @@ describe('webui page: the narrow-screen stylesheet', () => {
     const css = narrowBlock();
     expect(css).toMatch(/#kill-agent\{[^}]*min-width:44px/);
     expect(css).toMatch(/#kill-agent\{[^}]*height:44px/);
+  });
+
+  it("gives the file reader's close button, and Preview, a finger-sized target", () => {
+    // Measured in Chromium at 390px: the close button was 35x30 and Preview 22px tall before this;
+    // 44x44 and 33px after (project-scripts/talkcode-file-reader/e2e.mts).
+    const css = narrowBlock();
+    expect(css).toMatch(/#reader-close\{[^}]*min-width:44px/);
+    expect(css).toMatch(/#reader-close\{[^}]*height:44px/);
+    expect(css).toContain('.files .view{padding:6px 12px}');
   });
 
   it('scopes all of that to the narrow screen and nothing else', () => {

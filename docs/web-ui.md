@@ -54,6 +54,15 @@ composer, with an × to take it back off the message. Once sent, your message sh
 tap fills the screen with it. The daemon keeps that copy only while it is running: after a
 restart, a message from before it keeps the picture's name but not the picture.
 
+**Reading a file without downloading it.** When the agent sends a Markdown file, a log, a
+CSV or a source file, **Preview** beside its name opens it over the conversation. Markdown is
+rendered like a reply, with headings, tables and code blocks; anything else is shown as plain
+text. An `.html` or `.svg` file is shown as its source and is never run. A file over 512 KB
+shows its first 512 KB and says so, and the **Download** link in the reader's bar fetches the
+whole file. PDFs, office documents and other binary files have no preview and stay downloads.
+Like the download link, Preview works only until the daemon restarts; a message from before a
+restart does not offer it.
+
 **Built for a bad connection.** Replies are sent when they settle rather than on
 every keystroke of the stream, everything on the wire is compressed, and a dropped
 connection resumes from where it left off instead of re-downloading the

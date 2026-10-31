@@ -18,7 +18,7 @@
  * and never cast; every route but the page and the login itself requires a session cookie; a
  * file the agent sent is reachable only through an opaque token, never a path; and anything
  * downloaded is served `attachment` + `nosniff` so an agent-sent `.html` can never execute on
- * this origin.
+ * this origin — the reader (`view`) shows HTML this daemon built from a file, never the file.
  *
  * ── Built for a weak link ────────────────────────────────────────────────────
  * Everything compressible is compressed, including the event stream — which is the part with a
@@ -39,7 +39,7 @@
  * leak a socket; it hangs Ctrl-C forever.
  */
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { constants as zlibConstants, createGzip, gzipSync } from 'node:zlib';
@@ -60,6 +60,7 @@ import {
   parseBody,
   type WebEvent,
 } from './protocol.js';
+import { MAX_READ_BYTES, readableKind, renderReading } from './reading.js';
 import { inlineImageType, type WebRoom, type WebuiInstance } from './room.js';
 import type { SsoRefusal, WebSso } from './sso.js';
 import { proxyRequest, proxyUpgrade, type UpstreamSet } from './terminal-proxy.js';
@@ -303,6 +304,9 @@ const GUARDED: Route[] = [
   { method: 'DELETE', path: '/api/topics', run: deleteTopic },
   { method: 'POST', path: '/api/logout', run: logout },
   { method: 'GET', path: '/f/', prefix: true, run: ({ req, res, rest }, ctx) => download(req, res, ctx.room, rest) },
+  // The same token, rendered for the reader instead of handed over: JSON holding HTML built by
+  // `reading.ts`, never the file's own bytes or type. See `view`.
+  { method: 'GET', path: '/view/', prefix: true, run: ({ req, res, rest }, ctx) => view(req, res, ctx.room, rest) },
   // The terminal pane's backend. Listed unconditionally even though the feature is usually
   // off, so this table stays the complete answer to "what is reachable"; `terminalPage`
   // answers 404 when it is off, which is the truth about the route either way.
@@ -646,6 +650,44 @@ async function download(req: IncomingMessage, res: ServerResponse, room: WebRoom
 function disposition(name: string, inline = false): string {
   const ascii = name.replace(/[^\w.\- ]/g, '_') || 'download';
   return `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/**
+ * A published file, rendered for the page's reader: `{ name, size, shown, html }`.
+ *
+ * JSON through `send()`, like any API answer, rather than a document of its own. That is the whole
+ * of why this is safe beside `download`'s rule: the browser is handed HTML that `reading.ts` built
+ * from the bytes — escaped, as every message is — and puts it into the page it already trusts with
+ * those. Nothing here is ever served as the file's own type, so an `.html` arrives as its source.
+ *
+ * 415 for a name `readableKind` does not accept, and for bytes that turn out not to be text; the
+ * page only offers the reader for the first kind, so the second is the one a person will see.
+ */
+async function view(req: IncomingMessage, res: ServerResponse, room: WebRoom, token: string): Promise<void> {
+  const entry = room.resolveDownload(decodeURIComponent(token));
+  if (!entry) return send(req, res, 404, { error: 'no such file' });
+  const kind = readableKind(entry.name);
+  if (!kind) return send(req, res, 415, { error: 'that kind of file is not shown here' });
+  if (entry.ready) await entry.ready;
+  const head = await readHead(entry.path, MAX_READ_BYTES);
+  if (!head) return send(req, res, 404, { error: 'that file is no longer on disk' });
+  const reading = renderReading(kind, head.bytes, head.size);
+  if (!reading) return send(req, res, 415, { error: 'that file is not text' });
+  send(req, res, 200, { name: entry.name, size: head.size, ...reading });
+}
+
+/** The first `limit` bytes of a file and its whole size, or `undefined` when it cannot be read. */
+async function readHead(file: string, limit: number): Promise<{ bytes: Buffer; size: number } | undefined> {
+  const handle = await open(file, 'r').catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const { size } = await handle.stat();
+    const bytes = Buffer.alloc(Math.min(size, limit));
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    return { bytes: bytes.subarray(0, bytesRead), size };
+  } finally {
+    await handle.close();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

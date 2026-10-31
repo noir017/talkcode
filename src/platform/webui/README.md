@@ -52,6 +52,7 @@ naming it, and they are all of them:
 | `terminal-proxy.ts` | Byte-for-byte reverse proxy to the terminal's ttyd over a unix socket. Speaks no WebSocket. |
 | `terminal-sessions.ts` | The bookkeeping either side of those bytes: who is attached, and the operator's command for ending a session |
 | `protocol.ts` | `.strict()` zod schemas for every inbound body; the outbound event union |
+| `reading.ts` | Which files the page can read in place, and the HTML it is given for one. Pure. |
 | `page.ts` | The whole page (HTML + CSS + JS) as a module-level string |
 | `manifest.ts` | The web app manifest and the icon, as strings, for the same reason `page.ts` is one |
 | [`../web-markdown.ts`](../web-markdown.ts) | Markdown → escaped HTML; lives with the other converters |
@@ -790,7 +791,8 @@ is behind it is an agent with full tool access.
    The one exception is [a raster image](#showing-a-picture-instead-of-a-download), which is
    served as itself so the page can draw it; `nosniff` is what keeps that from being a hole,
    and SVG is deliberately not in the set. The operator's own sent pictures are served through
-   the same table and the same headers.
+   the same table and the same headers. [The reader](#reading-a-file-instead-of-downloading-it)
+   is not an exception: it never serves a file at all, only HTML built from one.
 6. **Uploads become `data:` URLs**, the shape `adapter-telegram` already uses, so
    `daemon/attachment-io.ts` handles them through its existing branch and its SSRF guard has
    nothing to act on. A temp file and a `file://` URL would be refused by that guard outright.
@@ -882,6 +884,41 @@ was reported. So `room.ts` `publishCopy` has the `UploadStore` copy the file int
 before `sendFile` returns, and the copy is `owned` like an upload: `0600`, named by a UUID alone,
 deleted on eviction. A path that cannot be read now fails the agent's `send-file` instead of
 publishing a link to nothing. The agent's own file is only ever read.
+
+### Reading a file instead of downloading it
+
+A report, a plan or a log the agent sends is meant to be read, and a download meant the downloads
+folder and another application — on a phone, one that may not exist. Since 2.15.0 such a file gets
+**Preview** beside its link, which opens it in `#reader`, an opaque overlay with the file's name,
+a Download link and a close button.
+
+It does not bend point 5, it goes round it. `GET view/<token>` (`server.ts` `view`) resolves the
+same download token, reads at most `MAX_READ_BYTES` (512 KiB) of the file, and answers JSON:
+`{ name, size, shown, html }`. The `html` is `reading.ts`'s — `renderWebMarkdown` for a `.md`, the
+file's text through `escapeHtml` inside a `<pre class="src">` for everything else on its list — so
+the page puts into its DOM exactly what it already puts there for every streamed reply, under the
+same CSP. An `.html` or an `.svg` is on that list *as source*: the browser never receives the file,
+so there is nothing that could render it.
+
+- **`reading.ts` `readableKind` is the closed list, read by both ends** — the arrangement
+  `inlineImageType` has. `index.ts` sets `file.view` (the URL, from `WebRoom.viewUrl`, next to where
+  `f/<token>` is minted) only for a name it accepts, and the page shows Preview only where `view` is
+  set. PDF and office formats are absent on purpose: their text is not in their bytes, so they need
+  a renderer — the browser's PDF viewer, which is exactly what the download rule keeps off this
+  origin, or several megabytes of library.
+- **The name is trusted for the list, the bytes are checked anyway.** A NUL in the first 8000 bytes
+  (git's `buffer_is_binary` test) answers 415 "that file is not text", which the reader shows.
+- **A long file is cut, and says so.** At the last line break in the second half of the budget,
+  else at a UTF-8 character boundary — never inside a character. The page writes "Showing the first
+  512 KB of 2.0 MB" above it. In Chromium on 2026-10-31 a 2 MB log opened in under 200 ms.
+- **No Preview on history.** Its token died with the run that minted it, so `parseKept` drops
+  `view` and the page leaves the button off a message from another generation, as it does buttons.
+- **`readSeq`** discards an answer that arrives after its reader was closed — on a slow link, the
+  first file would otherwise land under the second one's name. Closing empties the body, as the
+  lightbox drops its picture.
+
+The real-browser half — files delivered through the real adapter's `sendFile`, read at 1280 and
+390 px, no CSP violation, the close button 44px on a phone — was checked in Chromium on 2026-10-31.
 
 ### The other door: `sso.ts`
 

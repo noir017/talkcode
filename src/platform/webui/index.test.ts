@@ -203,6 +203,26 @@ describe('webui adapter: outbound', () => {
     expect((await a.fetchHistory(address, {})).length).toBe(0);
   });
 
+  it('offers the reader for a file it can render, and for no other', async () => {
+    const a = adapter();
+    const address = await somewhere(a);
+    for (const name of ['plan.md', 'report.pdf']) {
+      fs.writeFileSync(path.join(dir, name), 'bytes');
+      await a.sendFile(address, { path: path.join(dir, name), name });
+    }
+    // Read back from the transcript `stop` writes: the message as the page was sent it.
+    await a.stop();
+    const at = path.join(dir, 'webui-transcripts-webui', `${address.thread ?? ''}.json`);
+    const written = JSON.parse(fs.readFileSync(at, 'utf8')) as Kept[];
+    const [md, pdf] = written.map((k) => k.msg.file);
+    expect(md?.view).toBe(md?.url.replace(/^f\//, 'view/'));
+    expect(pdf?.name).toBe('report.pdf');
+    expect(pdf?.view).toBeUndefined();
+    // And not carried across a restart, whose download table no longer knows the token.
+    const restored = diskTranscriptStore(path.dirname(at)).load().get(address.thread ?? '') ?? [];
+    expect(restored[0]?.msg.file).toEqual({ name: 'plan.md', url: md?.url });
+  });
+
   it('accepts all three inbound registrations, including the one it never calls', () => {
     // The daemon wires onMessage/onButton/onCommand on every adapter before starting it, so
     // refusing the slash-interaction one would fail Daemon.run() — even though a slash command
