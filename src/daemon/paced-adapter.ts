@@ -99,6 +99,9 @@ export function withOutboundPacing(
   pacer: OutboundPacer
 ): PacedPlatformAdapter {
   const views = new Map<OutboundClass, PlatformAdapter>();
+  // A platform with no flood budget of its own meters each lane apart (see paceByLane): the web
+  // UI, whose topics would otherwise queue behind each other's streaming.
+  const byLane = adapter.capabilities.paceByLane === true;
 
   const build = (cls: OutboundClass): PlatformAdapter => {
     const out: Record<string, unknown> = {};
@@ -112,7 +115,7 @@ export function withOutboundPacing(
         const address = addressOfCall(args);
         // A chat with no address is not a chat we can meter; run it rather than invent a key.
         if (!address) return (member as (...a: unknown[]) => Promise<unknown>).apply(adapter, args);
-        const key = `${adapter.platform}:${address.channel}`;
+        const key = `${adapter.platform}:${address.channel}${byLane && address.thread ? `/${address.thread}` : ''}`;
         return pacer.submit({
           key,
           instance: adapter.platform,
@@ -164,10 +167,10 @@ function entriesOf(adapter: PlatformAdapter): Array<[string, unknown]> {
 /**
  * The chat a call targets — from a `ConversationAddress` argument or from a `MessageRef`'s.
  *
- * The THREAD is deliberately not part of the answer (see PaceJob.key): a Telegram forum topic
- * shares its parent chat's flood budget, so giving each topic its own allowance would hand a
+ * The THREAD is deliberately not part of the key by default (see PaceJob.key): a Telegram forum
+ * topic shares its parent chat's flood budget, so giving each topic its own allowance would hand a
  * busy forum N times the traffic the platform is willing to take and reproduce the flood one
- * level down.
+ * level down. Only a platform that declares `paceByLane` gets it added.
  */
 function addressOfCall(args: unknown[]): ConversationAddress | undefined {
   const first = args[0] as Partial<ConversationAddress & MessageRef> | undefined;

@@ -87,8 +87,10 @@ wrong shape at the request boundary.
 
 **Message ids are global and never reused**, not per topic. The outbound pacer coalesces edits
 into `edit:<channel>:<messageId>` and every topic shares the one channel, so an id restarting
-per topic would let one topic's edits supersede another's. For the same reason all topics share
-one rate-limit budget — exactly as Telegram forum topics share their chat's.
+per topic would let one topic's edits supersede another's. They used to share one rate-limit budget
+for the same reason — the pacer keys on the channel, as it must for a Telegram forum — and that is
+what made a menu tap in a quiet topic wait 1–7 s while other topics streamed. `paceByLane` (2.14.0)
+gives each topic its own; nothing at this end counts writes, so the lane is the right unit here.
 
 **The topic list is persisted, and so is each topic's transcript.** Losing the
 list is not "the page looks empty": `conversations.json` still holds the agent binding and session
@@ -273,7 +275,8 @@ entry is added — `doctor` checks for exactly this.
 | `reply` | ✓ | Rendered as a quote above the body |
 | `thread` / `renameThread` | ✓ | Topics, and topics that name themselves. The second is only possible because the first is a lane |
 | `buttons` / `editButtons` | ✓ | Both, or `/model`, `/cd` and `/setting` silently degrade to plain text |
-| `menuPageSize` | 12 | The same number every other platform declares. A browser could carry more; that is not a reason to make it the odd one out, and `menu-page-size.test.ts` holds that invariant for the profiles it can see |
+| `menuPageSize` | 24 | Core's ceiling, twice the chat platforms' 12. The page draws a menu as a grid (`menu()` in `page.ts`), so 24 is fewer rows here than 12 is on Telegram, and a page of long model ids is still one phone screen |
+| `paceByLane` | ✓ | The only platform that declares it: each topic gets its own outbound budget instead of queueing behind every other topic's streaming |
 | `slashCommands` | ✓ | *Received*, as ordinary text, exactly like Telegram — `registerCommands` only feeds the page's autocomplete |
 | `slashNeedsAck` | – | There is no interaction to close out |
 | `maxMessageLength` | 20000 | Not a platform limit. A ceiling so one runaway reply does not become an unbounded DOM node redrawn several times a second |
@@ -311,6 +314,30 @@ This page can fold a line itself, so it asks for more of it and does the cutting
 Real-browser layout (a folded row is one line high, the ✓ stays inside it, an opened row wraps
 instead of widening the transcript) was checked in Chromium at 1280 and 390 px against a live
 daemon on 2026-10-10; jsdom has no layout and cannot see any of it.
+
+## Menus
+
+Every message with buttons — `/cd`, `/model`, `/setting`, `/agent`, an `ask` — is drawn by
+`menu()` in `page.ts` as a grid (2.14.0; before that, buttons wrapped like words and a page of
+directories was a ragged block). Columns are sized from the widest label, so short names get more
+of them, and there are never fewer than two: a label longer than half the row wraps inside its cell.
+
+**The page reads two conventions off the labels, because a label is all the daemon sends.** If you
+change the labels in `core/`, this is what moves:
+
+- A leading `● ` / `☑ ` lights the cell as the current choice; `☐ ` and `⌂ ` become a dim mark.
+- A label that starts with `◀`/`‹` or ends with `▶`/`›` (◀ Prev, Next ▶, ◀ Back, ‹ machines) goes
+  on a row of its own under the items, drawn quieter — it moves around the menu rather than answers it.
+
+Both are presentation only: a label that matches by accident is drawn differently and still posts
+its own id. `page.dom.test.ts` pins both.
+
+A tapped cell is lit and disabled at once and stays so until the repaint that answers it. That
+round trip used to include the outbound pacer's queue — every topic shared one budget, so a tap
+waited behind other topics' streaming — which is what `paceByLane` removed (see [Topics](#topics)).
+
+Layout was measured in Chromium at 1280 and 390 px on 2026-10-31: a page of 24 model ids is
+620 px tall on a phone, inside the 716 px the chat log has there, with the question above it.
 
 ## Built for a bad connection
 

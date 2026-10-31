@@ -79,7 +79,8 @@ export interface PaceJob<T> {
   /**
    * The chat this write lands in: `<platformInstance>:<channel>`, NEVER including the thread.
    * A Telegram forum topic shares its parent chat's flood budget, so keying by lane would hand
-   * every topic its own allowance and reproduce the flood one level down.
+   * every topic its own allowance and reproduce the flood one level down. The one exception is a
+   * platform with no flood budget at all (`paceByLane`, the web UI), where the lane is the chat.
    */
   key: string;
   /** Instance-wide bucket key, for the platform's overall ceiling. */

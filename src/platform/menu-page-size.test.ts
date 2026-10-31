@@ -54,6 +54,14 @@ describe('declared menu page sizes', () => {
     expect(caps.editButtons).toBe(true);
   });
 
+  it('leaves Discord room for the page controls in its 25 components', () => {
+    // A menu adds up to three buttons beyond its items (◀ Prev, Next ▶, ◀ Back). This used to be
+    // what PAGE_SIZE_MAX enforced for every platform; that ceiling is a phone screen's worth now,
+    // for the web UI (core/paging.ts), so Discord's own limit is held here.
+    const size = resolvePageSize(createDiscordProfile().capabilities.menuPageSize);
+    expect(size + 3).toBeLessThanOrEqual(25);
+  });
+
   it('gives the same page to every platform that raised it above the default', () => {
     const raised = PROFILES.map(([, create]) => create().capabilities.menuPageSize).filter(
       (size): size is number => size !== undefined
@@ -61,7 +69,9 @@ describe('declared menu page sizes', () => {
     expect(raised.length).toBeGreaterThan(0);
     // One shape for one menu: which chat app someone reads from should not change how many
     // directories they see. A platform that genuinely cannot carry the shared number is why the
-    // field is per-profile — but then this test should be told about it deliberately.
+    // field is per-profile — but then this test should be told about it deliberately. The web UI
+    // is not a profile and is the deliberate exception: it draws menus as a grid, so a page costs
+    // it fewer rows (webui/index.ts).
     expect(new Set(raised).size).toBe(1);
     expect(raised[0]).toBeGreaterThan(PAGE_SIZE);
   });

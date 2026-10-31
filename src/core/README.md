@@ -304,7 +304,10 @@ submit(job) ─▶ [ per-chat FIFO ] ─▶ bucket (chat) ─▶ bucket (instanc
 
 - **Keyed on `<platformInstance>:<channel>`, never the thread.** A Telegram forum topic
   shares its parent chat's flood budget; keying by lane would hand every topic a full
-  allowance and reproduce the flood one level down.
+  allowance and reproduce the flood one level down. The exception is a platform that declares
+  `paceByLane` — the web UI, which has no flood budget at all and puts every topic on one
+  channel, so on the channel key a menu tap in one topic queued behind every other topic's
+  streaming. `daemon/paced-adapter.ts` builds the key; this module only sees the string.
 - **Token bucket, not a fixed interval.** An idle chat writes immediately; a busy one
   paces. `burst` is sized so a whole ordinary turn goes out with no delay at all and only
   sustained traffic is metered — the failure this exists to prevent was hundreds of writes,

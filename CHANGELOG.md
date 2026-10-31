@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **The web UI's menus are laid out as a grid, and a page holds 24 instead of 12.** `/cd`,
+  `/model`, `/setting`, `/agent` and an agent's questions drew their buttons wrapped like words,
+  so a page of directories was a ragged block whose columns moved on every row, and on a phone one
+  or two buttons a row in no order. Each menu is now a grid sized from its widest label: several
+  columns of short names on a desktop, never fewer than two on a phone, with a long model id
+  wrapping inside its cell. The current choice is lit instead of marked by a grey dot, and Prev,
+  Next and Back sit on a row of their own under the choices instead of among them. With the rows
+  that much shorter, a page holds 24 in the web UI; a page of long model ids is still one phone
+  screen. The chat platforms keep their 12.
+
+### Fixed
+
+- **A tap on a web UI menu no longer waits for other topics to finish writing.** Every web UI
+  topic shared one outbound budget, the one-write-a-second-per-chat limit that keeps Telegram from
+  answering 429. A browser has no such limit, but its topics all live on one channel, so whenever
+  other topics were streaming, the menu's response queued behind them: about a second with one
+  other topic busy, five with three. Each web UI topic now has a budget of its own, and the tapped
+  button lights up at once, so the tap shows before the answer arrives. Chat platforms are
+  unchanged: a Telegram forum's topics still share their chat's limit, as Telegram requires.
+
 ## [2.13.0] - 2026-10-31
 
 ### Changed

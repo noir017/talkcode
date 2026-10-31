@@ -23,7 +23,8 @@ access:
 
 Open `http://<host>:8787`, enter the token, and you have the same conversation
 every other platform gets: streaming replies, tool bubbles, the `/model`, `/effort`,
-`/cd` and `/setting` button menus, `ask` questions, file upload and download.
+`/cd` and `/setting` button menus, `ask` questions, file upload and download. Menus are
+laid out as a grid with the current choice lit, and hold 24 to a page where chat apps hold 12.
 
 **Topics.** The sidebar on the left lists parallel conversations and switches between them,
 the same way a Telegram forum topic or a Feishu 话题 does: each has its own agent

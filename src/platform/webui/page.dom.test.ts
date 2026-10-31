@@ -1474,6 +1474,107 @@ describe('webui page: a topic the daemon no longer has', () => {
   });
 });
 
+describe('webui page: menus', () => {
+  /** A `/cd`-shaped menu: a root, the current directory, two more, and the page controls. */
+  const menu = (): Record<string, unknown> => ({
+    ...message('m1', '<p>Working dir</p>'),
+    buttons: [
+      { id: 'wdr:r:0', label: '⌂ workspace' },
+      { id: 'wdr:r:1', label: '● talkcode' },
+      { id: 'wdr:r:2', label: 'uniagent' },
+      { id: 'wdr:r:3', label: '项目报告归档' },
+      { id: 'wdp:r:1', label: '◀ Prev' },
+      { id: 'wdp:r:1', label: 'Next ▶' },
+    ],
+  });
+  const cells = (h: Harness, sel: string): string[] =>
+    Array.from(h.doc.querySelectorAll(sel)).map((b) => b.textContent ?? '');
+
+  it('puts the choices in the grid and the page controls on a row of their own under them', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    // Direct children of .btns are the choices; the controls are inside .nav, after them. Paging
+    // used to sit in the middle of the list as two more things to pick.
+    expect(cells(h, '.btns > button')).toEqual(['⌂ workspace', '● talkcode', 'uniagent', '项目报告归档']);
+    expect(cells(h, '.btns > .nav > button')).toEqual(['◀ Prev', 'Next ▶']);
+    expect(h.doc.querySelector('.btns > :last-child')?.className).toBe('nav');
+  });
+
+  it('sizes the columns from the widest label, counting a CJK character as two', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    // 项目报告归档 is six characters and twelve columns wide — wider than "⌂ workspace" (11).
+    // The page controls are not choices and do not widen the grid.
+    expect(h.doc.querySelector<HTMLElement>('.btns')?.style.getPropertyValue('--cw')).toBe('12ch');
+  });
+
+  it('lights the current choice, keeping its mark in the text', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    const lit = h.doc.querySelectorAll('.btns button.on');
+    expect(Array.from(lit).map((b) => b.textContent)).toEqual(['● talkcode']);
+    // The mark is its own element so it can be coloured — and the root's ⌂ is a mark, not a choice.
+    expect(lit[0]?.querySelector('.mk')?.textContent).toBe('●');
+    expect(h.doc.querySelector('button[data-btn="wdr:r:0"] .mk')?.textContent).toBe('⌂');
+    expect(h.doc.querySelector('button[data-btn="wdr:r:0"]')?.classList.contains('on')).toBe(false);
+  });
+
+  it('lights a ticked multi-select option and not an unticked one', async () => {
+    const h = await open();
+    await h.emit(
+      sync('a1b2c3d4', [{ ...message('m1', '<p>which?</p>'), buttons: [
+        { id: 'ask:r:0', label: '☑ EU' },
+        { id: 'ask:r:1', label: '☐ US' },
+      ] }], ['a1b2c3d4'])
+    );
+
+    expect(h.doc.querySelector('button[data-btn="ask:r:0"]')?.classList.contains('on')).toBe(true);
+    expect(h.doc.querySelector('button[data-btn="ask:r:1"]')?.classList.contains('on')).toBe(false);
+  });
+
+  it('a page control still posts its own id', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    await h.click('.nav button:last-child');
+
+    expect(h.calls.find((c) => c.path === 'api/click')?.body).toEqual({
+      topic: 'a1b2c3d4',
+      messageId: 'm1',
+      buttonId: 'wdp:r:1',
+    });
+  });
+
+  it('lights a tapped cell at once, and stops lighting it when the tap is refused', async () => {
+    const h = await open({ status: { 'api/click': 409 } });
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    const b = (): HTMLButtonElement | null => h.doc.querySelector('button[data-btn="wdr:r:2"]');
+    h.doc.querySelector<HTMLButtonElement>('button[data-btn="wdr:r:2"]')?.click();
+    // Synchronously: the round trip has not even started, and the tap is already visible.
+    expect(b()?.classList.contains('busy')).toBe(true);
+    expect(b()?.disabled).toBe(true);
+
+    // 409 is "that message is gone": nothing is coming, so it is not left looking like it is.
+    await until('the refusal lands', () => b()?.classList.contains('busy') === false);
+    expect(b()?.disabled).toBe(true);
+  });
+
+  it('a repaint answering the tap takes the lit state away with it', async () => {
+    const h = await open();
+    await h.emit(sync('a1b2c3d4', [menu()], ['a1b2c3d4']));
+
+    await h.click('button[data-btn="wdr:r:2"]');
+    expect(h.doc.querySelector('button[data-btn="wdr:r:2"]')?.classList.contains('busy')).toBe(true);
+
+    await h.emit({ t: 'msg', msg: { ...menu(), buttons: [] } });
+    expect(h.doc.querySelector('.btns')).toBeNull();
+  });
+});
+
 describe('webui page: sending', () => {
   it('posts a button click back with the message and button it belongs to', async () => {
     const h = await open();

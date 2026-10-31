@@ -30,15 +30,18 @@
 export const PAGE_SIZE = 6;
 
 /**
- * Ceiling on a page size a profile may declare.
+ * Ceiling on a page size a platform may declare.
  *
- * Discord is the tightest of the platforms that actually carry menus: 25 components per message.
- * The most any menu here puts on a page beyond its items is three (◀ Prev, Next ▶, and ◀ Back on
- * the setting value level), so 22 is the largest page that cannot overflow one. A profile's own
- * number is the real answer — this only keeps a typo in one from producing a message the platform
- * refuses to deliver.
+ * This was Discord's number — 25 components a message, less the three a menu may add beyond its
+ * items (◀ Prev, Next ▶, ◀ Back), so 22 — until the web UI asked for more (2026-10-31). A browser has
+ * no component limit; it draws a menu as a grid, and what bounds a page there is a phone screen: 24
+ * model ids at two a row measured 620px in Chromium at 390px wide, which is one screen with the
+ * question above it, where 30 is not. So the ceiling is now the largest page that is still a screen,
+ * and a chat platform's own physical limit is held against its declaration where that platform is
+ * tested — `platform/menu-page-size.test.ts` holds Discord to its 25. The clamp still does what it
+ * always did: keep a typo in a profile from producing a page nobody can use.
  */
-export const PAGE_SIZE_MAX = 22;
+export const PAGE_SIZE_MAX = 24;
 
 /**
  * The page size to actually use, given what a platform declared (or didn't).

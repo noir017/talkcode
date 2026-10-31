@@ -80,12 +80,14 @@ const CAPABILITIES: PlatformAdapter['capabilities'] = {
   buttons: true,
   editButtons: true,
   /**
-   * The same 12 every other platform that declares one uses, and deliberately not a bigger
-   * number a browser could obviously carry: `menu-page-size.test.ts` asserts that every
-   * platform declaring a page size declares the SAME one, because which client someone reads
-   * from should not change how many directories `/cd` offers them.
+   * The most core allows, and twice what the chat platforms declare. It was their 12, so that
+   * which client someone read from did not change how many directories `/cd` offered — until the
+   * operator asked this one for more (2026-10-31). The page draws a menu as a grid (page.ts
+   * menu()), several directories a row on a desktop and two on a phone, where a chat app gives a
+   * button a row or a slot of its own; so 24 costs fewer rows here than 12 does on Telegram, and
+   * a page of long model ids is still one phone screen (core/paging.ts PAGE_SIZE_MAX).
    */
-  menuPageSize: 12,
+  menuPageSize: 24,
   /**
    * Received, not registered in the platform's own UI — the same shape as Telegram, where a
    * slash command arrives as an ordinary message. `registerCommands` here only hands the page
@@ -95,6 +97,12 @@ const CAPABILITIES: PlatformAdapter['capabilities'] = {
   slashCommands: true,
   slashNeedsAck: false,
   canRegisterSlashAtRuntime: true,
+  /**
+   * Each topic gets its own write budget. Nothing at this end counts writes, and every topic is a
+   * lane on the one channel — so on the channel's shared budget a menu tap in a quiet topic queued
+   * behind every other topic's streaming, seconds at a time. See the field in adapter.ts.
+   */
+  paceByLane: true,
   /**
    * Not a platform limit — a browser has none. It is a ceiling on how large one message may
    * grow before the writer seals it and starts another, and it exists because a streaming edit

@@ -25,8 +25,9 @@ machine, not per conversation, so a brand-new topic gets the benefit of it
 immediately.
 
 A page holds as many directories as the platform can carry — twelve on Telegram,
-Discord and Slack, which is one page for a typical workspace — so choosing is
-usually a tap rather than a page turn.
+Discord and Slack, which is one page for a typical workspace, and 24 in the web UI,
+which lays the menu out as a grid — so choosing is usually a tap rather than a page
+turn.
 
 You are asked the question at the two moments it is free: a bare agent command
 (`/cc`, `/oc`, `/agy`) in a conversation that has never run, and right after

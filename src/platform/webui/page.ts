@@ -328,7 +328,31 @@ body{background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,
    dressed as dim text rather than as one of the message's buttons, which are things to answer. */
 .t .tl-all{background:none;border:0;padding:0 2px;margin-left:10px;font-size:inherit;color:var(--dim);text-decoration:underline;cursor:pointer}
 .t .tl-all:hover{color:var(--fg)}
-.btns{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+/* A message's buttons, drawn as a menu — see menu() in the script for why a grid, and why sized
+   from the widest label. The 50% term is the two-column floor, and it gives up a whole gap rather
+   than half of one: two halves plus a gap is a pixel over the row, and the floor quietly becomes
+   one column (it did, on the touch gap below). auto-fill rather than auto-fit, so a
+   two-button question keeps two cells' width instead of being stretched across the bubble. 22px is
+   a cell's padding and border, which --cw (the label alone) does not count. A label that does wrap
+   is balanced, or a model id breaks at its last hyphen and leaves one character on a line. */
+.btns{--gap:4px;margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(calc(var(--cw,8ch) + 22px),calc(50% - var(--gap))),1fr));gap:var(--gap);font-size:13px}
+.btns button{min-width:0;padding:5px 10px;border-radius:5px;text-align:left;line-height:1.35;overflow-wrap:anywhere;text-wrap:balance;transition:background .12s,border-color .12s}
+.btns button:not(.on):hover:not(:disabled){background:#202020}
+/* The current choice, in the blue of the operator's own messages: it is the one they made. */
+.btns button.on{background:var(--own);border-color:var(--own-edge)}
+.btns .mk{color:var(--dim)}
+.btns .on .mk{color:#38bdf8}
+/* Pressed, then tapped and waiting on the daemon: full opacity over button:disabled's half, so the
+   choice just made is the brightest thing in the menu rather than the faintest. */
+.btns button:active:not(:disabled){background:#262626}
+.btns button.busy{opacity:1;border-color:var(--own-edge);background:var(--own)}
+/* Paging and the way back: under the items, spanning the grid, and quieter than they are. */
+.btns .nav{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px}
+.btns .nav button{background:none;color:var(--dim);padding:3px 10px}
+.btns .nav button:hover:not(:disabled){color:var(--fg);background:var(--field)}
+/* A finger, not a pointer: the cells keep roughly the height they had as loose buttons, and the
+   gap between two choices is what a near miss lands in. */
+@media(hover:none){.btns{--gap:6px}.btns button{padding:8px 10px}.btns .nav button{padding:7px 14px}}
 button{background:var(--field);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
 button:hover{border-color:#3a3a3a}
 button:disabled{opacity:.5;cursor:default}
@@ -894,14 +918,7 @@ const SCRIPT = `
     // Buttons are dropped from a message that came out of the cache: the process that would
     // answer them is gone, and the id they name now means a different message or nothing at
     // all. A control that cannot act is worse than no control.
-    if(!hist && m.buttons && m.buttons.length){
-      h += '<div class="btns">';
-      for(var i=0;i<m.buttons.length;i++){
-        h += '<button type="button" data-msg="'+text(m.id)+'" data-btn="'+text(m.buttons[i].id)+'">'
-           + text(m.buttons[i].label) + '</button>';
-      }
-      h += '</div>';
-    }
+    if(!hist && m.buttons && m.buttons.length) h += menu(m);
     if(stuck(m)) h += failedActions(m);
     var meta = clock(m.at) + (m.reactions && m.reactions.length ? '  '+m.reactions.join(' ') : '');
     h += '<div class="t">'+text(meta)+(tools ? allToggle(key) : '')+'</div>';
@@ -913,6 +930,52 @@ const SCRIPT = `
     el.className = cls;
     el.innerHTML = h;
     sig[key] = h;
+  }
+
+  /**
+   * A message's buttons, laid out as what nearly all of them are: a menu to pick one thing from.
+   *
+   * A grid rather than buttons wrapped like words, because a wrapped row is only as wide as its
+   * labels: a page of directories came out as a ragged block whose columns moved on every row, and
+   * on a phone as one or two buttons a row in no order at all. The columns are sized from the
+   * widest label (--cw, in the menu's own ch), so short names get more of them and long model ids
+   * fewer, and the stylesheet keeps at least two — a label longer than half the row wraps inside
+   * its cell rather than taking the row.
+   *
+   * Two things are read off the labels, because a label is all the daemon sends. The marks core
+   * puts in front of an item (● the current one, ☑ ☐ a multi-select's ticks, ⌂ the workspace root)
+   * become a mark the cell can colour, and the current choice is lit rather than left to be found
+   * by a dot the same grey as its text. And the controls that move around a menu rather than
+   * answer it (◀ Prev, Next ▶, ◀ Back, ‹ ›) go on a row of their own under the items, instead of
+   * reading as two more things to choose. Both are presentation only: a label that happens to
+   * match is drawn differently and still posts exactly its own id.
+   */
+  var MARK = /^([●☑☐⌂]) /, NAV = /^[◀‹]|[▶›]$/;
+  function menu(m){
+    var items = '', nav = '', widest = 0, msg = text(m.id);
+    for(var i=0;i<m.buttons.length;i++){
+      var b = m.buttons[i], label = String(b.label == null ? '' : b.label), mk = MARK.exec(label);
+      var tag = '<button type="button" data-msg="'+msg+'" data-btn="'+text(b.id)+'"';
+      if(NAV.test(label)){ nav += tag+'>'+text(label)+'</button>'; continue; }
+      widest = Math.max(widest, labelWidth(label));
+      var on = mk && (mk[1] === '●' || mk[1] === '☑');
+      items += tag + (on ? ' class="on"' : '') + '>'
+        + (mk ? '<span class="mk">'+mk[1]+'</span> '+text(label.slice(2)) : text(label)) + '</button>';
+    }
+    // 40 is core's label budget (truncateLabel); a longer one would be a column no row can hold.
+    return '<div class="btns" style="--cw:'+Math.min(widest, 40)+'ch">' + items
+      + (nav ? '<div class="nav">'+nav+'</div>' : '') + '</div>';
+  }
+
+  /**
+   * A label's width in ch, near enough to size a column by: a CJK character is about two, and an
+   * agent asking in Chinese offers its choices in Chinese. Erring wide is the cheap direction — a
+   * column a little too roomy, against a label that wraps when it did not have to.
+   */
+  function labelWidth(s){
+    var n = 0;
+    for(var i=0;i<s.length;i++) n += s.charCodeAt(i) >= 0x2e80 ? 2 : 1;
+    return n;
   }
 
   /**
@@ -2036,9 +2099,15 @@ const SCRIPT = `
     if(line) return toggleLine(line);
     var b = e.target.closest ? e.target.closest('button[data-btn]') : null;
     if(!b) return;
+    // Lit as well as disabled: the answer is a round trip away, and a button that only greys out
+    // reads as "nothing happened" for exactly that long. The repaint that answers the tap rewrites
+    // the menu and takes the class with it. A refusal (409: that message is gone) leaves the
+    // button disabled as it always did, but no longer lit — nothing is coming.
     b.disabled = true;
+    b.classList.add('busy');
     post('api/click',{topic:topic,messageId:b.getAttribute('data-msg'),buttonId:b.getAttribute('data-btn')},2)
-      .catch(function(){ b.disabled=false; });
+      .then(function(r){ if(!r.ok) b.classList.remove('busy'); })
+      .catch(function(){ b.disabled=false; b.classList.remove('busy'); });
   });
 
   /**

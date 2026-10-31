@@ -235,6 +235,35 @@ describe('withOutboundPacing — one budget per CHAT', () => {
     expect(inner.calls).toEqual(['sendMessage:55', 'sendMessage:66']);
   });
 
+  it('a platform that declares paceByLane gives each lane its own budget', async () => {
+    // The web UI: every topic is a lane on one channel and nothing at the far end counts writes,
+    // so one topic streaming must not hold back a menu tap in another (2026-10-31: 1–7 s).
+    const inner = makeAdapter();
+    inner.capabilities.paceByLane = true;
+    const clock = makeClock();
+    const paced = withOutboundPacing(inner, new OutboundPacer(makeOpts({ burst: 1, ratePerSec: 0.001 }), clock));
+
+    void paced.sendMessage({ channel: 'main', thread: 'busy' }, 'spends the topic’s one token');
+    void paced.sendMessage({ channel: 'main', thread: 'busy' }, 'queued behind it');
+    void paced.sendMessage({ channel: 'main', thread: 'quiet' }, 'a menu');
+    await clock.settle();
+
+    expect(inner.calls).toEqual(['sendMessage:main/busy', 'sendMessage:main/quiet']);
+  });
+
+  it('paceByLane still bills a lane-less write to the channel', async () => {
+    const inner = makeAdapter();
+    inner.capabilities.paceByLane = true;
+    const clock = makeClock();
+    const paced = withOutboundPacing(inner, new OutboundPacer(makeOpts({ burst: 1, ratePerSec: 0.001 }), clock));
+
+    void paced.sendMessage({ channel: 'main' }, 'a');
+    void paced.sendMessage({ channel: 'main' }, 'b');
+    await clock.settle();
+
+    expect(inner.calls).toEqual(['sendMessage:main']);
+  });
+
   it('a MessageRef argument is resolved to its chat, same as an address', async () => {
     const inner = makeAdapter();
     const clock = makeClock();

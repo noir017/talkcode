@@ -346,4 +346,17 @@ export interface PlatformCapabilities {
    * "can register at runtime".
    */
   canRegisterSlashAtRuntime?: boolean;
+  /**
+   * Whether the outbound pacer budgets each lane (thread) on its own instead of the channel as one
+   * (daemon/paced-adapter.ts). Absent/undefined treated as false, which is right for every chat
+   * service: a Telegram forum topic shares its chat's flood limit, and a budget per topic would
+   * hand a busy forum N times what the platform takes.
+   *
+   * The web UI is the platform this is for. Nothing at its far end counts writes, and its topics
+   * are lanes on ONE channel — so under the default every topic queued behind every other topic's
+   * streaming, at the shared 1 write/s. A menu tap in a quiet topic waited 1.1 s with one other
+   * topic busy and 5.1 s with three (the real OutboundPacer on a fake clock, 2026-10-31). Per lane,
+   * a topic waits only for its own writes; the instance-wide ceiling still bounds the whole page.
+   */
+  paceByLane?: boolean;
 }

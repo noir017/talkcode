@@ -27,9 +27,9 @@ describe('resolvePageSize', () => {
     expect(resolvePageSize(12)).toBe(12);
   });
 
-  // Not defensive noise: the ceiling is what Discord can physically carry in one message, and the
-  // way a too-large page fails there is the whole menu being rejected.
-  it('clamps a declared size to what one message can hold', () => {
+  // Not defensive noise: a page past the ceiling is taller than a phone screen in the web UI, and a
+  // typo'd size on a chat platform is a menu the platform rejects outright.
+  it('clamps a declared size to the ceiling', () => {
     expect(resolvePageSize(100)).toBe(PAGE_SIZE_MAX);
   });
 

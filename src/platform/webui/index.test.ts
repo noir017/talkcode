@@ -43,15 +43,20 @@ describe('webui adapter: what it says it can do', () => {
     expect(caps.renameThread).toBe(true);
   });
 
-  it('declares the menu page size every other platform declares', () => {
-    // `menu-page-size.test.ts` holds this invariant for the Satori profiles and cannot see this
-    // adapter, which is exactly why it is asserted here: which client someone reads from should
-    // not change how many directories `/cd` offers them.
+  it('declares the largest menu page core allows', () => {
+    // More than the chat platforms' 12 on purpose: the page lays a menu out as a grid, so a page
+    // here costs a fraction of the rows it does there. Equal to the ceiling and not past it, or core
+    // would quietly draw a smaller page than this adapter believes it asked for.
     const size = adapter().capabilities.menuPageSize;
-    expect(size).toBe(12);
+    expect(size).toBe(PAGE_SIZE_MAX);
     expect(size).toBeGreaterThan(PAGE_SIZE);
-    expect(size).toBeLessThanOrEqual(PAGE_SIZE_MAX);
     expect(resolvePageSize(size)).toBe(size);
+  });
+
+  it('asks the pacer for a budget per topic, not one for the whole page', () => {
+    // Every topic is a lane on the one channel: on a shared budget a menu tap in a quiet topic
+    // queued behind every other topic's streaming (daemon/paced-adapter.ts).
+    expect(adapter().capabilities.paceByLane).toBe(true);
   });
 
   it('claims buttons AND editButtons, without which /model, /cd and /setting degrade to text', () => {
