@@ -169,8 +169,33 @@ describe('webui adapter: outbound', () => {
   it('publishes a sent file behind a token rather than its path', async () => {
     const a = adapter();
     const address = await somewhere(a);
-    const ref = await a.sendFile(address, { path: '/tmp/secret-place/report.pdf', name: 'report.pdf' });
+    const source = path.join(dir, 'report.pdf');
+    fs.writeFileSync(source, 'pdf bytes');
+    const ref = await a.sendFile(address, { path: source, name: 'report.pdf' });
     expect((await a.fetchHistory(address, {})).some((m) => m.messageId === ref.messageId)).toBe(true);
+  });
+
+  it('keeps its own copy of a sent file, so the download outlives the path it came from', async () => {
+    // What a remote agent's send-file looks like from here: the daemon fetches the file into a
+    // temporary one and removes it as soon as sendFile returns (daemon.ts sendAgentFile).
+    const a = adapter();
+    const address = await somewhere(a);
+    const tmp = fs.mkdtempSync(path.join(dir, 'talkcode-file-'));
+    const source = path.join(tmp, 'pushme.apk');
+    fs.writeFileSync(source, 'apk bytes', { mode: 0o644 });
+    await a.sendFile(address, { path: source, name: 'pushme.apk' });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const kept = path.join(dir, 'webui-uploads-webui');
+    const files = fs.readdirSync(kept);
+    expect(files).toHaveLength(1);
+    expect(fs.readFileSync(path.join(kept, files[0]!), 'utf8')).toBe('apk bytes');
+  });
+
+  it('fails a send-file whose path cannot be read, instead of publishing a link to nothing', async () => {
+    const a = adapter();
+    const address = await somewhere(a);
+    await expect(a.sendFile(address, { path: path.join(dir, 'nope.pdf') })).rejects.toThrow(/ENOENT/);
+    expect((await a.fetchHistory(address, {})).length).toBe(0);
   });
 
   it('accepts all three inbound registrations, including the one it never calls', () => {
@@ -193,7 +218,7 @@ describe('webui adapter: outbound', () => {
   });
 });
 
-describe('webui adapter: where the operator\'s own pictures are kept', () => {
+describe('webui adapter: where the operator\'s pictures and the agent\'s files are kept', () => {
   it('writes one under a name of its own, readable once `ready` settles, and deletes it on discard', async () => {
     const at = path.join(dir, 'uploads');
     const store = diskUploadStore(at);
@@ -226,6 +251,28 @@ describe('webui adapter: where the operator\'s own pictures are kept', () => {
     const store = diskUploadStore(at);
     fs.writeFileSync(at, 'x');
     await expect(store.save('a.png', 'AAAA').ready).resolves.toBeUndefined();
+  });
+
+  it('copies an agent\'s file under a name of its own, owner-only whatever the source was', async () => {
+    const at = path.join(dir, 'uploads');
+    const store = diskUploadStore(at);
+    const source = path.join(dir, 'report of the week.pdf');
+    fs.writeFileSync(source, 'report bytes', { mode: 0o644 });
+    const file = await store.copy(source);
+    expect(path.dirname(file)).toBe(at);
+    expect(path.basename(file)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fs.readFileSync(file, 'utf8')).toBe('report bytes');
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    // The source is only read.
+    expect(fs.readFileSync(source, 'utf8')).toBe('report bytes');
+  });
+
+  it('rejects a copy it cannot make, and leaves nothing behind', async () => {
+    const at = path.join(dir, 'uploads');
+    const store = diskUploadStore(at);
+    await expect(store.copy(path.join(dir, 'gone.pdf'))).rejects.toThrow(/ENOENT/);
+    await expect(store.copy(dir)).rejects.toThrow();
+    expect(fs.readdirSync(at)).toEqual([]);
   });
 });
 

@@ -165,14 +165,16 @@ function describe(instance: WebuiInstance): Pick<PlatformAdapter, 'platform' | '
 }
 
 /**
- * The operator's own pictures, on disk, so the message they sent can show them (room.ts `UploadStore`).
+ * The operator's own pictures and the agent's sent files, on disk, so the page can serve them from a
+ * copy of its own (room.ts `UploadStore`).
  *
  * Emptied when the adapter is built. The only thing that names these files is the download table,
  * which lives in memory, so after a restart nothing can reach them and they would only pile up.
  * Per instance and beside its topic file, for the reason that file is per instance.
  *
  * The browser's file name is never part of the path, only its extension — which `inlineImageType`
- * has already matched against its closed list before anything reaches here.
+ * has already matched against its closed list before anything reaches here. A copy of the agent's
+ * file takes no part of its name at all: the download is served under `Download.name`, not this.
  */
 export function diskUploadStore(dir: string): UploadStore {
   fs.rmSync(dir, { recursive: true, force: true });
@@ -188,6 +190,20 @@ export function diskUploadStore(dir: string): UploadStore {
         .then(() => fs.promises.writeFile(file, Buffer.from(base64, 'base64'), { mode: 0o600 }))
         .catch(failed(`keep ${name} for the transcript`));
       return { path: file, ready };
+    },
+    async copy(source) {
+      const file = path.join(dir, randomUUID());
+      await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+      try {
+        await fs.promises.copyFile(source, file);
+        // copyFile gives the copy the source's mode, and the agent's file may well be 0644.
+        await fs.promises.chmod(file, 0o600);
+      } catch (e) {
+        // Half a file is worse than none: nothing would ever name it to delete it.
+        await fs.promises.rm(file, { force: true });
+        throw e;
+      }
+      return file;
     },
     discard(file) {
       fs.promises.rm(file, { force: true }).catch(failed(`delete ${file}`));
@@ -348,7 +364,8 @@ function outbound(room: WebRoom, instance: WebuiInstance): Outbound {
     async sendFile(address, file) {
       const topic = topicOf(address, 'sendFile');
       const name = file.name ?? file.path.split('/').pop() ?? 'file';
-      const url = room.publish(file.path, name);
+      // Copied before this returns, because the path may not outlive the call — see `publishCopy`.
+      const url = await room.publishCopy(file.path, name);
       const caption = file.caption ?? '';
       // A screenshot the agent just took is worth more on screen than in the downloads folder,
       // so an image says so and the page draws it. Everything else stays a link, including the

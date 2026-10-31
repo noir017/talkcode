@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 
 import { WebuiConfigSchema } from '../config-schemas.js';
 import { WebAuth } from './auth.js';
+import { diskUploadStore } from './index.js';
 import { WebRoom, type WebuiInstance } from './room.js';
 import { createWebServer, type WebServer } from './server.js';
 import { WebSso, type SsoOptions } from './sso.js';
@@ -836,6 +837,31 @@ describe('webui server: traffic', () => {
       expect(await res.text()).toBe('png bytes');
     } finally {
       fs.rmSync(file, { force: true });
+    }
+  });
+
+  it('serves a file the agent sent after the path it was sent from is gone', async () => {
+    // A remote agent's send-file: the daemon fetches the file into a temporary one, hands it to
+    // sendFile, and removes it the moment that returns. Before the copy, the click that came after
+    // got a 404 JSON body, which a `download` link saves as `<token>.json`.
+    const { base, room } = await boot();
+    const cookie = await signIn(base);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'talkcode-file-'));
+    const kept = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-kept-'));
+    try {
+      room.useUploads(diskUploadStore(kept));
+      const source = path.join(tmp, 'pushme-0.1.1.apk');
+      fs.writeFileSync(source, 'apk bytes');
+      const url = await room.publishCopy(source, 'pushme-0.1.1.apk');
+      fs.rmSync(tmp, { recursive: true, force: true });
+      const res = await fetch(`${base}/${url}`, { headers: { cookie } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/octet-stream');
+      expect(res.headers.get('content-disposition')).toContain('filename="pushme-0.1.1.apk"');
+      expect(await res.text()).toBe('apk bytes');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(kept, { recursive: true, force: true });
     }
   });
 

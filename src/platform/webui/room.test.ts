@@ -658,15 +658,26 @@ describe('WebRoom: inbound', () => {
   });
 
   /** An UploadStore that records instead of writing: paths are predictable, `ready` is already settled. */
-  function fakeUploads(): UploadStore & { saved: Array<{ name: string; base64: string }>; discarded: string[] } {
+  function fakeUploads(): UploadStore & {
+    saved: Array<{ name: string; base64: string }>;
+    copied: string[];
+    discarded: string[];
+  } {
     const saved: Array<{ name: string; base64: string }> = [];
+    const copied: string[] = [];
     const discarded: string[] = [];
     return {
       saved,
+      copied,
       discarded,
       save(name, base64) {
         saved.push({ name, base64 });
         return { path: `/uploads/${saved.length}-${name}`, ready: Promise.resolve() };
+      },
+      async copy(source) {
+        if (source.includes('missing')) throw new Error(`ENOENT: no such file or directory, open '${source}'`);
+        copied.push(source);
+        return `/uploads/copy-${copied.length}`;
       },
       discard(p) {
         discarded.push(p);
@@ -730,7 +741,7 @@ describe('WebRoom: inbound', () => {
     expect(lastHtml(seen)).toContain('<span class="chip">a.png</span>');
   });
 
-  it('deletes a kept picture once the download table lets it go — and never a file the agent sent', async () => {
+  it('deletes a kept picture once the download table lets it go — and never a path it was handed', async () => {
     const { room, topic } = attached();
     const uploads = fakeUploads();
     room.useUploads(uploads);
@@ -739,11 +750,43 @@ describe('WebRoom: inbound', () => {
     // Fill the table: each publish past its size evicts the oldest entry.
     for (let i = 0; i < 199; i++) room.publish(`/work/f${i}.txt`, `f${i}.txt`);
     expect(uploads.discarded).toEqual([]);
-    room.publish('/work/next.txt', 'next.txt'); // evicts the agent's file
+    room.publish('/work/next.txt', 'next.txt'); // evicts the path it was handed
     room.publish('/work/next2.txt', 'next2.txt'); // evicts the upload
     await Promise.resolve();
     await Promise.resolve();
     expect(uploads.discarded).toEqual(['/uploads/1-mine.png']);
+  });
+
+  it('serves a file the agent sent from a copy, which is deleted like an upload once evicted', async () => {
+    // The agent's path may not outlive `sendFile`: a remote agent's file is a temporary one the
+    // daemon removes as soon as the call returns. Serving the path itself made every such link a 404.
+    const { room } = attached();
+    const uploads = fakeUploads();
+    room.useUploads(uploads);
+    const url = await room.publishCopy('/tmp/talkcode-file-x/report.pdf', 'report.pdf');
+    expect(uploads.copied).toEqual(['/tmp/talkcode-file-x/report.pdf']);
+    expect(room.resolveDownload(url.slice(2))).toMatchObject({ path: '/uploads/copy-1', name: 'report.pdf', owned: true });
+    for (let i = 0; i < 200; i++) room.publish(`/work/f${i}.txt`, `f${i}.txt`);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(uploads.discarded).toEqual(['/uploads/copy-1']);
+    // The agent's own file was only ever read.
+    expect(uploads.discarded).not.toContain('/tmp/talkcode-file-x/report.pdf');
+  });
+
+  it('refuses a file the agent sent that cannot be read, rather than publishing a link to nothing', async () => {
+    // Not a link that 404s later: the agent is still waiting on its send-file and hears the error.
+    const { room } = attached();
+    const uploads = fakeUploads();
+    room.useUploads(uploads);
+    await expect(room.publishCopy('/work/missing.pdf', 'missing.pdf')).rejects.toThrow(/ENOENT/);
+    expect(uploads.copied).toEqual([]);
+  });
+
+  it('publishes the agent\'s path itself when nothing keeps copies', async () => {
+    const { room } = attached();
+    const url = await room.publishCopy('/tmp/report.pdf', 'report.pdf');
+    expect(room.resolveDownload(url.slice(2))).toEqual({ path: '/tmp/report.pdf', name: 'report.pdf' });
   });
 
   it('ignores an empty submission', () => {

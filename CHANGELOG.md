@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file an agent on a host sends to the web UI can be downloaded again.** The gateway fetches
+  such a file from the host into a temporary one and deletes it once it has been sent. Every other
+  platform has uploaded it by then, but the web UI only noted where the file was and read it when
+  the link was clicked, so the link answered 404 — and the browser saved the error as a `.json`
+  file. This was so for every file an agent on a host sent since remote hosts arrived in 2.9.0. The
+  web UI now copies a file when it is sent and serves the copy, which also means a file the agent
+  changes or deletes afterwards downloads as it was sent. Copies are kept as long as the link is,
+  the last 200 files. A path that cannot be read now fails the agent's `send-file`, instead of
+  posting a link that leads nowhere. Links sent before this release still lead nowhere; ask the
+  agent to send the file again.
+
 ## [2.12.0] - 2026-10-30
 
 ### Changed

@@ -143,7 +143,8 @@ interface Stored {
 export type Sink = (id: string, ev: WebEvent) => void;
 
 /**
- * Where the operator's own pictures are kept, so the message they sent can show them.
+ * Where the files this room serves from a copy of its own are kept: the operator's pictures, so the
+ * message they sent can show them, and every file the agent sends (`publishCopy`).
  *
  * Injected (`useUploads`) rather than written here, so this file stays free of the disk the way it
  * is free of HTTP — `index.ts` owns the directory. Absent in a test that does not care, which then
@@ -156,6 +157,12 @@ export interface UploadStore {
    * which the page already turns into "show the name, hide the frame".
    */
   save(name: string, base64: string): { path: string; ready: Promise<void> };
+  /**
+   * Copy a file the agent sent; resolves with where the copy is, once all of it is there. Unlike
+   * `save` this one rejects: the agent is still waiting on its `send-file`, and a file that cannot
+   * be read is its error to hear, not a link that will 404.
+   */
+  copy(source: string): Promise<string>;
   /** Delete one the download table has let go of. Best-effort. */
   discard(path: string): void;
 }
@@ -194,12 +201,12 @@ export interface Kept {
  */
 const KEEP_MS = 3_000;
 
-/** One entry of the download table. `ready`/`owned` only on an upload this room wrote itself. */
+/** One entry of the download table. `ready`/`owned` only on a file this room wrote itself. */
 interface Download {
   path: string;
   name: string;
   ready?: Promise<void>;
-  /** The file is ours to delete once nothing can reach it — never true of a file the agent sent. */
+  /** The file is ours to delete once nothing can reach it — never true of a path handed to `publish`. */
   owned?: boolean;
 }
 
@@ -905,9 +912,9 @@ export class WebRoom {
    * token this map alone can resolve. Relative (`f/<token>`, no leading slash) so the page
    * works unchanged when a reverse proxy mounts it under a sub-path.
    *
-   * `upload` marks a file this room wrote itself (see `submit`): the download waits for its write,
-   * and when the table lets it go nothing else can reach it, so it is deleted then. A file the agent
-   * sent is the agent's and is never touched.
+   * `upload` marks a file this room wrote itself (see `submit`, `publishCopy`): the download waits
+   * for its write, and when the table lets it go nothing else can reach it, so it is deleted then.
+   * A path published without it is someone else's and is never touched.
    */
   publish(path: string, name: string, upload?: { ready: Promise<void> }): string {
     if (this.downloads.size >= MAX_DOWNLOADS) {
@@ -921,6 +928,25 @@ export class WebRoom {
     const token = randomUUID().replace(/-/g, '');
     this.downloads.set(token, { path, name, ...(upload ? { ready: upload.ready, owned: true } : {}) });
     return `f/${token}`;
+  }
+
+  /**
+   * Publish a file the agent sent, from a copy taken now rather than from where it lies.
+   *
+   * Every other platform uploads the bytes inside `sendFile`; this one reads them when someone
+   * clicks, which can be days later, and by then the path may name nothing. It names nothing at
+   * once for an agent on a remote host: the daemon fetches that file into a temporary one and
+   * removes it as soon as `sendFile` returns (`daemon.ts` sendAgentFile), so every such link was a
+   * 404 — which a browser following a `download` link saves as `<token>.json`. A local agent's
+   * `/tmp` is no better, and a report rewritten since would be served as its newer self. So the copy
+   * is complete before this resolves, and like an upload it is deleted when the table lets it go.
+   *
+   * Without a store (a test that does not care) the path itself is published, as before.
+   */
+  async publishCopy(path: string, name: string): Promise<string> {
+    const store = this.uploads;
+    if (!store) return this.publish(path, name);
+    return this.publish(await store.copy(path), name, { ready: Promise.resolve() });
   }
 
   resolveDownload(token: string): Download | undefined {

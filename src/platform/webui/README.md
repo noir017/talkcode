@@ -821,7 +821,7 @@ things about it:
   picture named by a UUID — the browser's name is never part of a path, only its extension.
 - **Nothing outlives what can reach it.** The download table (200 entries, shared with the agent's
   files) is in memory, so the directory is emptied when the adapter is built, and an upload the
-  table evicts is deleted then. A file the agent sent is the agent's and is never deleted.
+  table evicts is deleted then.
 - **The write is async and the download waits for it** (`Download.ready`). The echo naming the URL
   goes out as the write starts, and the page can ask before it finishes; `ready` never rejects, so
   a failed write is a logged 404 — a hidden frame and the name chip, not a crash.
@@ -830,6 +830,17 @@ things about it:
   rebuilt from `aa_unsent`, which keeps the names and never the bytes — so it would show the picture
   until the next reload and then not. After a restart the cached echo's pictures 404 and hide,
   leaving the chips — the same degradation as an agent's evicted picture.
+
+**A file the agent sends is served from a copy taken when it was sent** (since 2.12.1). Every other
+platform uploads the bytes inside `sendFile`; this one reads them when someone clicks, and the path
+may not live that long. For an agent on a [remote host](../../../docs/remote-hosts.md) it does not
+live at all: `daemon.ts` `sendAgentFile` fetches the file into a temporary one and removes it as
+soon as `sendFile` returns, so from 2.9.0, when remote hosts arrived, every such link answered 404 —
+and a browser following a `download` link saves that JSON body as `<token>.json`, which is how it
+was reported. So `room.ts` `publishCopy` has the `UploadStore` copy the file into the same directory
+before `sendFile` returns, and the copy is `owned` like an upload: `0600`, named by a UUID alone,
+deleted on eviction. A path that cannot be read now fails the agent's `send-file` instead of
+publishing a link to nothing. The agent's own file is only ever read.
 
 ### The other door: `sso.ts`
 
