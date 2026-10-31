@@ -42,6 +42,13 @@ behind the topic, the power button beside its title ends the process (`/kill`) �
 conversation is kept, and the next message picks up where it left off. Both simply
 send the command, so a draft in the composer is left where it is.
 
+**Closing idle agents.** An agent process stays up after its turn until the daemon's idle
+timeout reclaims it (the dim blue dot). **Close idle agents (N)** at the bottom of the topic
+list ends all of them at once: it lists the topics it is about to close, asks, and then says
+which were closed. Each conversation is kept, and the next message in a topic starts its agent
+again where it left off. A topic that starts working in the meantime is left running, and
+starred topics are closed like the rest.
+
 **Tool calls, in full.** Each tool the agent runs is one row in its tool bubble, and here
 a row carries the whole command — up to 2000 characters — where a chat app gets the
 first 40 (`tools.previewLimit`). The row is cut at the edge of the bubble, so a wide

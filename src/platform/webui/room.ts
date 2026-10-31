@@ -277,6 +277,8 @@ export class WebRoom {
   private liveness: ((ref: ConversationRef) => boolean) | null = null;
   /** Likewise — see `useScheduleLookup`. Only ever read when the store is full. */
   private scheduled: ((ref: ConversationRef) => boolean) | null = null;
+  /** Likewise, but it acts: ends an idle topic's agent process. See `closeIdle`. */
+  private idleReclaim: ((ref: ConversationRef) => boolean) | null = null;
   /** The poll that keeps `liveness` honest; only ever running once a lookup exists. */
   private liveTimer: NodeJS.Timeout | null = null;
   /**
@@ -472,6 +474,46 @@ export class WebRoom {
    */
   useScheduleLookup(lookup: (ref: ConversationRef) => boolean): void {
     this.scheduled = lookup;
+  }
+
+  /** Accept the daemon's way of ending an idle topic's agent process — see `closeIdle`. */
+  useIdleReclaim(reclaim: (ref: ConversationRef) => boolean): void {
+    this.idleReclaim = reclaim;
+  }
+
+  /**
+   * End the agent process behind each of these topics that is still idle, and say which were
+   * ended. The page's "Close idle agents": `topicIds` is the list the operator confirmed, not a
+   * fresh scan, so nothing is closed that they were not shown.
+   *
+   * Idle is checked twice, and neither check is the page's. Here: the topic exists and shows no
+   * turn and no question right now (`typing` covers a background burst after a turn, which the
+   * daemon's merger does not). Then the daemon's own gates (`reclaimIdleForRef`), which are the
+   * idle sweeper's. A topic that began working after the dialog was drawn fails one of them and is
+   * left alone — it comes back in `kept`, as does one whose runtime cannot resume a session, so the
+   * page can say how many it could not close. The conversations themselves are untouched: the next
+   * message in a topic starts its agent again where it left off.
+   */
+  closeIdle(topicIds: readonly string[]): { closed: string[]; kept: string[] } {
+    const closed: string[] = [];
+    const kept: string[] = [];
+    for (const id of new Set(topicIds)) {
+      if (!this.topics.has(id)) continue;
+      const room = this.rooms.get(id);
+      let ended = false;
+      if (this.idleReclaim && !room?.typing && !room?.awaiting.size) {
+        try {
+          ended = this.idleReclaim(this.conversation(id));
+        } catch (e) {
+          console.warn(`[webui] could not close the agent of topic ${id}:`, e instanceof Error ? e.message : e);
+        }
+      }
+      (ended ? closed : kept).push(id);
+    }
+    console.log(`[webui] "${this.instance.id}": closed ${closed.length} idle agent(s)${kept.length ? `, ${kept.length} left running` : ''}`);
+    // The dots go grey now rather than at the next liveness poll, up to 15 s later.
+    if (closed.length) this.announceTopics();
+    return { closed, kept };
   }
 
   /** `scheduled`, swallowing a failing lookup for the same reason `liveOf` does. */

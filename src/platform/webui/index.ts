@@ -479,6 +479,7 @@ function lifecycle(
   | 'useWorkdirLookup'
   | 'useLivenessLookup'
   | 'useScheduleLookup'
+  | 'useIdleReclaim'
   | 'registerCommands'
   | 'start'
   | 'stop'
@@ -503,6 +504,11 @@ function lifecycle(
      * a chat app's list is the platform's, and this one evicts past its cap. Read only then.
      */
     useScheduleLookup: (lookup) => room.useScheduleLookup(lookup),
+    /**
+     * The only implementor because it is the only platform that lists its conversations' agents
+     * (the dots above) and so the only one with somewhere to offer "close the idle ones".
+     */
+    useIdleReclaim: (reclaim) => room.useIdleReclaim(reclaim),
     /**
      * Accepted and never called.
      *

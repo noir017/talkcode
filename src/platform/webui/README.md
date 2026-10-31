@@ -237,6 +237,31 @@ for Stop mid-reply has in there. The power button does not wait out the poll to 
 daemon ends the child synchronously before it sends the ack (`answerDaemonCommand`), and the ack
 is a posted message, which announces the list.
 
+**"Close idle agents" ends every dim-blue topic's process at once** (since 2.16.0), from the
+sidebar footer above Clear; it shows the count and is hidden at zero. Unlike the power button it is
+not a typed command, and that is deliberate: a `/kill` per topic would leave an echo and an ack in
+every room it touched, twenty messages for ten topics. Instead `POST api/topics/close-idle` carries
+the ids, `WebRoom.closeIdle` hands each to the daemon (`PlatformAdapter.useIdleReclaim`), and the
+answer says which were closed and which were left running. Four decisions in it:
+
+- **It acts on the list the operator was shown.** The dialog names every topic (title and
+  `host · dir`), and those ids are what is posted — a topic that went idle while the dialog was
+  open is not included, because nobody confirmed it.
+- **Idle is checked twice, and neither check is the page's.** The room skips a topic with a turn
+  (`typing`, which also covers a background burst after one) or a question on screen; the daemon
+  then applies the idle sweeper's gates (`reclaimIdleForRef` → `reclaimSession`). A topic that
+  started working after the list was drawn is skipped, never cut off — `/kill` would stop it.
+- **Posted once, not retried.** A retry after a lost answer would find every agent already gone and
+  report them all as left running.
+- **The result is shown in the dialog**, row by row, not in `#note`: on a phone the drawer covers
+  the transcript, and the status line with it. `closeIdle` announces the list, so the dots go grey
+  at once rather than at the next liveness poll.
+
+A starred topic is closed like any other: a star keeps a topic from eviction and the sweep, not its
+process. Checked end to end on 2026-10-31 against a real daemon with real cc children: of three
+resident agents, the two idle ones exited and the one in a 75 s turn finished it untouched, and a
+closed topic's next message resumed its conversation.
+
 **The strip above the composer is the agent's live status** — what the footer says once per reply,
 kept current: agent, model and effort; a context meter; session cost; claude's prompt-cache
 countdown; agy's quota pools. The daemon pushes it (`PlatformAdapter.setStatus`, from

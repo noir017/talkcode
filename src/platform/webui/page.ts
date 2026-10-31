@@ -185,6 +185,27 @@ body{background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,
 #sidebar-footer{border-top:1px solid var(--line);padding:8px}
 #clear-topics{display:block;width:100%;background:none;border:0;padding:7px 9px;border-radius:5px;color:var(--dim);font:inherit;font-size:12px;text-align:left;cursor:pointer;transition:color .15s,background .15s}
 #clear-topics:hover{color:#f87171;background:rgba(248,113,113,.12)}
+/* Above Clear and dressed like it, but it ends processes, not topics, so it does not turn red: it
+   costs a respawn on each topic's next message and nothing more. Hidden while no agent is idle. */
+#close-idle{display:block;width:100%;background:none;border:0;padding:7px 9px;border-radius:5px;color:var(--dim);font:inherit;font-size:12px;text-align:left;cursor:pointer;transition:color .15s,background .15s}
+#close-idle:hover{color:var(--fg);background:var(--field)}
+/* The confirmation for it: names every topic whose agent is about to go, because "close 7 agents"
+   does not say whether the one you were about to come back to is among them. A dialog of the page's
+   own rather than confirm(), which cannot hold a list a phone can scroll. The list scrolls inside
+   the box, so a long one never pushes the buttons off screen. */
+#idle-dialog{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px}
+#idle-box{background:var(--bg);border:1px solid var(--line);border-radius:8px;width:min(440px,100%);max-height:80vh;max-height:80dvh;display:flex;flex-direction:column;gap:10px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#idle-title{font-weight:600}
+#idle-why{margin:0;color:var(--dim);font-size:12.5px}
+#idle-list{list-style:none;margin:0;padding:0;overflow-y:auto;min-height:0;border-top:1px solid var(--line)}
+#idle-list li{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line)}
+.idle-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.idle-name,.idle-dir{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.idle-dir{color:var(--dim);font-size:12px}
+.idle-out{flex:none;font-size:12px;color:var(--dim)}
+.idle-out.kept{color:#fbbf24}
+.idle-acts{display:flex;justify-content:flex-end;gap:8px}
+#idle-go{color:#f87171;border-color:rgba(248,113,113,.4)}
 
 #chat{flex:1;display:flex;flex-direction:column;height:100%;min-width:0;position:relative}
 #chat-header{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);min-height:42px;font-size:13px}
@@ -494,6 +515,8 @@ button:disabled{opacity:.5;cursor:default}
   #reader-bar{padding:0 4px 0 12px}
   #reader-close{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:44px;font-size:20px}
   .files .view{padding:6px 12px}
+  /* The idle-agents dialog's two answers, one of which ends processes: 34px tall at 390px before. */
+  .idle-acts button{min-height:44px;padding:0 16px}
   /* The status strip's token counts, on a screen with no room for them: the percentage beside the
      meter says the same thing in four characters, and a tap brings the counts back. Without this
      the line clipped before the cache and quota — the parts that change. */
@@ -511,7 +534,8 @@ const SCRIPT = `
       chips=$('chips'), hints=$('hints'), typing=$('typing'), note=$('note'), picker=$('picker'),
       bar=$('topics'), sidebar=$('sidebar'), collapseBtn=$('collapse-sidebar'),
       expandBtn=$('expand-sidebar'), newTopicBtn=$('new-topic'), backdrop=$('backdrop'),
-      clearBtn=$('clear-topics'), chatTitle=$('topic-title'), chatStatus=$('topic-status'),
+      clearBtn=$('clear-topics'), idleBtn=$('close-idle'), idleDialog=$('idle-dialog'), idleTitle=$('idle-title'),
+      idleWhy=$('idle-why'), idleList=$('idle-list'), idleGo=$('idle-go'), idleCancel=$('idle-cancel'), chatTitle=$('topic-title'), chatStatus=$('topic-status'),
       chat=$('chat'), termBtn=$('term-toggle'), termHost=$('term-frames'),
       termName=$('term-name'), termMinBtn=$('term-min'), termEndBtn=$('term-end'),
       lightbox=$('lightbox'), lightboxImg=$('lightbox-img'),
@@ -1445,6 +1469,9 @@ const SCRIPT = `
     // Says what it will do: with stars in the list it no longer clears all of them.
     clearBtn.textContent = stars ? 'Clear unstarred topics' : 'Clear all topics';
     clearBtn.title = stars ? 'Forget every topic except the starred ones and start a new one' : 'Forget every topic and start a new one';
+    var idle=idleTopics().length;
+    idleBtn.hidden = !idle;
+    idleBtn.textContent = 'Close idle agents ('+idle+')';
     if(cur){
       chatTitle.textContent=cur.title || 'Untitled';
       // Same order as the dot, and the same reason: during an ask the turn is still open, so
@@ -2058,6 +2085,97 @@ const SCRIPT = `
     });
   });
 
+  // ── Closing idle agents ────────────────────────────────────────────────────
+  /**
+   * The topics whose agent is up and doing nothing — the dim dot, read off the same flags it is
+   * drawn from, so the button's count and the dots cannot disagree. In the sidebar's order: starred
+   * first, so the dialog lists them where the eye already knows to find them.
+   */
+  function idleTopics(){
+    var on=[], rest=[];
+    for(var i=0;i<topics.length;i++){
+      var t=topics[i];
+      if(!t.live || t.running || t.asking) continue;
+      (t.starred ? on : rest).push(t);
+    }
+    return on.concat(rest);
+  }
+
+  /**
+   * What the dialog was opened on: the ids it lists, which are the ids it posts. Not re-read from the
+   * topic list at the click — a topic that went idle while the dialog was open was not shown, and
+   * nothing is closed that the operator did not see. idleSeq drops an answer for a dialog since closed.
+   */
+  var idleIds=[], idleSeq=0;
+  function openIdle(){
+    var list=idleTopics();
+    if(!list.length) return;
+    idleIds=[];
+    var h='';
+    for(var i=0;i<list.length;i++){
+      var t=list[i];
+      idleIds.push(t.id);
+      var where=t.dir?(t.dir.host?t.dir.host+' · ':'')+t.dir.name:'';
+      h += '<li data-idle="'+text(t.id)+'"><span class="idle-main"><span class="idle-name">'+text(t.title || 'Untitled')+'</span>'
+         + (where?'<span class="idle-dir">'+text(where)+'</span>':'')+'</span><span class="idle-out"></span></li>';
+    }
+    idleList.innerHTML=h;
+    idleTitle.textContent='Close '+list.length+' idle agent'+(list.length===1?'':'s')+'?';
+    idleWhy.hidden=false;
+    idleGo.hidden=false;
+    idleGo.disabled=false;
+    idleCancel.textContent='Cancel';
+    idleDialog.hidden=false;
+    // Cancel, not Close: an Enter pressed out of habit should be the answer that changes nothing.
+    idleCancel.focus();
+  }
+  function closeIdle(){
+    if(idleDialog.hidden) return;
+    idleDialog.hidden=true;
+    idleSeq++;
+    idleList.textContent='';
+  }
+  /**
+   * The result, in the dialog rather than under the transcript: on a phone the sidebar is a drawer
+   * over the transcript, and the status line there is behind it. Each row says what became of it,
+   * because a topic that started working since the list was drawn is left alone (room.ts closeIdle),
+   * and "5 of 6" alone would not say which one.
+   *
+   * Posted once, not retried: a retry after an answer that was lost would find every agent already
+   * ended and report them all as left running.
+   */
+  function goIdle(){
+    idleGo.disabled=true;
+    var mine=++idleSeq;
+    post('api/topics/close-idle',{topics:idleIds},0).then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+      if(mine!==idleSeq) return;
+      if(!d) return idleFailed('The daemon refused the request.');
+      var closed={}, i;
+      for(i=0;i<d.closed.length;i++) closed[d.closed[i]]=1;
+      var rows=idleList.querySelectorAll('li');
+      for(i=0;i<rows.length;i++){
+        var out=rows[i].querySelector('.idle-out'), ok=closed[rows[i].getAttribute('data-idle')];
+        out.textContent = ok ? 'closed' : 'left running';
+        out.className = 'idle-out' + (ok ? '' : ' kept');
+      }
+      var n=d.closed.length, k=d.kept.length;
+      idleTitle.textContent='Closed '+n+' idle agent'+(n===1?'':'s')
+        + (k ? '; '+k+' left running — busy again, or unable to resume' : '');
+      idleWhy.hidden=true;
+      idleGo.hidden=true;
+      idleCancel.textContent='Done';
+      idleCancel.focus();
+    }, function(){ if(mine===idleSeq) idleFailed('Could not reach the server.'); });
+  }
+  function idleFailed(why){
+    idleTitle.textContent=why;
+    idleGo.disabled=false;
+  }
+  idleBtn.addEventListener('click', openIdle);
+  idleGo.addEventListener('click', goIdle);
+  idleCancel.addEventListener('click', closeIdle);
+  idleDialog.addEventListener('click', function(e){ if(e.target===idleDialog) closeIdle(); });
+
   /**
    * Forget everything local about every topic NOT in keep: cached transcript, read mark, reading
    * position, draft, terminal window. With nothing starred, keep holds only the fresh topic and
@@ -2170,7 +2288,7 @@ const SCRIPT = `
     lightboxImg.removeAttribute('src');
   }
   lightbox.addEventListener('click', closeShot);
-  document.addEventListener('keydown', function(e){ if(e.key === 'Escape'){ closeShot(); closeReader(); } });
+  document.addEventListener('keydown', function(e){ if(e.key === 'Escape'){ closeShot(); closeReader(); closeIdle(); } });
 
   /**
    * Read a file the agent sent without downloading it. The server renders it (reading.ts) and the
@@ -2964,6 +3082,7 @@ __GATE__
     </div>
     <div id="topics"></div>
     <div id="sidebar-footer">
+      <button type="button" id="close-idle" hidden title="End the agent process of every topic that is idle — each conversation is kept">Close idle agents</button>
       <button type="button" id="clear-topics" title="Forget every topic and start a new one">Clear all topics</button>
     </div>
   </aside>
@@ -2981,6 +3100,19 @@ __GATE__
       <button type="button" class="btn-icon" id="reader-close" title="Close (Esc)" aria-label="Close">&times;</button>
     </div>
     <div id="reader-body" tabindex="-1"></div>
+  </div>
+  <!-- "Close idle agents", confirmed against the list it will act on (openIdle), then showing what
+       happened to each. -->
+  <div id="idle-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="idle-title">
+    <div id="idle-box">
+      <div id="idle-title"></div>
+      <p id="idle-why">Each conversation is kept: the next message in a topic starts its agent again where it left off.</p>
+      <ul id="idle-list"></ul>
+      <div class="idle-acts">
+        <button type="button" id="idle-cancel">Cancel</button>
+        <button type="button" id="idle-go">Close agents</button>
+      </div>
+    </div>
   </div>
   <section id="chat">
     <div id="chat-header">

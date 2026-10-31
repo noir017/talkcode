@@ -324,3 +324,42 @@ describe('liveForRef', () => {
     expect(h.reg.liveForRef(ref)).toBe(false);
   });
 });
+
+/**
+ * The web UI's "Close idle agents": reclaim asked for now, by address, instead of on the timer.
+ * What has to hold is that being asked replaces the deadline and nothing else — every other gate
+ * still says no, because the page's idea of idle can be seconds old.
+ */
+describe('reclaimIdleForRef', () => {
+  const ref = { platform: 'discord', channel: 'c1', kind: 'direct' as const, user: 'u1' };
+
+  it('ends an idle child without waiting for the deadline, and keeps the conversation', async () => {
+    const h = rig();
+    h.reg.route(inbound('hello', 'm1'));
+    await drain();
+
+    expect(h.reg.reclaimIdleForRef(ref)).toBe(true);
+    expect(h.disposed).toEqual([KEY]);
+    expect(h.reg.liveForRef(ref)).toBe(false);
+    expect(h.factory.peek(KEY)).toBeDefined();
+    // Nothing left to end the second time.
+    expect(h.reg.reclaimIdleForRef(ref)).toBe(false);
+  });
+
+  it.each([
+    ['mid-turn', { hang: true }],
+    ['with a question pending', { pendingWork: true }],
+    ['on a runtime that cannot resume', { reclaimState: 'unresumable' as const }],
+  ])('leaves the child alone %s', async (_label, opts: RigOptions) => {
+    const h = rig(opts);
+    h.reg.route(inbound('hello', 'm1'));
+    await drain();
+
+    expect(h.reg.reclaimIdleForRef(ref)).toBe(false);
+    expect(h.disposed).toEqual([]);
+  });
+
+  it('answers false for a conversation that never ran here', () => {
+    expect(rig().reg.reclaimIdleForRef(ref)).toBe(false);
+  });
+});

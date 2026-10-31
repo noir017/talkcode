@@ -18,7 +18,7 @@ import { z } from 'zod';
 
 import type { ButtonSpec } from '../adapter.js';
 import type { AgentStatus, SlashCommandSpec } from '../../types.js';
-import type { Topic } from './topics.js';
+import { MAX_TOPICS, type Topic } from './topics.js';
 
 /**
  * Hard ceiling on one request body.
@@ -95,6 +95,12 @@ export const EndTerminalRequestSchema = z.object({ topic: TopicId }).strict();
  * of quietly discarded by the most destructive route here.
  */
 export const ClearTopicsRequestSchema = z.object({}).strict();
+/**
+ * End the agent process of each of these topics that is still idle. The ids are the list the
+ * operator was shown and confirmed, so the server acts on exactly those and never on a scan of its
+ * own — bounded by the store's cap, since a topic cannot be listed that the store does not hold.
+ */
+export const CloseIdleRequestSchema = z.object({ topics: z.array(TopicId).min(1).max(MAX_TOPICS) }).strict();
 
 export const ClickRequestSchema = z
   .object({
@@ -112,6 +118,7 @@ export type DeleteTopicRequest = z.infer<typeof DeleteTopicRequestSchema>;
 export type StarTopicRequest = z.infer<typeof StarTopicRequestSchema>;
 export type EndTerminalRequest = z.infer<typeof EndTerminalRequestSchema>;
 export type ClearTopicsRequest = z.infer<typeof ClearTopicsRequestSchema>;
+export type CloseIdleRequest = z.infer<typeof CloseIdleRequestSchema>;
 
 /**
  * Validate one inbound body against a schema.

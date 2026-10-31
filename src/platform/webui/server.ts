@@ -51,6 +51,7 @@ import {
   ClickRequestSchema,
   CreateTopicRequestSchema,
   ClearTopicsRequestSchema,
+  CloseIdleRequestSchema,
   DeleteTopicRequestSchema,
   EndTerminalRequestSchema,
   LoginRequestSchema,
@@ -301,6 +302,7 @@ const GUARDED: Route[] = [
   { method: 'POST', path: '/api/topics/clear', run: clearTopics },
   { method: 'POST', path: '/api/topics/delete', run: deleteTopic },
   { method: 'POST', path: '/api/topics/star', run: starTopic },
+  { method: 'POST', path: '/api/topics/close-idle', run: closeIdle },
   { method: 'DELETE', path: '/api/topics', run: deleteTopic },
   { method: 'POST', path: '/api/logout', run: logout },
   { method: 'GET', path: '/f/', prefix: true, run: ({ req, res, rest }, ctx) => download(req, res, ctx.room, rest) },
@@ -612,6 +614,16 @@ async function clearTopics({ req, res }: Req, ctx: Ctx): Promise<void> {
   if (!parsed) return;
   const topic = ctx.room.clearTopics();
   send(req, res, 200, { topic, topics: ctx.room.topicList() });
+}
+
+/**
+ * End the agent process behind each listed topic that is still idle, and answer which were ended
+ * and which were left running. See `WebRoom.closeIdle` for what "still idle" is checked against.
+ */
+async function closeIdle({ req, res }: Req, ctx: Ctx): Promise<void> {
+  const parsed = await readBody(req, res, CloseIdleRequestSchema);
+  if (!parsed) return;
+  send(req, res, 200, ctx.room.closeIdle(parsed.topics));
 }
 
 async function download(req: IncomingMessage, res: ServerResponse, room: WebRoom, token: string): Promise<void> {
