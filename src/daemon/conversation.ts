@@ -2666,6 +2666,25 @@ ${formatTokens(left)} left before compaction — ${name}`;
   }
 
   /**
+   * End the agent process of the conversation at an ADDRESS if it is idle — the idle sweeper's
+   * reclaim without its timer, handed to a platform that can ask for it
+   * (`PlatformAdapter.useIdleReclaim`, the web UI's "Close idle agents"). Returns whether a
+   * process was ended.
+   *
+   * Through reclaimSession, never killConversation, and that is the whole safety of it: the page
+   * decides what is idle from flags that can be seconds old, and `/kill` stops a running turn on
+   * purpose. Here a turn running or collecting (the merger), a question pending, or a runtime that
+   * cannot resume each leave the process alone — so a topic that started working after the list was
+   * drawn is skipped, not cut off. `lastActivityAt` is not consulted: being asked is the deadline.
+   */
+  reclaimIdleForRef(ref: ConversationRef): boolean {
+    const id = this.idForRef(ref);
+    const state = this.conversations.get(id);
+    if (!state || !state.merger.isIdle()) return false;
+    return this.reclaimSession(id, 'closed as idle from the web UI');
+  }
+
+  /**
    * The conversation an address belongs to, taking the long way round through the scope and the
    * alias table rather than letting the caller build a key — because neither is a platform's
    * business to know: under `per_channel` every lane shares one conversation, under `shared` all

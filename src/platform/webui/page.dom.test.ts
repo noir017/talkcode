@@ -795,6 +795,106 @@ describe('webui page: reading a file the agent sent', () => {
   });
 });
 
+describe('webui page: closing the idle agents', () => {
+  const A = 'a1b2c3d4';
+  /** One of each state the dot can be in, plus a second idle topic that is starred. */
+  const fleet = (): Array<Record<string, unknown>> => [
+    { id: A, title: 'asking', lastAt: 1000, running: true, asking: true, live: true, msgCount: 0 },
+    { id: 'b2c3d4e5', title: 'working', lastAt: 999, running: true, live: true, msgCount: 0 },
+    { id: 'c3d4e5f6', title: 'resident', lastAt: 998, live: true, msgCount: 0, dir: { name: 'talkcode', path: '/w/talkcode', host: 'uniagent' } },
+    { id: 'd4e5f6a7', title: 'cold', lastAt: 997, live: false, msgCount: 0 },
+    { id: 'e5f6a7b8', title: 'kept warm', lastAt: 996, live: true, starred: true, msgCount: 0 },
+  ];
+  const rows = (h: Harness) =>
+    Array.from(h.doc.querySelectorAll('#idle-list li')).map((li) => ({
+      id: li.getAttribute('data-idle'),
+      text: Array.from(li.querySelectorAll('.idle-name,.idle-dir'))
+        .map((n) => n.textContent)
+        .join(' | '),
+      out: li.querySelector('.idle-out')?.textContent,
+    }));
+
+  it('counts the dim dots, and only them, on a button that is gone when there are none', async () => {
+    const h = await open();
+    await h.emit(sync(A, [], [A]));
+    expect(h.el('close-idle').hidden).toBe(true);
+
+    await h.emit({ t: 'topics', topics: fleet() });
+    // Not the asking topic, not the working one, not the cold one: a question on screen and a
+    // running turn are not idle, and a grey dot has no process to close.
+    expect(h.el('close-idle').hidden).toBe(false);
+    expect(h.el('close-idle').textContent).toBe('Close idle agents (2)');
+  });
+
+  it('lists each topic it would close, starred first, before closing anything', async () => {
+    const h = await open();
+    await h.emit(sync(A, [], [A], { topics: fleet() }));
+    await h.click('#close-idle');
+
+    expect(h.el('idle-dialog').hidden).toBe(false);
+    expect(h.el('idle-title').textContent).toBe('Close 2 idle agents?');
+    expect(rows(h)).toEqual([
+      { id: 'e5f6a7b8', text: 'kept warm', out: '' },
+      { id: 'c3d4e5f6', text: 'resident | uniagent · talkcode', out: '' },
+    ]);
+    // Cancel holds the focus, so an Enter out of habit changes nothing.
+    expect(h.doc.activeElement).toBe(h.el('idle-cancel'));
+    expect(h.calls.map((c) => c.path)).not.toContain('api/topics/close-idle');
+
+    await h.click('#idle-cancel');
+    expect(h.el('idle-dialog').hidden).toBe(true);
+    expect(h.calls.map((c) => c.path)).not.toContain('api/topics/close-idle');
+  });
+
+  it('closes exactly the listed topics and says what became of each', async () => {
+    const h = await open({ replies: { 'api/topics/close-idle': { closed: ['e5f6a7b8'], kept: ['c3d4e5f6'] } } });
+    await h.emit(sync(A, [], [A], { topics: fleet() }));
+    await h.click('#close-idle');
+    // A topic that goes idle while the dialog is open was not shown, so it is not closed either.
+    await h.emit({ t: 'topics', topics: fleet().map((t) => (t.id === 'b2c3d4e5' ? { ...t, running: false } : t)) });
+    await h.click('#idle-go');
+    await until('the answer', () => h.el('idle-cancel').textContent === 'Done');
+
+    expect(h.calls.find((c) => c.path === 'api/topics/close-idle')?.body).toEqual({ topics: ['e5f6a7b8', 'c3d4e5f6'] });
+    expect(rows(h).map((r) => [r.id, r.out])).toEqual([
+      ['e5f6a7b8', 'closed'],
+      ['c3d4e5f6', 'left running'],
+    ]);
+    expect(h.el('idle-title').textContent).toBe('Closed 1 idle agent; 1 left running — busy again, or unable to resume');
+    expect(h.el('idle-go').hidden).toBe(true);
+    await h.click('#idle-cancel');
+    expect(h.el('idle-dialog').hidden).toBe(true);
+  });
+
+  it('keeps the question open, and says why, when the request fails', async () => {
+    const h = await open({ status: { 'api/topics/close-idle': 500 } });
+    await h.emit(sync(A, [], [A], { topics: fleet() }));
+    await h.click('#close-idle');
+    await h.click('#idle-go');
+    await until('the failure', () => h.el('idle-title').textContent !== 'Close 2 idle agents?');
+
+    expect(h.el('idle-title').textContent).toBe('The daemon refused the request.');
+    expect((h.el('idle-go') as HTMLButtonElement).disabled).toBe(false);
+    // Asked once: a retry after a lost answer would find every agent gone and call them all busy.
+    expect(h.calls.filter((c) => c.path === 'api/topics/close-idle')).toHaveLength(1);
+  });
+
+  it('goes away on Escape and on a click outside the box', async () => {
+    const h = await open();
+    await h.emit(sync(A, [], [A], { topics: fleet() }));
+    await h.click('#close-idle');
+    h.doc.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(h.el('idle-dialog').hidden).toBe(true);
+
+    await h.click('#close-idle');
+    await h.click('#idle-dialog');
+    expect(h.el('idle-dialog').hidden).toBe(true);
+    await h.click('#close-idle');
+    await h.click('#idle-box');
+    expect(h.el('idle-dialog').hidden).toBe(false);
+  });
+});
+
 describe('webui page: the gate', () => {
   it('asks for the token and posts it, when the shared secret is still a door', async () => {
     const h = await open();
@@ -2984,6 +3084,10 @@ describe('webui page: the narrow-screen stylesheet', () => {
     expect(css).toMatch(/#reader-close\{[^}]*min-width:44px/);
     expect(css).toMatch(/#reader-close\{[^}]*height:44px/);
     expect(css).toContain('.files .view{padding:6px 12px}');
+  });
+
+  it("gives the idle-agents dialog's answers a finger-sized target", () => {
+    expect(narrowBlock()).toContain('.idle-acts button{min-height:44px;padding:0 16px}');
   });
 
   it('scopes all of that to the narrow screen and nothing else', () => {

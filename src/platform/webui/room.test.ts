@@ -1191,6 +1191,58 @@ describe('WebRoom: what the switcher dot is saying', () => {
   });
 });
 
+describe('WebRoom: closing idle agents', () => {
+  /** A room with four topics — idle, working, asking, and an idle one whose daemon refuses — plus a log of what was asked. */
+  function fleet() {
+    const { room, topic: idle, seen } = attached();
+    const working = room.createTopic('working').id;
+    const asking = room.createTopic('asking').id;
+    const stubborn = room.createTopic('stubborn').id;
+    room.setTyping(working, true);
+    room.post(asking, { own: false, html: '<p>which?</p>', buttons: [{ id: 'ask:r:0', label: 'this one' }] }, 'which?');
+    const asked: string[] = [];
+    const up = new Set([idle, working, asking, stubborn]);
+    room.useLivenessLookup((ref) => up.has(ref.thread ?? ''));
+    room.useIdleReclaim((ref) => {
+      const id = ref.thread ?? '';
+      asked.push(id);
+      if (id === stubborn) return false; // a runtime that cannot resume, or a turn the daemon sees
+      up.delete(id);
+      return true;
+    });
+    return { room, seen, asked, idle, working, asking, stubborn };
+  }
+
+  it('ends the listed topics that are still idle, and leaves the rest running', () => {
+    const { room, asked, idle, working, asking, stubborn } = fleet();
+    expect(room.topicList().find((t) => t.id === asking)?.asking).toBe(true);
+
+    const result = room.closeIdle([idle, working, asking, stubborn, 'ffffffff']);
+
+    expect(result).toEqual({ closed: [idle], kept: [working, asking, stubborn] });
+    // The page's list can be seconds old: a topic working or asking NOW is not handed to the
+    // daemon at all, and an id the store no longer holds is not reported back either way.
+    expect(asked).toEqual([idle, stubborn]);
+  });
+
+  it('redraws the dots at once instead of at the next liveness poll', () => {
+    const { room, seen, idle } = fleet();
+    seen.length = 0;
+    room.closeIdle([idle]);
+    const listed = (lastOf(seen, 'topics') as { topics: Array<{ id: string; live?: boolean }> } | undefined)?.topics;
+    expect(listed?.find((t) => t.id === idle)?.live).toBe(false);
+  });
+
+  it('closes nothing, and says so, without a daemon to ask or when asking throws', () => {
+    const { room, topic } = attached();
+    expect(room.closeIdle([topic])).toEqual({ closed: [], kept: [topic] });
+    room.useIdleReclaim(() => {
+      throw new Error('the registry is gone');
+    });
+    expect(room.closeIdle([topic])).toEqual({ closed: [], kept: [topic] });
+  });
+});
+
 describe('WebRoom: a full topic list makes room instead of refusing', () => {
   afterEach(() => vi.restoreAllMocks());
 

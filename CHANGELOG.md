@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The web UI can close every idle agent at once.** An agent's process stays up after its turn
+  until the idle timeout reclaims it, which is what the dim blue dot beside a topic shows, and
+  closing them meant opening each topic and pressing its power button. **Close idle agents (N)**,
+  above Clear at the bottom of the topic list, lists every topic whose agent it would close —
+  title, machine and directory — and asks before doing it, then shows which were closed. Each
+  conversation is kept: the next message in a topic starts its agent again where it left off. A
+  topic that starts working while you are looking at the list is left running rather than cut
+  off, because the gateway checks again, with the same rules its own idle timeout uses, at the
+  moment it acts. Starred topics are closed like any other. Nothing is posted into the topics.
+
 ## [2.15.1] - 2026-10-31
 
 ### Fixed

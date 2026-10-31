@@ -106,7 +106,13 @@ quiet a minute ago and one whose child was reclaimed an hour ago are the same gr
 one more reason on top of the directory's: nothing *announces* a reclaim — it happens on a timer,
 in a conversation by definition nobody is touching — and a child can also exit on its own.
 
-`useScheduleLookup` is the third, and the only one that is not decoration: does a scheduled task
+`useIdleReclaim` hands over an action instead of a question: end the agent process behind a
+conversation if it is idle — the idle sweeper's reclaim, asked for now. It is the web UI's "Close
+idle agents". The page's idea of idle is a dot that can be seconds old, so the daemon applies the
+sweeper's own gates (no turn, no pending question, a runtime that can resume) and refuses
+otherwise; the conversation is kept either way.
+
+`useScheduleLookup` is the third question, and the only one that is not decoration: does a scheduled task
 still post into this conversation? The web UI evicts its least recently active topic once it holds
 64, and a task's target is a plain address nothing rewrites when the topic behind it goes — so the
 answer decides what may be evicted, not what a row looks like. It is read only at that moment.

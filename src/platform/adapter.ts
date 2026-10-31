@@ -182,6 +182,21 @@ export interface PlatformAdapter {
   useScheduleLookup?(lookup: (ref: ConversationRef) => boolean): void;
 
   /**
+   * Hand the platform a way to end the agent process behind a conversation that is idle — what the
+   * idle sweeper does on its timer, asked for now. Answers whether a process was ended.
+   *
+   * The only one of these seams that acts rather than asks, and it acts only within the sweeper's
+   * own gates (ConversationRegistry.reclaimIdleForRef): no turn running or collecting, no question
+   * pending, and a runtime that can resume the session. So the platform's own idea of "idle" — a
+   * dot, possibly seconds stale by the time it is clicked — can never end a turn that has started
+   * since. The conversation is kept; its next message starts the agent again where it left off.
+   *
+   * Optional and web-UI-only for the reason the lookups above are: it is a control for a page that
+   * lists its conversations, which no chat app does.
+   */
+  useIdleReclaim?(reclaim: (ref: ConversationRef) => boolean): void;
+
+  /**
    * Show the agent's live status for the conversation at an address — model, context, cost, cache
    * expiry, quota — somewhere that is not a message. `undefined` clears it.
    *

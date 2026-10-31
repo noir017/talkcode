@@ -959,6 +959,60 @@ describe('webui server: traffic', () => {
       expect((await fetch(`${base}/${view}`)).status).toBe(401);
     });
   });
+
+  describe('closing idle agents', () => {
+    it('ends the listed idle topics through the daemon and answers which', async () => {
+      const { base, room, topic } = await boot();
+      const cookie = await signIn(base);
+      const asked: string[] = [];
+      room.useIdleReclaim((ref) => {
+        asked.push(ref.thread ?? '');
+        return true;
+      });
+      const res = await fetch(`${base}/api/topics/close-idle`, {
+        method: 'POST',
+        headers: { ...JSON_HEADERS, cookie },
+        body: JSON.stringify({ topics: [topic] }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ closed: [topic], kept: [] });
+      expect(asked).toEqual([topic]);
+    });
+
+    it.each([
+      ['no topics at all', { topics: [] }],
+      ['an id that is not a topic id', { topics: ['../etc'] }],
+      ['a field it does not take', { topics: ['a1b2c3d4'], all: true }],
+    ])('refuses %s', async (_label, body) => {
+      const { base, room } = await boot();
+      const cookie = await signIn(base);
+      let asked = 0;
+      room.useIdleReclaim(() => {
+        asked += 1;
+        return true;
+      });
+      const res = await fetch(`${base}/api/topics/close-idle`, {
+        method: 'POST',
+        headers: { ...JSON_HEADERS, cookie },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+      expect(asked).toBe(0);
+    });
+
+    it('is behind the session, and refuses another origin', async () => {
+      const { base, topic } = await boot();
+      const body = JSON.stringify({ topics: [topic] });
+      expect((await fetch(`${base}/api/topics/close-idle`, { method: 'POST', headers: JSON_HEADERS, body })).status).toBe(401);
+      const cookie = await signIn(base);
+      const res = await fetch(`${base}/api/topics/close-idle`, {
+        method: 'POST',
+        headers: { ...JSON_HEADERS, cookie, origin: 'https://evil.example' },
+        body,
+      });
+      expect(res.status).toBe(403);
+    });
+  });
 });
 
 describe('webui server: lifecycle', () => {
