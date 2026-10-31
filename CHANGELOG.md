@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-10-31
+
 ### Added
 
 - **The web UI can show a file the agent sent without downloading it.** A report, a plan or a log
