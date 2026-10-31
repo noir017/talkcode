@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-10-31
+
 ### Fixed
 
 - **A file an agent on a host sends to the web UI can be downloaded again.** The gateway fetches
