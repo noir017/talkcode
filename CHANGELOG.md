@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-31
+
 ### Changed
 
 - **The web UI keeps every topic through a restart, not only starred ones.** A page that has gone
