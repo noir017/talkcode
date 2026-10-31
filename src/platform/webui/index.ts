@@ -128,7 +128,7 @@ export function createWebuiAdapter(instance: WebuiInstance): PlatformAdapter {
   topics.current();
   const room = new WebRoom(instance, topics);
   room.useUploads(diskUploadStore(path.join(configDir(), `webui-uploads-${instance.id}`)));
-  // Before anything can attach: a page that connects first would be handed an empty starred topic.
+  // Before anything can attach: a page that connects first would be handed an empty topic.
   room.useTranscripts(diskTranscriptStore(path.join(configDir(), `webui-transcripts-${instance.id}`)));
   // Owned here because both ends of it are wired here: the server feeds it (a pane attaches on
   // every proxied handshake) and the room reads it (the switcher's terminal marker). Given the
@@ -212,7 +212,7 @@ export function diskUploadStore(dir: string): UploadStore {
 }
 
 /**
- * Starred topics' transcripts, on disk (room.ts `TranscriptStore`): one `<topic id>.json` per topic.
+ * Every topic's transcript, on disk (room.ts `TranscriptStore`): one `<topic id>.json` per topic.
  *
  * `0600` in a `0700` directory, like the uploads beside it. A transcript is agent output, which
  * carries the bytes of whatever the agent read; that is no wider than the agent's own session files,

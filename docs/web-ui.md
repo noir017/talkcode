@@ -160,10 +160,12 @@ means nobody opens the page at all.
 
 ## What to expect
 
-Everyone who knows the token shares the same topics. And a daemon restart does not replay
-what was said in most topics: the daemon keeps the transcript in memory, while the agent's
-session is on disk. The browser keeps a copy of its own, so a topic you have opened before still
-shows its messages after a restart — above a divider saying they are from before it — and the
-agent carries on below them with its context intact. A **starred** topic (☆ in the sidebar) is
-kept by the daemon too, on its own disk, so it comes back after a restart or a container rebuild
-in every browser, including one that never opened it.
+Everyone who knows the token shares the same topics. A daemon restart does not lose what was said
+in them: the daemon writes each topic's transcript to its own disk within a few seconds of any
+change, and the agent's session is on disk too. So after a restart or a container rebuild every
+topic comes back, in every browser, with everything that was said in it — including a reply that
+finished after you put your phone down. The messages from before sit above a divider saying so,
+and the agent carries on below them with its context intact. (Before 2.13.0 only starred topics
+were kept this way; an unstarred topic from then shows what your browser had of it, or nothing.)
+A **starred** topic (☆ in the sidebar) is never removed to make room for a new one, and "Clear
+unstarred topics" leaves it alone.

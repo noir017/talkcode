@@ -1047,7 +1047,7 @@ const SCRIPT = `
     var keep={};
     for(var i=0;i<list.length;i++){
       var m=list[i];
-      // A message a starred topic kept on disk from an earlier run says which run (g): it is that
+      // A message a topic kept on disk from an earlier run says which run (g): it is that
       // run's history, under the key this browser's cache already has it by.
       m._g = m.g || epoch;
       claim(m);
@@ -1124,15 +1124,14 @@ const SCRIPT = `
   /**
    * Say why an empty room is empty, when the server said this topic predates the daemon.
    *
-   * A transcript lives in the daemon's memory while the topic LIST lives on disk, so every
-   * restart leaves rows that open onto nothing. Rendered faithfully that is a blank panel, which
-   * is indistinguishable from a page that failed to load — and is exactly how it was reported.
+   * A transcript is kept on the daemon's disk, but not by a daemon older than 2.13.0 for a topic that
+   * was not starred, nor when its file could not be read — and those topics are rows that open onto
+   * nothing. Rendered faithfully that is a blank panel, which is indistinguishable from a page that
+   * failed to load — and is exactly how it was reported.
    */
-  // Says how to keep the next one, too: a starred topic's transcript is kept on the daemon's disk,
-  // so from 2.5.0 on this is a topic that was not starred when the daemon went down.
-  var EMPTY_NOTE = 'This topic is older than the running daemon, and only a starred topic keeps its'
-    + ' transcript across a restart, so anything said in it is no longer here. The agent still has'
-    + ' its context, so you can carry on where you left off.';
+  var EMPTY_NOTE = 'This topic is older than the running daemon, and its transcript was not kept, so'
+    + ' anything said in it is no longer here. The agent still has its context, so you can carry on'
+    + ' where you left off.';
 
   function hasMessages(){
     for(var k in els) if(els.hasOwnProperty(k)) return true;
@@ -1157,11 +1156,10 @@ const SCRIPT = `
   /**
    * The line between what was said before the daemon restarted and what it is serving now.
    *
-   * A transcript lives in the daemon's memory, so a restart takes it — but it does not take the
-   * conversation, which the agent still has, and it no longer takes what was on screen either. The
-   * messages above this line came back out of this browser's cache, or, in a starred topic, out of
-   * the daemon's own copy on disk: they are real, they are just no longer anything the process can
-   * be asked about, which is why nothing up there has a button on it.
+   * A restart does not take the conversation, which the agent still has, and it no longer takes
+   * what was on screen either. The messages above this line came back out of the daemon's own copy
+   * on disk, or out of this browser's cache: they are real, they are just no longer anything the
+   * process can be asked about, which is why nothing up there has a button on it.
    */
   var DIVIDER_NOTE = 'Everything above is from before the daemon restarted.'
     + ' The agent still has its context, so you can carry on below.';

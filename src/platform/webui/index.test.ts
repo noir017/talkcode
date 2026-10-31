@@ -276,7 +276,7 @@ describe('webui adapter: where the operator\'s pictures and the agent\'s files a
   });
 });
 
-describe('webui adapter: where a starred topic keeps its transcript', () => {
+describe('webui adapter: where a topic keeps its transcript', () => {
   const kept = (id: string, extra: Record<string, unknown> = {}): Kept => ({
     text: `text of ${id}`,
     msg: { id, own: false, html: `<p>${id}</p>`, at: 1, g: 42, buttons: [], reactions: ['✅'], ...extra },

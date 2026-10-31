@@ -90,12 +90,12 @@ into `edit:<channel>:<messageId>` and every topic shares the one channel, so an 
 per topic would let one topic's edits supersede another's. For the same reason all topics share
 one rate-limit budget — exactly as Telegram forum topics share their chat's.
 
-**The topic list is persisted; the transcripts are not, except a starred topic's.** Losing the
+**The topic list is persisted, and so is each topic's transcript.** Losing the
 list is not "the page looks empty": `conversations.json` still holds the agent binding and session
 id under `<instance>#main#<topic id>`, so every context would still be running and no longer
 reachable. See `topics.ts` for why its `title` duplicates one the daemon also stores. The *browser*
 keeps a rotating copy of the transcripts ([below](#the-local-transcript-cache)), and nothing here
-reads that cache back; the daemon keeps the starred ones ([below](#a-starred-topic-keeps-its-transcript)).
+reads that cache back; the daemon keeps its own ([below](#every-topic-keeps-its-transcript)).
 
 **Neither the per-topic `×` nor "Clear all topics" ends an agent session.** Both reach exactly as
 far as this module: the room goes, the list entry goes, and the daemon's binding under
@@ -125,31 +125,45 @@ The star is persisted beside the title, and only when true — a topic file from
 from someone who never uses them, is unchanged. The page sends `{ starred: true|false }`, never a
 toggle, because `post` retries a dropped request and a retried toggle would flip back.
 
-### A starred topic keeps its transcript
+### Every topic keeps its transcript
 
-Since 2.5.0 a star also keeps what was said. Before, it kept the topic's row and nothing in it: a
-restart emptied the room like any other, and the browser's cache, which was meant to cover that,
-is the wrong place for the topics most worth keeping. It holds the 24 topics most recently written
-in that browser, so a topic starred because it matters and opened once a week is exactly the one it
-has let go of — and a phone that never opened it has nothing at all. Reported on 2026-10-24 for two
-starred topics that came back empty after the container was rebuilt, on an instance with 64 topics.
+Since 2.13.0 every topic's transcript is on disk; from 2.5.0 to then, only a starred one's was.
+Before 2.5.0 none was: a restart emptied every room, and the browser's cache, which was meant to
+cover that, can only give back what that browser received. Two reports moved this, a week apart:
 
-`room.ts` writes a starred topic's ring through a `TranscriptStore` (`index.ts`:
+- **2026-10-24: a starred topic.** Two starred topics came back empty after the container was
+  rebuilt, on an instance with 64 topics. The cache holds the 24 topics most recently written in that
+  browser, so a topic starred because it matters and opened once a week is exactly the one it has let
+  go of — and a phone that never opened it has nothing at all. 2.5.0 had the daemon keep starred
+  topics itself.
+- **2026-10-31: the end of a turn.** A phone was put down at 13:03, mid-turn; the reply finished at
+  13:04; an update came at 13:11. The page came back stopped at a tool line still running, in a
+  topic nobody had starred. A page that has gone quiet hears nothing more, so whatever the agent said
+  after that existed only in the daemon's memory — not a rare case on a phone, which goes quiet the
+  moment it is put down, and not one a star could have helped: nobody stars a topic in case they put
+  their phone down. Nothing was cut off; the agent had the reply in its context and gave a summary
+  when asked. What was lost was the reply itself, on screen.
+
+`room.ts` writes every topic's ring through a `TranscriptStore` (`index.ts`:
 `webui-transcripts-<id>/<topic>.json`, `0600` in a `0700` directory, written to a temporary name and
 renamed) and `useTranscripts` reads them back before anything can attach. Decisions in it:
 
-- **Starred topics only.** The star is the operator saying "keep this", and writing every topic's
-  ring on every streamed edit is a cost nobody asked for. Starring writes at once, since a topic is
-  often starred because it has gone quiet. Unstarring, or deleting it, removes the file. A file
-  whose topic is no longer starred when the daemon starts is removed too.
+- **Every topic, not only starred ones.** The 2.5.0 argument against this was cost: rewriting every
+  topic's ring on every streamed edit. But the write is paid per topic that is *changing*, and the
+  topics changing are the ones being read — a topic nobody speaks in is never written. The disk is
+  bounded by the 64 topics times 500 messages. A star now only keeps a topic from eviction and the
+  sweep. Deleting, evicting or sweeping a topic removes its file, and a file whose topic is gone when
+  the daemon starts is removed too.
 - **Written within 3 s of a change, not 3 s after the last one.** The first change arms the write
   and later ones ride along, so a reply streaming for minutes is on disk every few seconds, and a
-  kill mid-reply costs at most that much. `dispose` writes whatever is pending on the way out.
+  kill mid-reply costs at most that much. `dispose` writes whatever is pending on the way out — but
+  the 2026-10-31 case did not need it: the reply had been on disk for seven minutes.
 - **Each message keeps the run it was said in** (`WebMessage.g`, that run's sync `epoch`), through
   any number of restarts. The page keys a message by `<generation>:<id>`, so this is what lets a
-  restored message land on the copy its own cache has rather than beside it, and what makes it
-  history: no buttons, above the divider. Buttons are stripped on the server too, since the
-  process that would answer them is gone.
+  restored message land on the copy its own cache has rather than beside it — a half-finished tool
+  line is brought up to date, and the messages the page never received are added after it, in order
+  (`page.dom.test.ts` pins this) — and what makes it history: no buttons, above the divider. Buttons
+  are stripped on the server too, since the process that would answer them is gone.
 - **The id counter starts past every restored id.** `nextId` restarts at `w1` each run, and the
   ring is a map by id, so a new `w5` would overwrite a kept one.
 - **What is kept is what the ring had**: up to 500 messages. A file the agent sent comes back as
@@ -995,13 +1009,12 @@ without it. `page.test.ts` pins the viewport tag so this does not get added by r
   `X-Accel-Buffering: no` and `Cache-Control: no-transform`, but a proxy configured to ignore
   them shows nothing until the turn ends, which reads exactly like a hung daemon. Set
   `proxy_buffering off;`.
-- **A restart empties the daemon's ring while the agent still remembers everything.** The
-  transcript is memory; the agent's session is persisted by `conversation-store.ts`. So
-  `/context` reports real numbers against a room the daemon can no longer replay. The browser's
-  own cache now answers most of that (see [above](#the-local-transcript-cache)) — the messages
-  come back, above a divider saying where they came from — and a starred topic's are kept by the
-  daemon itself ([above](#a-starred-topic-keeps-its-transcript)). What neither answers is an
-  unstarred topic this browser has never opened, or one whose cache has rotated out, and those
+- **A restart no longer empties the daemon's ring, and the agent still remembers everything.** The
+  agent's session is persisted by `conversation-store.ts` and each topic's transcript by
+  `TranscriptStore` ([above](#every-topic-keeps-its-transcript)), with the browser's own cache
+  ([above](#the-local-transcript-cache)) behind it — the messages come back, above a divider saying
+  where they came from. What none of them answers is an unstarred topic from before 2.13.0 that this
+  browser never opened, or whose cache has rotated out, or whose file could not be read; those
   still have to be explained rather than rendered as a blank panel: `syncEvent` sets `stale` when a room holds no
   messages and the topic's persisted `lastAt` predates the `WebRoom`, and the page answers it
   with a line saying the topic is older than the daemon and the agent still has its context. It

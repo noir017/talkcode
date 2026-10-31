@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **The web UI keeps every topic through a restart, not only starred ones.** A page that has gone
+  quiet, such as a phone put down mid-turn, hears nothing more, so what the agent said after that
+  was only in the gateway's memory, and an update took it. The page came back showing the turn
+  stopped halfway, at a tool still running, though the reply had finished minutes before. The agent
+  still had it and could summarise it, but the reply itself was gone. Since 2.5.0 the gateway had
+  kept starred topics on disk. Now it keeps every topic, written within a few seconds of each change,
+  so after a restart a topic comes back in every browser with everything said in it. A part this
+  browser never received is filled in where it belongs, above the divider. This costs a write every
+  few seconds for each topic in which something is being said, and at most 500 messages per topic
+  on disk. Deleting, evicting or clearing a topic removes its copy. A star now only keeps a topic
+  from being removed to make room and from "Clear unstarred topics". Topics that were not starred
+  before this release have nothing kept, so they come back as before.
+
 ## [2.12.1] - 2026-10-31
 
 ### Fixed

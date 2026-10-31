@@ -170,11 +170,12 @@ export type WebEvent =
       /**
        * This topic is older than the running daemon and has nothing left in memory.
        *
-       * Set so the page can say WHY it is showing an empty room. The topic list is persisted
-       * and the transcript is not (see `room.ts`), so a restart leaves rows that open onto
-       * nothing — which, rendered faithfully, is indistinguishable from a page that failed to
-       * load. It also covers the milder case of a topic created before the restart and never
-       * spoken in; both are honestly described as "older than this process, nothing here".
+       * Set so the page can say WHY it is showing an empty room. Before 2.13.0 only a starred
+       * topic's transcript was kept (see `room.ts` `TranscriptStore`), so a restart left rows that
+       * open onto nothing — which, rendered faithfully, is indistinguishable from a page that failed
+       * to load — and those rows are still there. It also covers the milder case of a topic created
+       * before the restart and never spoken in; both are honestly described as "older than this
+       * process, nothing here".
        */
       stale?: boolean;
       /** The topic's agent status as of this sync; absent when there is none to show. */
@@ -261,7 +262,7 @@ export interface WebMessage {
   kind?: 'tools';
   /**
    * The run of the daemon this message was said in (that run's sync `epoch`), set only on a message
-   * kept on disk from an EARLIER run — a starred topic's transcript, restored at startup.
+   * kept on disk from an EARLIER run — a topic's transcript, restored at startup.
    *
    * The page identifies a message by `<generation>:<id>` and takes the sync's epoch as everyone's
    * generation, so without this a restored message would arrive under the new run's key: a second

@@ -9,10 +9,10 @@
  * `'direct'` even though a lane is set.
  *
  * Messages live in a bounded in-memory ring PER TOPIC, replayed to a browser that connects
- * without a resumable position. A daemon restart therefore empties the page while the agent
- * keeps its context, which is why the topic LIST is persisted (see `topics.ts`) even though
- * the transcript is not: without the ids, those contexts would still be running and no longer
- * reachable.
+ * without a resumable position, and written to disk within seconds of changing (see
+ * `TranscriptStore`) so a daemon restart does not empty the page while the agent keeps its
+ * context. The topic LIST is persisted separately (see `topics.ts`): without the ids, those
+ * contexts would still be running and no longer reachable.
  *
  * ── Built for a weak link ────────────────────────────────────────────────────
  * Three things here exist because this is expected to be read over a bad connection, and each
@@ -168,14 +168,17 @@ export interface UploadStore {
 }
 
 /**
- * Where a starred topic's transcript is kept, so a restart does not take it.
+ * Where every topic's transcript is kept, so a restart does not take it.
  *
- * A transcript otherwise lives in this process only, and the browser's copy is no substitute for
- * the topics worth keeping: it holds the 24 topics most recently written, per browser, so a topic
- * starred because it matters and opened once a week is exactly the one it has let go of — and a
- * phone that never opened it has nothing at all. Starred topics only: a star is the operator
- * saying "keep this", and writing every topic's ring on every streamed edit is a cost nobody asked
- * for. Injected (`useTranscripts`) for the same reason `UploadStore` is: `index.ts` owns the disk.
+ * A transcript otherwise lives in this process only, and the browser's copy is no substitute: it
+ * holds what that browser received, and nothing it did not. A page on a phone goes quiet the moment
+ * the phone is put down, so whatever the agent said after that existed only here — and a restart
+ * then took it, under a page that went on showing a turn stopped halfway. Reported on 2026-10-31,
+ * for a reply finished seven minutes before an update. This used to be starred topics only (2.5.0),
+ * on the grounds that writing every topic's ring was a cost nobody asked for; but the write is paid
+ * per topic that is CHANGING, not per topic, and the topics changing are the ones being read. A star
+ * now only keeps a topic from being evicted or swept. Injected (`useTranscripts`) for the same reason
+ * `UploadStore` is: `index.ts` owns the disk.
  *
  * Every message in and out of here carries `g`, the run it was said in (see `WebMessage.g`).
  */
@@ -188,14 +191,14 @@ export interface TranscriptStore {
   drop(topicId: string): void;
 }
 
-/** One message as a starred topic keeps it across a restart: the ring entry, with its run. */
+/** One message as a topic keeps it across a restart: the ring entry, with its run. */
 export interface Kept {
   msg: WebMessage & { g: number };
   text: string;
 }
 
 /**
- * How long a starred topic's changes are gathered before they are written. Not a settle: the first
+ * How long a topic's changes are gathered before they are written. Not a settle: the first
  * change arms it and later ones ride along, so a reply that streams for minutes is still written
  * every few seconds rather than once at the end — a crash mid-reply costs at most this much.
  */
@@ -327,6 +330,7 @@ export class WebRoom {
       );
     }
     this.disposeRoom(victim.id);
+    this.forgetKept(victim.id);
     this.topics.delete(victim.id);
     // The one record of which topic went, and what it was called. The daemon's binding for it
     // stays in conversations.json (as it does for a ×), so this line is how its session id can
@@ -359,14 +363,11 @@ export class WebRoom {
   /**
    * Star or unstar a topic and announce it. False when there is no such topic.
    *
-   * Starring is also what puts the transcript on disk, so it is written now rather than at the
-   * next message — a topic is often starred precisely because it has gone quiet. Unstarring takes
-   * it off disk; what is in memory stays for this run, as for any topic.
+   * A star keeps a topic from being evicted or swept, and that is all it does now: its transcript is
+   * kept on disk either way (see `TranscriptStore`).
    */
   starTopic(id: string, on: boolean): boolean {
     if (!this.topics.star(id, on)) return false;
-    if (on) this.keep(id);
-    else this.forgetKept(id);
     this.announceTopics();
     return true;
   }
@@ -381,8 +382,8 @@ export class WebRoom {
   /** Delete a topic, disposing its room state and announcing the new list. */
   deleteTopic(id: string): boolean {
     this.disposeRoom(id);
-    // A star defers to the ×, kept transcript and all. Read before the store forgets the topic.
-    if (this.topics.get(id)?.starred) this.forgetKept(id);
+    // A star defers to the ×, kept transcript and all.
+    this.forgetKept(id);
     if (!this.topics.delete(id)) return false;
     this.announceTopics();
     return true;
@@ -392,18 +393,22 @@ export class WebRoom {
    * Forget every topic that is not starred and open a fresh one, announcing once rather than once
    * per topic.
    *
-   * The sweep for a sidebar left full of dead rows: a transcript lives in memory only, so every
-   * topic older than this process opens onto nothing (see `syncEvent`'s `stale`). Deliberately
-   * the same reach as `deleteTopic` repeated — the rooms go, the daemon's conversation bindings
-   * for those ids do not. It clears the list; it does not end the agent sessions behind it.
+   * The sweep for a sidebar grown long: before every topic kept its transcript, every topic older
+   * than this process opened onto nothing (see `syncEvent`'s `stale`), and some from before that
+   * still do. Deliberately the same reach as `deleteTopic` repeated — the rooms and kept transcripts
+   * go, the daemon's conversation bindings for those ids do not. It clears the list; it does not end
+   * the agent sessions behind it.
    *
    * Returns the replacement topic, which is always a NEW one even when starred topics survive:
    * the page lands in it, and landing in a starred topic would read as though the sweep had not
    * happened. The exception is a list that is all stars, where there is no room to open one.
    */
   clearTopics(): Topic {
-    for (const id of [...this.rooms.keys()]) {
-      if (!this.topics.get(id)?.starred) this.disposeRoom(id);
+    // The rooms as well as the list: a room is made on demand, so one can outlive its topic's row.
+    for (const id of new Set([...this.rooms.keys(), ...this.topics.list().map((t) => t.id)])) {
+      if (this.topics.get(id)?.starred) continue;
+      this.disposeRoom(id);
+      this.forgetKept(id);
     }
     this.topics.clear();
     const fresh = this.topics.full() ? this.topics.current() : this.topics.create();
@@ -643,9 +648,9 @@ export class WebRoom {
   /**
    * Whether an empty room is empty because this process is younger than the topic.
    *
-   * The topic list is persisted and the transcript is not (a starred topic's aside — it comes back
-   * non-empty, and never reaches this), so a restart turns every older topic into a row that opens
-   * onto nothing. The page needs to be able to tell that apart from a
+   * A kept transcript comes back non-empty and never reaches this; what does is a topic from before
+   * every topic kept one (2.13.0), or one whose file could not be read, and a restart turns those
+   * into rows that open onto nothing. The page needs to be able to tell that apart from a
    * topic that is simply new, because rendered identically they look like a broken page — which
    * is what they were reported as. `lastAt` is the persisted mark of activity, so a topic whose
    * last message predates this object is one whose transcript we no longer have.
@@ -958,22 +963,24 @@ export class WebRoom {
   }
 
   /**
-   * Take the kept transcripts back into their rooms, and keep starred topics from here on.
+   * Take the kept transcripts back into their rooms, and keep every topic from here on.
    *
-   * Called once, before anyone can attach. A kept topic the store no longer has starred — or no
-   * longer has at all — is dropped: nothing will write it again, and nothing should read it.
+   * Called once, before anyone can attach. A kept topic the store no longer has — evicted, deleted
+   * or swept by a run that failed to remove its file — is dropped: nothing will write it again, and
+   * nothing should read it.
    *
    * Restored messages keep their ids and their run (`g`), which is what lets the page match them to
-   * what its own cache already holds. Two things follow. The id counter starts past every restored
-   * id, because `nextId` restarts at w1 each run and a new w5 in the same ring would overwrite a
-   * kept one. And buttons are stripped: the process that would answer them is gone, and the ids
-   * they carry mean nothing to the new one — the same reason the page strips them from history.
+   * what its own cache already holds — and add what it never received, which is the point (see
+   * `TranscriptStore`). Two things follow. The id counter starts past every restored id, because
+   * `nextId` restarts at w1 each run and a new w5 in the same ring would overwrite a kept one. And
+   * buttons are stripped: the process that would answer them is gone, and the ids they carry mean
+   * nothing to the new one — the same reason the page strips them from history.
    */
   useTranscripts(store: TranscriptStore): void {
     this.transcripts = store;
     let top = this.seqId;
     for (const [topicId, kept] of store.load()) {
-      if (!this.topics.get(topicId)?.starred) {
+      if (!this.topics.has(topicId)) {
         store.drop(topicId);
         continue;
       }
@@ -988,9 +995,9 @@ export class WebRoom {
     this.seqId = top;
   }
 
-  /** Note that a starred topic's ring changed; it is written within `KEEP_MS`. */
+  /** Note that a topic's ring changed; it is written within `KEEP_MS`. */
   private keep(topicId: string): void {
-    if (!this.transcripts || !this.topics.get(topicId)?.starred) return;
+    if (!this.transcripts || !this.topics.has(topicId)) return;
     this.unsaved.add(topicId);
     if (this.keepTimer) return;
     this.keepTimer = setTimeout(() => this.writeKept(), KEEP_MS);
@@ -998,7 +1005,7 @@ export class WebRoom {
     this.keepTimer.unref();
   }
 
-  /** Write every starred topic changed since the last write. */
+  /** Write every topic changed since the last write. */
   private writeKept(): void {
     if (this.keepTimer) clearTimeout(this.keepTimer);
     this.keepTimer = null;
@@ -1006,7 +1013,7 @@ export class WebRoom {
     if (!store) return;
     for (const topicId of this.unsaved) {
       const room = this.rooms.get(topicId);
-      if (!room || !this.topics.get(topicId)?.starred) continue;
+      if (!room || !this.topics.has(topicId)) continue;
       store.save(
         topicId,
         [...room.stored.values()].map((s) => ({ text: s.text, msg: { ...s.msg, g: s.msg.g ?? this.startedAt } }))
@@ -1020,7 +1027,7 @@ export class WebRoom {
     this.transcripts?.drop(topicId);
   }
 
-  /** Send everything being held, write what starred topics have not, and stop every timer. Called on shutdown. */
+  /** Send everything being held, write what topics have not, and stop every timer. Called on shutdown. */
   dispose(): void {
     for (const [topicId, room] of this.rooms) this.flush(room, topicId);
     this.writeKept();

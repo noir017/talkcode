@@ -2229,8 +2229,8 @@ describe('webui page: the local transcript cache', () => {
     expect(h.el('log').textContent).toContain('brand new');
   });
 
-  it('takes what a starred topic kept on the daemon as the history it is, once, beside its own copy', async () => {
-    // A starred topic's transcript survives the restart on the daemon's side and arrives in the
+  it('takes what a topic kept on the daemon as the history it is, once, beside its own copy', async () => {
+    // A topic's transcript survives the restart on the daemon's side and arrives in the
     // sync marked with the run it was said in (g). That is what keys it the way this browser's
     // cache already has it; keyed by the new run instead, every message would be on screen twice.
     const T = 'a1b2c3d4';
@@ -2258,6 +2258,36 @@ describe('webui page: the local transcript cache', () => {
       expect(h.doc.querySelector('button[data-btn]')).toBeNull();
       expect(h.notice()).toBeNull();
     }
+  });
+
+  it('fills in, from what the daemon kept, the end of a turn this browser never received', async () => {
+    // Reported on 2026-10-31: the phone was put down mid-turn, so its cache stops at a tool line
+    // still running; the reply finished, and the daemon restarted before the page came back.
+    // The kept transcript has the rest, and it has to land in place — after what is cached, in
+    // order, with the half-finished line brought up to date rather than drawn a second time.
+    const T = 'a1b2c3d4';
+    const first = await open({ url: `http://localhost:8787/?t=${T}` });
+    await first.emit(sync(T, [message('m1', '<p>a question</p>'), message('m2', '<p>getent …</p>')], [T]));
+    await saved();
+
+    const kept = [
+      { ...message('m1', '<p>a question</p>'), g: 1 },
+      { ...message('m2', '<p>getent ✓</p>'), g: 1 },
+      { ...message('m3', '<p>the answer</p>'), g: 1 },
+    ];
+    const h = await open({ url: `http://localhost:8787/?t=${T}`, idb: first.idb });
+    await until('the cached transcript is painted', () => h.painted() === 2);
+    await h.emit(sync(T, [...kept, message('m1', '<p>progress?</p>')], [T], { epoch: 2 }));
+
+    expect(h.painted()).toBe(4);
+    const hist = [...h.doc.querySelectorAll('#log > .m.hist')].map((n) => n.textContent ?? '');
+    expect(hist).toHaveLength(3);
+    expect(hist[0]).toContain('a question');
+    expect(hist[1]).toContain('getent ✓');
+    expect(hist[2]).toContain('the answer');
+    expect(h.el('log').textContent).not.toContain('getent …');
+    expect(h.doc.querySelector('#log > .divider')?.previousElementSibling?.textContent).toContain('the answer');
+    expect(h.el('log').lastElementChild?.textContent).toContain('progress?');
   });
 
   it('keeps only the tail of a long topic', async () => {
