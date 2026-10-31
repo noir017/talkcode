@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.15.1] - 2026-10-31
+
 ### Fixed
 
 - **A web UI topic whose agent is working shows it.** The dot beside the topic, the "running"
