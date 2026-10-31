@@ -958,6 +958,15 @@ export class WebRoom {
     return this.downloads.get(token);
   }
 
+  /**
+   * Where the page fetches a published file rendered for reading: the same token, under the route
+   * that renders it (`server.ts` `view`) instead of the one that hands over the bytes. Here because
+   * this is where `f/<token>` is minted.
+   */
+  viewUrl(url: string): string {
+    return url.replace(/^f\//, 'view/');
+  }
+
   useUploads(store: UploadStore): void {
     this.uploads = store;
   }

@@ -31,6 +31,7 @@ import type { MessageRef, SlashCommandSpec } from '../../types.js';
 import type { PlatformAdapter } from '../adapter.js';
 import { renderWebMarkdown, renderWebToolLines } from '../web-markdown.js';
 import { WebAuth, fileSessionStore } from './auth.js';
+import { readableKind } from './reading.js';
 import {
   CHANNEL,
   inlineImageType,
@@ -300,6 +301,8 @@ function parseKept(value: unknown): Kept | null {
       buttons: [],
       reactions: Array.isArray(reactions) ? reactions.filter((r): r is string => typeof r === 'string') : [],
       ...(typeof q?.html === 'string' ? { quote: { html: q.html } } : {}),
+      // Not `view`, for the reason `buttons` is emptied: the reader is answered from the download
+      // table, which died with the run that minted the token, so it could only open onto a 404.
       ...(typeof f?.name === 'string' && typeof f.url === 'string'
         ? { file: { name: f.name, url: f.url, ...(f.image === true ? { image: true } : {}) } }
         : {}),
@@ -377,12 +380,22 @@ function outbound(room: WebRoom, instance: WebuiInstance): Outbound {
       const caption = file.caption ?? '';
       // A screenshot the agent just took is worth more on screen than in the downloads folder,
       // so an image says so and the page draws it. Everything else stays a link, including the
-      // formats that only *look* like images — see `inlineImageType` for which and why.
+      // formats that only *look* like images — see `inlineImageType` for which and why. A report
+      // or a log gets a reader as well as the link: `readableKind` is that list, and `view` the
+      // URL that renders one (see `reading.ts`).
       const image = inlineImageType(name) !== undefined;
+      const view = readableKind(name) !== undefined ? room.viewUrl(url) : undefined;
       return ref(
         topic,
-        room.post(topic, { own: false, html: renderWebMarkdown(caption), file: { name, url, ...(image ? { image } : {}) } }, caption)
-          .id
+        room.post(
+          topic,
+          {
+            own: false,
+            html: renderWebMarkdown(caption),
+            file: { name, url, ...(image ? { image } : {}), ...(view ? { view } : {}) },
+          },
+          caption
+        ).id
       );
     },
     async replyMessage(r, text) {

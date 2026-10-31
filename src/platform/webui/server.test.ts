@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { WebuiConfigSchema } from '../config-schemas.js';
 import { WebAuth } from './auth.js';
 import { diskUploadStore } from './index.js';
+import { MAX_READ_BYTES } from './reading.js';
 import { WebRoom, type WebuiInstance } from './room.js';
 import { createWebServer, type WebServer } from './server.js';
 import { WebSso, type SsoOptions } from './sso.js';
@@ -886,6 +887,77 @@ describe('webui server: traffic', () => {
     const { base } = await boot();
     const cookie = await signIn(base);
     expect((await fetch(`${base}/${p}`, { headers: { cookie } })).status).toBe(404);
+  });
+
+  describe('the reader', () => {
+    /** A file the agent sent, with these bytes and this name, published the way `sendFile` does. */
+    async function sent(name: string, bytes: string | Buffer) {
+      const { base, room } = await boot();
+      const cookie = await signIn(base);
+      // Under the per-test directory, which afterEach removes.
+      const file = path.join(dir, `source-${name}`);
+      fs.writeFileSync(file, bytes);
+      const url = room.publish(file, name);
+      return { base, cookie, room, url, view: room.viewUrl(url) };
+    }
+
+    it('renders a markdown file to HTML under the download token', async () => {
+      const { base, cookie, url, view } = await sent('plan.md', '# Plan\n\nship **it**\n');
+      expect(view).toBe(url.replace('f/', 'view/'));
+      const res = await fetch(`${base}/${view}`, { headers: { cookie } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
+      expect(await res.json()).toEqual({
+        name: 'plan.md',
+        size: 20,
+        shown: 20,
+        html: '<h1>Plan</h1><p>ship <strong>it</strong></p>',
+      });
+    });
+
+    it('hands over an .html as escaped source — never as a document of its own', async () => {
+      // The download rule exists so an agent's .html cannot run on this origin. The reader goes
+      // round that rule only because the browser never receives the file, only text built from it.
+      const { base, cookie, view } = await sent('evil.html', '<script>steal()</script>');
+      const res = await fetch(`${base}/${view}`, { headers: { cookie } });
+      expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');
+      const body = (await res.json()) as { html: string };
+      expect(body.html).toBe('<pre class="src"><code>&lt;script&gt;steal()&lt;/script&gt;</code></pre>');
+    });
+
+    it('sends the head of a file too long to show whole, and says how long it was', async () => {
+      const line = 'a log line\n';
+      const big = line.repeat(Math.ceil((MAX_READ_BYTES * 2) / line.length));
+      const { base, cookie, view } = await sent('run.log', big);
+      const body = (await (await fetch(`${base}/${view}`, { headers: { cookie } })).json()) as {
+        size: number;
+        shown: number;
+      };
+      expect(body.size).toBe(big.length);
+      expect(body.shown).toBeLessThanOrEqual(MAX_READ_BYTES);
+      expect(body.shown % line.length).toBe(0);
+    });
+
+    it('refuses a name it does not render, and bytes that are not text', async () => {
+      const pdf = await sent('report.pdf', '%PDF-1.7');
+      expect((await fetch(`${pdf.base}/${pdf.view}`, { headers: { cookie: pdf.cookie } })).status).toBe(415);
+      const named = await sent('notes.txt', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00]));
+      const res = await fetch(`${named.base}/${named.view}`, { headers: { cookie: named.cookie } });
+      expect(res.status).toBe(415);
+      expect(await res.json()).toEqual({ error: 'that file is not text' });
+    });
+
+    it('answers 404 for a token it never minted, and for a file gone from disk', async () => {
+      const { base, cookie, room } = await sent('plan.md', 'x');
+      expect((await fetch(`${base}/view/deadbeef`, { headers: { cookie } })).status).toBe(404);
+      const url = room.publish(path.join(dir, 'never-written.md'), 'gone.md');
+      expect((await fetch(`${base}/${room.viewUrl(url)}`, { headers: { cookie } })).status).toBe(404);
+    });
+
+    it('is behind the session like the download it renders', async () => {
+      const { base, view } = await sent('plan.md', '# Plan\n');
+      expect((await fetch(`${base}/${view}`)).status).toBe(401);
+    });
   });
 });
 

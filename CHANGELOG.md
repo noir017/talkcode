@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **The web UI can show a file the agent sent without downloading it.** A report, a plan or a log
+  the agent sends is meant to be read, and until now reading one meant the downloads folder and
+  another app — on a phone, an app that may not be there. Markdown, plain-text and source files now
+  have a **Preview** button beside their name, which opens the file over the conversation: Markdown
+  rendered the way replies are, with headings, tables and code blocks, and anything else as plain
+  text, wrapped to the screen. The browser never receives the file itself, only HTML the gateway
+  built from it and escaped the way it escapes every reply, so an `.html` or `.svg` the agent sends
+  is shown as its source and cannot run. A file over 512 KB shows its first 512 KB and says so; the
+  reader's **Download** link gets the rest. PDFs, office documents and other binary files have no
+  preview and stay downloads. Preview lasts as long as the download link does, which is until the
+  gateway restarts.
+
 ## [2.14.0] - 2026-10-31
 
 ### Changed

@@ -241,8 +241,12 @@ export interface WebMessage {
    * as itself rather than as an octet-stream attachment. The page does not decide this from the
    * name — `room.ts` `inlineImageType` is the single place that answers it, so the tag the page
    * writes and the headers the server sends can never disagree about the same file.
+   *
+   * `view` is where the page can fetch the file rendered for reading (`server.ts` `view`), set
+   * only for a name `reading.ts` `readableKind` accepts — the same arrangement, so the page offers
+   * a reader for exactly the files the server will render.
    */
-  file?: { name: string; url: string; image?: boolean };
+  file?: { name: string; url: string; image?: boolean; view?: string };
   /**
    * The `nonce` of the send this message is the echo of. Only ever set on the operator's own.
    *

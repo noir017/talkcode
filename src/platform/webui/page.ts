@@ -387,6 +387,24 @@ button:disabled{opacity:.5;cursor:default}
 #lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:12px;cursor:zoom-out}
 #lightbox[hidden]{display:none}
 #lightbox img{max-width:100%;max-height:100%;object-fit:contain}
+/* A file the agent sent, read where it was sent (openReader; the HTML is reading.ts's). Over the
+   whole page and not a new tab, for the lightbox's reason: installed as an app there is no tab bar
+   to come back from. Opaque where the lightbox is dimmed, because this is read, not glanced at.
+   The bar's height matches #chat-header's so the name sits where the topic title was. */
+#reader{position:fixed;inset:0;z-index:20;background:var(--bg);display:flex;flex-direction:column}
+#reader-bar{display:flex;align-items:center;gap:12px;padding:6px 10px 6px 16px;border-bottom:1px solid var(--line);min-height:42px;font-size:13px}
+#reader-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#reader-get{color:#8fa6c0}
+#reader-close{font-size:18px;padding:6px 10px}
+#reader-body{flex:1;overflow-y:auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));outline:none}
+#reader-body>*{max-width:860px;margin-left:auto;margin-right:auto}
+/* A text file wraps rather than scrolling sideways: a whole document wider than a phone is read a
+   line at a time with a thumb, and a log's long lines are the usual reason it is wide. */
+#reader .src{white-space:pre-wrap;overflow-wrap:anywhere}
+.reader-note{color:var(--dim);font-size:12px;margin-bottom:12px}
+/* Beside the file's link, and smaller than a message's own buttons: it is about the file, and
+   the link it sits next to is the thing it is an alternative to. */
+.files .view{font-size:12px;padding:1px 8px}
 #row{display:flex;gap:8px;align-items:flex-end}
 /* Red at rest, unlike #kill-agent: it only exists while a reply is streaming in, and in that
    moment it is the control being looked for. */
@@ -469,6 +487,13 @@ button:disabled{opacity:.5;cursor:default}
   #term-bar{padding:2px 4px 2px 12px;gap:8px}
   #term-min,#term-end{display:inline-flex;align-items:center;justify-content:center;
     min-width:44px;height:44px;font-size:18px}
+  /* The reader's way out, for the same finger: it measured 35x30 at 390px in Chromium before this.
+     The bar gives up its vertical padding to it, as the chat header does to the drawer toggle.
+     Preview grows too — at 12px with 1px of padding it was a 22px-tall target beside a link that
+     a near miss would download instead. */
+  #reader-bar{padding:0 4px 0 12px}
+  #reader-close{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:44px;font-size:20px}
+  .files .view{padding:6px 12px}
   /* The status strip's token counts, on a screen with no room for them: the percentage beside the
      meter says the same thing in four characters, and a tap brings the counts back. Without this
      the line clipped before the cache and quota — the parts that change. */
@@ -490,6 +515,7 @@ const SCRIPT = `
       chat=$('chat'), termBtn=$('term-toggle'), termHost=$('term-frames'),
       termName=$('term-name'), termMinBtn=$('term-min'), termEndBtn=$('term-end'),
       lightbox=$('lightbox'), lightboxImg=$('lightbox-img'),
+      reader=$('reader'), readerName=$('reader-name'), readerGet=$('reader-get'), readerBody=$('reader-body'),
       killBtn=$('kill-agent'), stopBtn=$('stop-turn'), statusEl=$('status');
   var data={}, els={}, files=[], commands=[], stream=null, done=false;
   // Last markup written per message, so a sync that re-sends an unchanged message touches no DOM.
@@ -913,7 +939,12 @@ const SCRIPT = `
       // exists to remove. The link stays underneath either way: it is still the only way to
       // get the bytes onto disk, and it is what a picture that fails to load degrades to.
       if(m.file.image) h += '<img class="shot" src="'+text(m.file.url)+'" alt="'+text(m.file.name)+'" loading="lazy">';
-      h += '<div class="files"><a href="'+text(m.file.url)+'" download>'+text(m.file.name)+'</a></div>';
+      h += '<div class="files"><a href="'+text(m.file.url)+'" download>'+text(m.file.name)+'</a>';
+      // A report or a log can be read here instead (openReader). Not offered on history, for the
+      // reason its buttons are dropped below: the token died with the process that minted it, so
+      // the reader could only ever open onto "no longer here".
+      if(m.file.view && !hist) h += '<button type="button" class="view" data-view="'+text(m.file.view)+'">Preview</button>';
+      h += '</div>';
     }
     // Buttons are dropped from a message that came out of the cache: the process that would
     // answer them is gone, and the id they name now means a different message or nothing at
@@ -2078,6 +2109,8 @@ const SCRIPT = `
     // as downloading it. Checked first — a picture carries none of the attributes below.
     var shot = e.target.closest ? e.target.closest('img.shot') : null;
     if(shot) return openShot(shot);
+    var view = e.target.closest ? e.target.closest('button[data-view]') : null;
+    if(view) return openReader(view);
     // What a message that failed to send offers. Checked before the ordinary buttons: these are
     // answered here, locally, and never posted as a click on a message the daemon has no idea
     // about.
@@ -2137,7 +2170,51 @@ const SCRIPT = `
     lightboxImg.removeAttribute('src');
   }
   lightbox.addEventListener('click', closeShot);
-  document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeShot(); });
+  document.addEventListener('keydown', function(e){ if(e.key === 'Escape'){ closeShot(); closeReader(); } });
+
+  /**
+   * Read a file the agent sent without downloading it. The server renders it (reading.ts) and the
+   * answer fills an overlay over the transcript. The name and the download link come from the
+   * message at once, so a slow link shows which file is coming rather than an empty frame.
+   *
+   * readSeq is which opening an answer belongs to. Close one file and open another before the first
+   * has answered, and without it the first file's text would land under the second one's name.
+   */
+  var readSeq = 0;
+  function openReader(btn){
+    var link = btn.parentNode.querySelector('a');
+    readerName.textContent = link ? link.textContent : '';
+    readerName.title = readerName.textContent;
+    if(link) readerGet.setAttribute('href', link.getAttribute('href'));
+    readerGet.hidden = !link;
+    readerSay('Loading\\u2026');
+    reader.hidden = false;
+    readerBody.focus();
+    var mine = ++readSeq;
+    fetch(btn.getAttribute('data-view'), {credentials:'same-origin'}).then(function(r){
+      return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; });
+    }).then(function(res){
+      if(mine !== readSeq) return;
+      if(!res.ok) return readerSay(res.status === 404
+        ? 'This file is no longer here: the daemon has let it go since it was sent.'
+        : (res.body && res.body.error) || 'This file cannot be shown.');
+      var j = res.body, h = '';
+      if(j.shown < j.size) h += '<div class="reader-note">Showing the first '+text(byteSize(j.shown))+' of '+text(byteSize(j.size))+'. Download it for the rest.</div>';
+      readerBody.innerHTML = h + '<div class="b">' + j.html + '</div>';
+      readerBody.scrollTop = 0;
+    }).catch(function(){ if(mine === readSeq) readerSay('Could not reach the server.'); });
+  }
+  function readerSay(s){ readerBody.innerHTML = '<div class="empty">'+text(s)+'</div>'; }
+  function closeReader(){
+    if(reader.hidden) return;
+    reader.hidden = true;
+    readSeq++;
+    // Emptied, not kept: half a megabyte of rendered document is a lot of DOM to leave behind an
+    // overlay nobody is looking at — the lightbox drops its picture for the same reason.
+    readerBody.textContent = '';
+  }
+  function byteSize(n){ return n < 1048576 ? Math.max(1, Math.round(n/1024)) + ' KB' : (n/1048576).toFixed(1) + ' MB'; }
+  $('reader-close').addEventListener('click', closeReader);
 
   // Grow to fit, and let the max-height in the stylesheet decide where to stop — it is stated
   // in dvh there, which on a phone with the keyboard up is the viewport that is actually left.
@@ -2894,6 +2971,17 @@ __GATE__
   <!-- Filled in and revealed when a picture in the log is tapped. One node reused for every
        image, rather than one per message: the transcript holds hundreds. -->
   <div id="lightbox" hidden><img id="lightbox-img" alt=""></div>
+  <!-- A file the agent sent, rendered for reading (openReader). One node for every file, like the
+       lightbox; the body is emptied when it closes. tabindex lets the body take focus on open, so
+       the keyboard scrolls the document rather than the transcript behind it. -->
+  <div id="reader" hidden role="dialog" aria-modal="true" aria-labelledby="reader-name">
+    <div id="reader-bar">
+      <span id="reader-name"></span>
+      <a id="reader-get" download>Download</a>
+      <button type="button" class="btn-icon" id="reader-close" title="Close (Esc)" aria-label="Close">&times;</button>
+    </div>
+    <div id="reader-body" tabindex="-1"></div>
+  </div>
   <section id="chat">
     <div id="chat-header">
       <button type="button" class="btn-icon" id="expand-sidebar" title="Show topics" hidden>☰</button>
