@@ -69,6 +69,10 @@ describe('webui adapter: what it says it can do', () => {
     expect(adapter().capabilities.maxEditsPerMessage).toBeUndefined();
   });
 
+  it('declares its typing a state, so the pacer never drops the start that lights the dot', () => {
+    expect(adapter().capabilities.typingUntilStopped).toBe(true);
+  });
+
   it('asks for whole commands in its tool bubbles, which the page folds itself', () => {
     // Far above the operator default (40), or the page's "Show all" would open a line onto the
     // same cut-off command it was already showing.

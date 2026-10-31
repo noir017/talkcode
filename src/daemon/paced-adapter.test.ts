@@ -359,6 +359,21 @@ describe('withOutboundPacing — lanes', () => {
     expect(inner.calls).not.toContain('startTyping');
   });
 
+  it('typing that stays on until stopped is never dropped, however busy the chat', async () => {
+    // The web UI: a dropped start is not a missed beat but a topic marked idle while its agent works,
+    // and the turn's own tool bubbles are what keep its lane busy (2026-10-31).
+    const inner = makeAdapter();
+    inner.capabilities.typingUntilStopped = true;
+    const clock = makeClock();
+    const paced = withOutboundPacing(inner, new OutboundPacer(makeOpts({ burst: 1, ratePerSec: 0.001 }), clock));
+
+    void paced.sendMessage({ channel: 'main', thread: 't' }, 'spends the one token');
+    void paced.sendMessage({ channel: 'main', thread: 't' }, 'queued behind it');
+    await outboundLane(paced, 'typing').startTyping({ channel: 'main', thread: 't' });
+
+    expect(inner.calls).toEqual(['sendMessage:main/t', 'startTyping']);
+  });
+
   it('outboundLane on an unpaced adapter returns it unchanged', () => {
     const inner = makeAdapter();
     expect(outboundLane(inner, 'progress')).toBe(inner);

@@ -102,11 +102,15 @@ export function withOutboundPacing(
   // A platform with no flood budget of its own meters each lane apart (see paceByLane): the web
   // UI, whose topics would otherwise queue behind each other's streaming.
   const byLane = adapter.capabilities.paceByLane === true;
+  // A typing indicator that stays on until stopped is state, not a beat, and a dropped beat is
+  // only harmless when the next one replaces it (see typingUntilStopped). So it is not metered —
+  // which costs nothing where it applies: the web UI's setTyping writes only when the state flips.
+  const typingIsState = adapter.capabilities.typingUntilStopped === true;
 
   const build = (cls: OutboundClass): PlatformAdapter => {
     const out: Record<string, unknown> = {};
     for (const [name, member] of entriesOf(adapter)) {
-      const kind = PACING[name as keyof typeof PACING] ?? 'unpaced';
+      const kind = name === 'startTyping' && typingIsState ? 'unpaced' : (PACING[name as keyof typeof PACING] ?? 'unpaced');
       if (kind === 'unpaced' || typeof member !== 'function') {
         out[name] = typeof member === 'function' ? (member as () => unknown).bind(adapter) : member;
         continue;

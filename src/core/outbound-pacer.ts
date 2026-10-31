@@ -49,6 +49,10 @@ import { WriteDroppedError } from './outbound-errors.js';
  * lost" structural rather than lucky — the bubble's state simply stays undelivered until a later
  * paint carries it.
  *
+ * `typing` is droppable only BECAUSE it expires by itself. A platform whose typing is a switch held
+ * until stopped (the web UI, `typingUntilStopped`) never sends it through here: a dropped start
+ * there is not a missed beat but a topic marked idle for the whole of a busy turn.
+ *
  * Pure: no clock, no IO. `now()`/`schedule()` are injected, the same seam `StreamSink` uses.
  */
 

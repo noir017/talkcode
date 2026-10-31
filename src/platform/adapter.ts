@@ -359,4 +359,17 @@ export interface PlatformCapabilities {
    * a topic waits only for its own writes; the instance-wide ceiling still bounds the whole page.
    */
   paceByLane?: boolean;
+  /**
+   * Whether `startTyping` switches on something that stays on until `stopTyping`, instead of an
+   * indicator the platform expires by itself a few seconds later. Absent/undefined treated as
+   * false, which is true of every chat service.
+   *
+   * It decides how the outbound pacer treats `startTyping` (daemon/paced-adapter.ts). An expiring
+   * indicator is a beat that may be DROPPED when the chat has no budget: it would arrive late, and
+   * the next beat 8 s on carries it anyway. A switch is not a beat. On the web UI a dropped start
+   * is the topic's dot left dim, its "running" label and Stop button missing, for as long as the
+   * chat stays busy — and the turn's own tool bubbles are what keep it busy. Reported 2026-10-31,
+   * on a topic whose agent was visibly working while three others streamed beside it.
+   */
+  typingUntilStopped?: boolean;
 }

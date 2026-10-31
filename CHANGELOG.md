@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A web UI topic whose agent is working shows it.** The dot beside the topic, the "running"
+  label and the Stop button all follow the agent's typing indicator, and the gateway sends that
+  through the same write budget as everything else, dropping it whenever the budget is spent —
+  right for a chat app, whose indicator fades by itself and is sent again 8 seconds later, but on
+  the web UI it is a switch, and a dropped one stayed off. Up to 2.13 every topic shared one
+  budget, so a topic whose agent was busy while another topic was streaming could stay dim for its
+  whole turn; replaying the real write budget on a fake clock, not one of 38 signals got through in
+  five minutes. 2.14.0 gave each topic its own budget, which left the case where a turn starts
+  while its own topic is still sending the last one's output. The web UI's indicator is no longer
+  rationed at all; it costs nothing, since the page is only told when it changes.
+
 ## [2.15.0] - 2026-10-31
 
 ### Added

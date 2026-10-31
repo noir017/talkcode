@@ -105,6 +105,12 @@ const CAPABILITIES: PlatformAdapter['capabilities'] = {
    */
   paceByLane: true,
   /**
+   * Typing here is the topic's dot, its "running" label and its Stop button — a state `room.ts`
+   * holds until `stopTyping`, not an indicator that fades. So the pacer must not drop a start the
+   * way it drops a chat app's beat. See the field in adapter.ts.
+   */
+  typingUntilStopped: true,
+  /**
    * Not a platform limit — a browser has none. It is a ceiling on how large one message may
    * grow before the writer seals it and starts another, and it exists because a streaming edit
    * re-renders the whole body: without a bound, one runaway reply becomes an unbounded DOM
